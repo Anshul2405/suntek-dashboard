@@ -121,7 +121,7 @@ const createCustomIcon = (initials: string, status: string) => {
           font-weight: 800;
           font-size: 11px;
           color: ${color};
-          font-family: Inter, sans-serif;
+          font-family: inherit;
         ">
           ${initials}
         </div>
@@ -198,7 +198,7 @@ export function NightManagerBoard() {
           (acctRows ?? []).forEach(a => acctName.set(a.id, { name: a.name, role_id: a.role_id }));
         }
       }
-      const roleLabelOf = (roleId: string | null) => roles.find(r => r.id === roleId)?.label ?? t('nightBoard.technician', 'Technician');
+      const roleLabelOf = (roleId: string | null) => roles.find(r => r.id === roleId)?.label ?? t('nightBoard.technician', 'Operator');
 
       // 3. Format shift logs with mapping resolution
       const formatted = logs.map((row, index: number) => {
@@ -403,7 +403,7 @@ export function NightManagerBoard() {
                   }}
                 >
                   <Popup minWidth={220}>
-                    <div className="p-1 text-slate-800" style={{ fontFamily: 'Inter, sans-serif' }}>
+                    <div className="p-1 text-slate-800" style={{ fontFamily: 'inherit' }}>
                       <div className="flex items-center gap-2 mb-1.5">
                         <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center font-bold text-[10px] text-slate-600">
                           {d.initial}

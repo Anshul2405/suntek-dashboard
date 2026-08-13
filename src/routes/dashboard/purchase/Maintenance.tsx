@@ -537,6 +537,26 @@ export function Maintenance() {
     () => [...new Set(['technician_shd', ...roles.filter(r => (r.capabilities ?? []).includes('perform_maintenance')).map(r => r.id)])],
     [roles],
   );
+  // POC: Mark Complete + upload is a Manage Roles toggle — assignable to any role.
+  const canMarkPeriodicComplete = can('complete_periodic_maintenance') || isAdmin;
+  /** Who can act on an open emergency ticket (raise store indent / start repair). */
+  const canWorkEmergency = (tk: TicketRow | null | undefined) => {
+    if (!tk) return false;
+    if (isAdmin || isUnitHead || isTechnician || role === 'factory_operator') return true;
+    const me = activeProfile.name?.trim().toLowerCase();
+    if (!me) return false;
+    return (tk.raised_by || '').trim().toLowerCase() === me
+      || (tk.assigned_to || '').trim().toLowerCase() === me;
+  };
+  /** Who can Revise & Resubmit after Request Changes — original entry user, not only Operator. */
+  const canResubmitChanges = (tk: TicketRow | null | undefined) => {
+    if (!tk) return false;
+    if (isAdmin || isTechnician) return true;
+    const me = activeProfile.name?.trim().toLowerCase();
+    if (!me) return false;
+    return (tk.raised_by || '').trim().toLowerCase() === me
+      || (tk.assigned_to || '').trim().toLowerCase() === me;
+  };
 
   // Data
   const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule'>('periodic');
@@ -752,8 +772,13 @@ export function Maintenance() {
   useEffect(() => {
     const tid = searchParams.get('ticket');
     if (!tid) return;
-    const t = tickets.find((x) => x.id === tid);
-    if (!t) {
+    const clearTicketParam = () => {
+      const next = new URLSearchParams(searchParams);
+      next.delete('ticket');
+      setSearchParams(next, { replace: true });
+    };
+    const matched = tickets.find((x) => x.id === tid);
+    if (!matched) {
       // NOT NECESSARILY STILL LOADING. PostgREST caps a response at 1000 rows by
       // default, and this factory already has ~1,300 tickets — so an older one
       // simply is not in `tickets` and never will be, however long we wait.
@@ -769,21 +794,25 @@ export function Maintenance() {
           () => supabase.from('maintenance_tickets').select('*').eq('id', tid).limit(1).returns<TicketRow[]>(),
           'Maintenance.ticketDeepLink',
         );
+        if (cancelled) return;
         const found = data?.[0];
-        if (cancelled || !found) return;   // genuinely gone, or scoped out
+        if (!found) {
+          // Deleted / out of scope — bare Periodic list with no explanation looked
+          // like a broken flow after clicking To-Do / bell.
+          toast.info(t('maint.ticketGoneDeepLink', 'That ticket is no longer available — it may have been deleted.'));
+          clearTicketParam();
+          return;
+        }
         setSelectedTicket(found);
         setTab(found.type === 'periodic' ? 'periodic' : 'emergency');
-        const next = new URLSearchParams(searchParams);
-        next.delete('ticket');
-        setSearchParams(next, { replace: true });
+        clearTicketParam();
       })();
       return () => { cancelled = true; };
     }
-    setSelectedTicket(t);
-    setTab(t.type === 'periodic' ? 'periodic' : 'emergency');
-    const next = new URLSearchParams(searchParams);
-    next.delete('ticket');
-    setSearchParams(next, { replace: true });
+    setSelectedTicket(matched);
+    setTab(matched.type === 'periodic' ? 'periodic' : 'emergency');
+    clearTicketParam();
+    // toast/t intentionally omitted — ToastApi object is not referentially stable.
   }, [searchParams, tickets, setSearchParams]);
 
   const loadStoreReqs = useCallback(async (ticketId: string) => {
@@ -1044,8 +1073,9 @@ export function Maintenance() {
       // the asset QR profile's history (was previously captured but dropped).
       far_asset_id: raiseForm.farAssetId || null,
       raised_by: activeProfile.name, raised_role: role,
-      // A technician raising their own job is implicitly assigned to themselves.
-      assigned_to: isTechnician ? activeProfile.name : null,
+      // A technician / Technical raiser is implicitly assigned to themselves so
+      // they can continue the store-indent / repair loop without role confusion.
+      assigned_to: (isTechnician || role === 'factory_operator') ? activeProfile.name : null,
     }).select('*, plants(name)').single();
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
 
@@ -1099,13 +1129,18 @@ export function Maintenance() {
 
     setRaiseSaved(true);
     await loadData();
+    const needsPart = raiseForm.assessment === 'needs_part';
+    const ticketForStore = newTicket;
     setTimeout(() => {
       setShowRaisePanel(false); setRaiseSaved(false); setRaisePhotoBlob(null);
       setRaiseForm({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '' });
-      if (newTicket && raiseForm.assessment === 'needs_part') {
-        setSelectedTicket(newTicket); setShowStoreForm(true);
+      // Always open the store parts form when "Need a part from store" was chosen
+      // (meeting 3.2 — flow must not stop after ticket create).
+      if (ticketForStore && needsPart) {
+        setSelectedTicket(ticketForStore);
+        setShowStoreForm(true);
       }
-    }, 1400);
+    }, 900);
     } finally { setRaising(false); }
   }
 
@@ -1182,11 +1217,31 @@ export function Maintenance() {
         revision_count: (selectedTicket.revision_count ?? 0) + 1,
       }).eq('id', selectedTicket.id);
       await auditNote(selectedTicket, `🔁 Changes requested by ${activeProfile.name}: ${reason}`);
-      notify({ target_roles: [...maintenanceRoleIds, 'admin'], title: `Changes requested: ${selectedTicket.equipment}`, body: reason, type: 'warning', route: maintRoute(selectedTicket.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id ?? null, unit_id: selectedTicket.unit_id ?? null });
+      // Notify all maintenance-capability roles + whoever raised it, so Request
+      // Changes reaches capability-holders (not just the technician slug) and is
+      // never a dead end.
+      const changeTargets = Array.from(new Set([
+        ...maintenanceRoleIds,
+        'admin',
+        'factory_operator',
+        selectedTicket.raised_role,
+      ].filter(Boolean) as string[]));
+      notify({
+        target_roles: changeTargets,
+        title: `Changes requested: ${selectedTicket.equipment}`,
+        body: reason,
+        type: 'warning',
+        route: maintRoute(selectedTicket.id),
+        actor_name: activeProfile.name,
+        actor_role: role,
+        read_by: [],
+        plant_id: selectedTicket.plant_id ?? null,
+        unit_id: selectedTicket.unit_id ?? null,
+      });
       await notifyTicketWatchers(selectedTicket, `Changes requested: ${selectedTicket.equipment}`, reason, 'warning');
       setSelectedTicket((t) => t ? { ...t, status: 'changes_requested', revision_prev_status: prevStatus, revision_reason: reason, revision_requested_by: activeProfile.name, revision_requested_at: nowIso, revision_count: (t.revision_count ?? 0) + 1 } : t);
       setRequestingChanges(false); setChangeReason(''); setChangeTags([]);
-      toast.success(t('maint.sentBackToTechToast', 'Sent back to technician for changes'));
+      toast.success(t('maint.sentBackToTechToast', 'Sent back for changes'));
       await loadData();
     } catch (e) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: e instanceof Error ? e.message : String(e) })); }
     finally { setSavingRevision(false); }
@@ -1505,7 +1560,10 @@ export function Maintenance() {
     await updateTicketStatus(selectedTicket.id, 'pending_store');
     setSelectedTicket((t) => t ? { ...t, status: 'pending_store' } : t);
     // One store per factory (shared at Rehla), so one store-manager audience.
-    const storeTargets = ['admin', 'store_manager_maint', 'warehouse_manager'];
+    // Do NOT plant-scope this alert — store managers often sit on a different
+    // plant/unit scope than the requesting factory; plant_id filtering was
+    // hiding indents from Store / Unit Head (meeting issue 3.2).
+    const storeTargets = ['admin', 'store_manager_maint', 'warehouse_manager', 'unit_head'];
     const names = items.map(i => i.partName).join(', ');
     notify({
       target_roles: storeTargets,
@@ -1513,7 +1571,8 @@ export function Maintenance() {
       body: `${selectedTicket.equipment} · ${names} · Check availability`,
       type: 'warning', route: maintRoute(selectedTicket?.id),
       actor_name: activeProfile.name, actor_role: role, read_by: [],
-      plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id,
+      plant_id: null,
+      unit_id: null,
     });
     await notifyMentions(items.map(i => i.specification).filter(Boolean).join(' '), {
       entityType: 'maintenance_ticket', entityId: selectedTicket.id,
@@ -2285,7 +2344,7 @@ export function Maintenance() {
     }
 
     // ── open: resume the persisted path (never re-ask a decided ticket) ──
-    if (status === 'open' && (isTechnician || isAdmin || isUnitHead)) {
+    if (status === 'open' && canWorkEmergency(tk)) {
       if (decision === 'store' || (decision === 'undecided' && showStoreForm)) {
         const validItems = storeItems.filter(it => it.partName.trim()).length;
         return (
@@ -2331,7 +2390,7 @@ export function Maintenance() {
             <button onClick={() => setStoreItems(items => [...items, { ...BLANK_ITEM }])} style={{ width: '100%', padding: '9px', borderRadius: 10, border: '1.5px dashed #CBD5E1', background: '#fff', color: '#475569', cursor: 'pointer', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit', marginBottom: 12 }}>{t('maint.addAnotherItem', '+ Add another item')}</button>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => { setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); }} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
-              <button onClick={handleRaiseStoreReq} disabled={!validItems} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#F47651', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !validItems ? 0.5 : 1 }}>{validItems > 1 ? t('maint.sendNItems', { defaultValue: 'Send {{n}} items', n: validItems }) : t('maint.sendToStoreManager', 'Send to Store Manager')}</button>
+              <button onClick={handleRaiseStoreReq} disabled={!validItems} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !validItems ? 0.5 : 1 }}>{validItems > 1 ? t('maint.sendNItems', { defaultValue: 'Send {{n}} items', n: validItems }) : t('maint.sendToStoreManager', 'Send to Store Manager')}</button>
             </div>
           </div>
         );
@@ -2354,7 +2413,7 @@ export function Maintenance() {
           <button onClick={startRepair} style={{ padding: '12px 16px', borderRadius: 12, border: '1px solid #16A34A', background: '#F0FDF4', color: '#16A34A', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
             {t('maint.canFixInhouseStart', '✓ Can fix in-house — start working on it')}
           </button>
-          <button onClick={() => setShowStoreForm(true)} style={{ padding: '12px 16px', borderRadius: 12, border: '1px solid #F47651', background: '#FFF7F5', color: '#F47651', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+          <button onClick={() => setShowStoreForm(true)} style={{ padding: '12px 16px', borderRadius: 12, border: '1px solid #EF6C00', background: '#FFF7F5', color: '#EF6C00', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
             {t('maint.needPartRaiseRequest', '🔧 Need a part from store — raise request')}
           </button>
         </div>
@@ -2362,12 +2421,12 @@ export function Maintenance() {
     }
 
     // ── in_progress: technician submits the completion photo for verification ──
-    if (status === 'in_progress' && (isTechnician || isAdmin)) {
+    if (status === 'in_progress' && (isTechnician || isAdmin || canWorkEmergency(tk))) {
       return (
         <div>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600, marginBottom: 12 }}>{t('maint.uploadPhotoProofVerify', 'Upload photo proof — the unit head verifies before the ticket closes')}</div>
           <PhotoUploader onBlobReady={setCompletionBlob} label={t('maint.completionPhoto', 'Completion photo')} hint={t('maint.completionPhotoHint', 'Photo of the fixed equipment / completed repair')} />
-          {uploading && <UploadBar pct={uploadPct} color="#F47651" />}
+          {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
           <button onClick={closeInHouse} disabled={!completionBlob || uploading} style={{ width: '100%', padding: '12px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', opacity: (!completionBlob || uploading) ? 0.5 : 1 }}>
             {uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.sendToUnitHeadVerify', 'Send to unit head for verification')}
           </button>
@@ -2381,7 +2440,7 @@ export function Maintenance() {
     if (status === 'pending_unit_head' && decision !== 'store' && storeReqs.length === 0) {
       const canVerify = isUnitHead || isAdmin;
       return (
-        <div style={{ border: '1px solid #DDD6FE', background: '#F5F3FF', borderRadius: 14, padding: 16 }}>
+        <div style={{ border: '1px solid #DDD6FE', background: '#F1F5F9', borderRadius: 14, padding: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: '#5B21B6' }}>{t('maint.verifyInhouseTitle', 'In-house repair — awaiting unit head verification')}</div>
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4, lineHeight: 1.5 }}>
             {t('maint.verifyInhouseSub', { defaultValue: '{{name}} completed the repair and uploaded proof. It stays open until the unit head verifies it.', name: tk.assigned_to || tk.raised_by || '—' })}
@@ -2407,7 +2466,7 @@ export function Maintenance() {
               </button>
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: '#7C3AED', fontWeight: 600, marginTop: 14 }}>{t('maint.awaitingUnitHead', 'Waiting on the unit head — you will be notified when it is closed.')}</div>
+            <div style={{ fontSize: 12, color: '#0A1628', fontWeight: 600, marginTop: 14 }}>{t('maint.awaitingUnitHead', 'Waiting on the unit head — you will be notified when it is closed.')}</div>
           )}
         </div>
       );
@@ -2428,10 +2487,10 @@ export function Maintenance() {
 
     const STAGE_BADGE: Record<ItemStage, { label: string; bg: string; color: string }> = {
       store: { label: t('maint.badgeStoreCheck', 'Store check'), bg: '#FFF7ED', color: '#EA580C' },
-      unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F5F3FF', color: '#7C3AED' },
+      unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F1F5F9', color: '#0A1628' },
       purchase: { label: t('maint.badgeProcure', 'Procure'), bg: '#EFF6FF', color: '#2563EB' },
       purchase_manager: { label: t('maint.badgeAwaitingBill', 'Awaiting bill'), bg: '#FDF4FF', color: '#A21CAF' },
-      handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#FAF5FF', color: '#9333EA' },
+      handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#F8FAFC', color: '#9333EA' },
       done: { label: t('common.done', 'Done'), bg: '#F0FDF4', color: '#16A34A' },
       rejected: { label: t('maint.badgeRejected', 'Rejected'), bg: '#FEF2F2', color: '#DC2626' },
     };
@@ -2511,7 +2570,7 @@ export function Maintenance() {
                         <PanelField label={t('maint.shelfBin', 'Shelf / bin')}><PanelInput value={storeDecisionForm.shelfLocation} onChange={e => setStoreDecisionForm(f => ({ ...f, shelfLocation: e.target.value }))} placeholder={t('maint.shelfPlaceholder', 'Rack B-12')} /></PanelField>
                       </PanelRow>
                       {willSplit && (
-                        <div style={{ fontSize: 11.5, color: '#7C3AED', background: '#FAF5FF', border: '1px solid #E9D5FF', borderRadius: 8, padding: '7px 10px', marginTop: 6 }}>
+                        <div style={{ fontSize: 11.5, color: '#0A1628', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', marginTop: 6 }}>
                           {t('maint.splitOnlyInStore', { defaultValue: '⤿ Only {{have}} of {{need}} in store → ', have: enteredQty, need: reqQty })}<strong>{t('maint.splitIssuedNow', { defaultValue: '{{n}} issued now', n: enteredQty })}</strong>, <strong>{t('maint.splitSentToProcurement', { defaultValue: '{{n}} sent to procurement', n: reqQty - (enteredQty ?? 0) })}</strong>{t('maint.splitAutomatically', ' automatically.')}
                         </div>
                       )}
@@ -2525,12 +2584,12 @@ export function Maintenance() {
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => { setActingReqId(null); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
-                    <button onClick={() => submitStoreDecision(req)} disabled={storeDecisionForm.available === null || needJustify} style={{ ...primaryBtn('#F47651'), flex: 2, opacity: (storeDecisionForm.available === null || needJustify) ? 0.4 : 1 }}>{t('maint.submitToUnitHead', 'Submit to unit head')}</button>
+                    <button onClick={() => submitStoreDecision(req)} disabled={storeDecisionForm.available === null || needJustify} style={{ ...primaryBtn('#EF6C00'), flex: 2, opacity: (storeDecisionForm.available === null || needJustify) ? 0.4 : 1 }}>{t('maint.submitToUnitHead', 'Submit to unit head')}</button>
                   </div>
                 </div>
                 );
               })() : (
-                <button onClick={() => { const linked = req.store_item_id ? storeStock.find(x => x.id === req.store_item_id) : null; setActingReqId(req.id); setStoreDecisionForm({ ...BLANK_STORE_DECISION, available: linked ? Number(linked.on_hand) > 0 : null, qtyInStore: linked ? String(linked.on_hand) : '', registerQty: linked ? Number(linked.on_hand) : null }); }} style={{ ...primaryBtn('#F47651'), width: '100%', marginTop: 10 }}>{t('maint.checkAvailability', 'Check availability')}</button>
+                <button onClick={() => { const linked = req.store_item_id ? storeStock.find(x => x.id === req.store_item_id) : null; setActingReqId(req.id); setStoreDecisionForm({ ...BLANK_STORE_DECISION, available: linked ? Number(linked.on_hand) > 0 : null, qtyInStore: linked ? String(linked.on_hand) : '', registerQty: linked ? Number(linked.on_hand) : null }); }} style={{ ...primaryBtn('#EF6C00'), width: '100%', marginTop: 10 }}>{t('maint.checkAvailability', 'Check availability')}</button>
               )) : <div style={awaitTxt}>{t('maint.awaitingStoreManager', 'Awaiting store manager…')}</div>)}
 
               {/* UNIT HEAD */}
@@ -2561,17 +2620,17 @@ export function Maintenance() {
                     <PanelField label={t('maint.supplierVendor', 'Supplier / vendor')}><PanelInput value={supplierName} onChange={e => setSupplierName(e.target.value)} placeholder={t('maint.supplierPlaceholder', 'e.g. Madan Chemicals')} /></PanelField>
                   </PanelRow>
                   {req.store_item_id && (parseFloat(purchaseQty) || 0) > (Number(req.quantity) || 0) && (
-                    <div style={{ fontSize: 11.5, color: '#7C3AED', background: '#FAF5FF', border: '1px solid #E9D5FF', borderRadius: 8, padding: '6px 10px', marginBottom: 8 }}>
+                    <div style={{ fontSize: 11.5, color: '#0A1628', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 10px', marginBottom: 8 }}>
                       {t('maint.boughtInBulkPrefix', { defaultValue: 'Bought in bulk → {{n}} to the technician, ', n: req.quantity })}<strong>{t('maint.addedToStoreStock', { defaultValue: '{{n}} added to store stock', n: (parseFloat(purchaseQty) || 0) - (Number(req.quantity) || 0) })}</strong>{t('maint.onHandoverSuffix', ' on handover.')}
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => { setActingReqId(null); setBusyRef(''); setSupplierName(''); setPurchaseQty(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
-                    <button onClick={() => markPurchased(req)} disabled={!busyRef.trim()} style={{ ...primaryBtn('#7C3AED'), flex: 2, opacity: !busyRef.trim() ? 0.5 : 1 }}>{t('maint.markPurchased', 'Mark purchased')}</button>
+                    <button onClick={() => markPurchased(req)} disabled={!busyRef.trim()} style={{ ...primaryBtn('#0A1628'), flex: 2, opacity: !busyRef.trim() ? 0.5 : 1 }}>{t('maint.markPurchased', 'Mark purchased')}</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#7C3AED'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
+                <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#0A1628'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
               )) : <div style={awaitTxt}>{t('maint.unitHeadProcuring', 'Unit head procuring…')}</div>)}
 
               {s === 'purchase_manager' && <div style={awaitTxt}>{t('maint.procuredAwaitingBill', { defaultValue: 'Procured ({{ref}}) · awaiting purchase bill below…', ref: req.busy_transaction_ref || t('maint.refPending', 'ref pending') })}</div>}
@@ -2634,7 +2693,7 @@ export function Maintenance() {
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11.5, color: '#64748B', marginTop: 8, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '7px 10px' }}>
                   <span>{t('maint.requestedLabel', 'Requested')} <strong style={{ color: '#334155' }}>{requestedQty}</strong></span>
                   <span>· {t('maint.fromStoreLabel', 'From store')} <strong style={{ color: '#16A34A' }}>{issuedQty}</strong></span>
-                  <span>· {t('maint.procuredLabel', 'Procured')} <strong style={{ color: '#7C3AED' }}>{procuredQty}</strong></span>
+                  <span>· {t('maint.procuredLabel', 'Procured')} <strong style={{ color: '#0A1628' }}>{procuredQty}</strong></span>
                   <span>· {t('maint.deliveredLabel', 'Delivered')} <strong style={{ color: deliveredQty >= requestedQty ? '#16A34A' : '#D97706' }}>{deliveredQty}/{requestedQty}</strong></span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>{sorted.map(r => renderReq(r, true))}</div>
@@ -2721,8 +2780,8 @@ export function Maintenance() {
               })}
             </div>
 
-            {uploading && <UploadBar pct={uploadPct} color="#F47651" />}
-            <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading} style={{ ...primaryBtn('#F47651'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
+            {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
+            <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
           </div>
         ) : <div style={awaitTxt}>{t('maint.awaitingDefectiveReturn', 'Awaiting technician defective-part return…')}</div>)}
       </div>
@@ -2847,7 +2906,7 @@ export function Maintenance() {
                   <tr>
                     <Th sortKey="task" s={periodicSort}>{t('maint.colTask')}</Th><Th sortKey="equipment" s={periodicSort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={periodicSort}>{t('common.plant')}</Th><Th sortKey="frequency" s={periodicSort}>{t('maint.colFrequency')}</Th>
                     <Th sortKey="lastDone" s={periodicSort} firstDir="desc">{t('maint.colLastDone')}</Th><Th sortKey="due" s={periodicSort} firstDir="desc">{t('maint.colNextDue')}</Th><th>{t('maint.colStatus')}</th>
-                    {(isTechnician || isAdmin || isUnitHead) && <th>{t('maint.colAction')}</th>}
+                    {(canMarkPeriodicComplete || isUnitHead || isAdmin) && <th>{t('maint.colAction')}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -2862,7 +2921,7 @@ export function Maintenance() {
                     const days = daysFromNow(s.next_due_at);
                     const due = dueDateLabel(days, t);
                     let statusKey = 'maint.schedStatusOnTrack'; let statusBg = '#DCFCE7'; let statusColor = '#16A34A';
-                    if (awaitingVerify) { statusKey = ''; statusBg = '#EDE9FE'; statusColor = '#7C3AED'; }
+                    if (awaitingVerify) { statusKey = ''; statusBg = '#E2E8F0'; statusColor = '#0A1628'; }
                     else if (linkedTicket) { statusKey = 'maint.schedStatusTicketOpen'; statusBg = '#DBEAFE'; statusColor = '#2563EB'; }
                     else if (days !== null && days < 0) { statusKey = 'maint.schedStatusOverdue'; statusBg = '#FEE2E2'; statusColor = '#DC2626'; }
                     else if (days !== null && days <= 3) { statusKey = 'maint.schedStatusDueSoon'; statusBg = '#FEF3C7'; statusColor = '#D97706'; }
@@ -2875,13 +2934,13 @@ export function Maintenance() {
                         <td className="text-slate-500 text-xs">{s.last_completed_at ? formatDate(s.last_completed_at) : '—'}</td>
                         <td style={{ color: due.color, fontWeight: 600, fontSize: 12 }}>{due.text}</td>
                         <td><span className="badge" style={{ background: statusBg, color: statusColor }}>{awaitingVerify ? t('maint.awaitingVerification', 'Awaiting verification') : t(statusKey)}</span></td>
-                        {(isTechnician || isAdmin || isUnitHead) && (
+                        {(canMarkPeriodicComplete || isUnitHead || isAdmin) && (
                           <td>
                             {awaitingVerify ? (
                               (isUnitHead || isAdmin)
-                                ? <ButtonV2 size="sm" onClick={() => setVerifyingTicket(linkedTicket!)} className="bg-[#7C3AED] text-white border-none hover:bg-[#6D28D9]">{t('maint.verify', 'Verify')}</ButtonV2>
-                                : <span className="text-xs" style={{ color: '#7C3AED' }}>{t('maint.awaitingVerify', 'Awaiting verify')}</span>
-                            ) : (linkedTicket || (days !== null && days <= 0)) ? (
+                                ? <ButtonV2 size="sm" onClick={() => setVerifyingTicket(linkedTicket!)} className="bg-[#0A1628] text-white border-none hover:bg-[#152338]">{t('maint.verify', 'Verify')}</ButtonV2>
+                                : <span className="text-xs" style={{ color: '#0A1628' }}>{t('maint.awaitingVerify', 'Awaiting verify')}</span>
+                            ) : canMarkPeriodicComplete && (linkedTicket || (days !== null && days <= 0)) ? (
                               <ButtonV2 size="sm" variant="primary" onClick={() => setCompletingSchedule(s)}>
                                 {t('maint.markComplete')}
                               </ButtonV2>
@@ -2910,7 +2969,7 @@ export function Maintenance() {
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined} />
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
               label={t('maint.pendingStoreApproval')} value={pendingStore} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="purple"
+            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
               label={t('maint.purchaseHandover')} value={pendingPurchase} />
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.closedMtd')} value={closedMTD}
@@ -3119,7 +3178,7 @@ export function Maintenance() {
           </PanelSelect>
         </PanelField>
         <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
-        {uploading && <UploadBar pct={uploadPct} color="#F47651" />}
+        {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
         <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || raising} requiredHint={t('maint.raiseRequiredHint')} />
       </SlidePanel>
@@ -3156,7 +3215,7 @@ export function Maintenance() {
               </div>
             )}
             <PhotoUploader onBlobReady={setCompletionBlob} label={t('maint.uploadCompletionPhoto', 'Upload completion photo *')} hint={t('maint.uploadCompletionPhotoHint', 'Photo of the completed maintenance work as proof')} />
-            {uploading && <UploadBar pct={uploadPct} color="#F47651" />}
+            {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
             <PanelDivider />
             <PanelFooter saved={false} onCancel={() => { setCompletingSchedule(null); setCompletionBlob(null); }} onSave={handleCompletePeriodicTicket} saveLabel={uploading ? t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct }) : (ra ? t('maint.submitForVerification', 'Submit for verification') : t('maint.submitAndClose', 'Submit & close'))} successLabel={ra ? t('maint.sentForVerification', 'Sent for verification') : t('maint.ticketClosed', 'Ticket closed')} successSub={ra ? t('maint.unitHeadNotifiedToVerify', 'Unit head notified to verify') : t('maint.nextDueDateUpdated', 'Next due date updated')} disabled={!completionBlob || uploading} requiredHint={t('maint.uploadPhotoToConfirm', 'Upload a photo to confirm completion')} />
             </>
@@ -3169,7 +3228,7 @@ export function Maintenance() {
       <SlidePanel open={!!verifyingTicket} onClose={() => setVerifyingTicket(null)} title={t('maint.verifyMaintenance', 'Verify maintenance')} subtitle={verifyingTicket?.equipment || t('maint.periodicVerificationSub', 'Periodic · Verification')}>
         {verifyingTicket && (
           <>
-            <div style={{ background: '#F5F3FF', border: '1px solid #DDD6FE', borderRadius: 12, padding: 14, marginBottom: 16 }}>
+            <div style={{ background: '#F1F5F9', border: '1px solid #DDD6FE', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               <div style={{ fontWeight: 700, fontSize: 14 }}>{verifyingTicket.title}</div>
               <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{verifyingTicket.equipment} · {verifyingTicket.plants?.name || '—'} · {t('maint.completedBy', { defaultValue: 'completed by {{name}}', name: verifyingTicket.assigned_to || '—' })}</div>
             </div>
@@ -3306,7 +3365,7 @@ export function Maintenance() {
                 </PanelField>
                 <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                   <button onClick={() => setEditingTicket(false)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
-                  <button onClick={saveEdit} disabled={!editForm.equipment.trim()} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#F47651', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !editForm.equipment.trim() ? 0.5 : 1 }}>{t('maint.saveChanges', 'Save changes')}</button>
+                  <button onClick={saveEdit} disabled={!editForm.equipment.trim()} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !editForm.equipment.trim() ? 0.5 : 1 }}>{t('maint.saveChanges', 'Save changes')}</button>
                 </div>
               </div>
             ) : requestingChanges ? (
@@ -3358,7 +3417,7 @@ export function Maintenance() {
                 <PhotoUploader label={t('maint.replacePhotoOptional', 'Replace photo (optional)')} hint={t('maint.replacePhotoHint', 'Upload a clearer photo of the item')} onBlobReady={setResubmitPhotoBlob} />
                 <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                   <button onClick={() => { setResubmitting(false); setResubmitPhotoBlob(null); }} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
-                  <button onClick={submitResubmit} disabled={savingRevision || uploading || !resubmitForm.equipment.trim()} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#F47651', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: (savingRevision || uploading || !resubmitForm.equipment.trim()) ? 0.5 : 1 }}>{(savingRevision || uploading) ? t('maint.resubmittingEllipsis', 'Resubmitting…') : t('maint.resubmitForReview', 'Resubmit for review')}</button>
+                  <button onClick={submitResubmit} disabled={savingRevision || uploading || !resubmitForm.equipment.trim()} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: (savingRevision || uploading || !resubmitForm.equipment.trim()) ? 0.5 : 1 }}>{(savingRevision || uploading) ? t('maint.resubmittingEllipsis', 'Resubmitting…') : t('maint.resubmitForReview', 'Resubmit for review')}</button>
                 </div>
               </div>
             ) : selectedTicket.status === 'changes_requested' ? (
@@ -3367,10 +3426,10 @@ export function Maintenance() {
                 <div style={{ fontSize: 13, fontWeight: 800, color: '#DC2626', display: 'flex', alignItems: 'center', gap: 6 }}>{t('maint.changesRequestedTitle', '↩ Changes requested')}{selectedTicket.revision_count ? ` · ${t('maint.cycleN', { defaultValue: 'cycle {{n}}', n: selectedTicket.revision_count })}` : ''}</div>
                 {selectedTicket.revision_reason && <div style={{ fontSize: 12.5, color: '#7F1D1D', marginTop: 6, lineHeight: 1.5 }}>{selectedTicket.revision_reason}</div>}
                 <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 6 }}>{t('maint.requestedByName', { defaultValue: 'Requested by {{name}}', name: selectedTicket.revision_requested_by || '—' })}{selectedTicket.revision_requested_at ? ` · ${formatDate(selectedTicket.revision_requested_at)}` : ''}</div>
-                {(isTechnician || isAdmin) ? (
-                  <button onClick={() => startResubmit(selectedTicket)} style={{ marginTop: 12, width: '100%', padding: '10px', borderRadius: 12, border: 'none', background: '#F47651', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>{t('maint.reviseResubmitBtn', '✎ Revise & Resubmit')}</button>
+                {canResubmitChanges(selectedTicket) ? (
+                  <button onClick={() => startResubmit(selectedTicket)} style={{ marginTop: 12, width: '100%', padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit' }}>{t('maint.reviseResubmitBtn', '✎ Revise & Resubmit')}</button>
                 ) : (
-                  <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 10 }}>{t('maint.waitingForTechnicianResubmit', 'Waiting for the technician to correct & resubmit.')}</div>
+                  <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 10 }}>{t('maint.waitingForTechnicianResubmit', 'Waiting for the operator to correct & resubmit.')}</div>
                 )}
               </div>
             ) : (
@@ -3472,7 +3531,7 @@ export function Maintenance() {
                   onClick={() => setReportForm(f => ({ ...f, [key]: !f[key] }))}
                   style={{
                     flex: 1, padding: '10px', borderRadius: 12, cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit',
-                    border: `2px solid ${on ? '#F47651' : '#E2E8F0'}`, background: on ? '#FFF7F5' : '#F8FAFC', color: on ? '#F47651' : '#64748B',
+                    border: `2px solid ${on ? '#EF6C00' : '#E2E8F0'}`, background: on ? '#FFF7F5' : '#F8FAFC', color: on ? '#EF6C00' : '#64748B',
                   }}
                 >
                   {on ? '✓ ' : ''}{label}
@@ -3512,7 +3571,7 @@ export function Maintenance() {
           <button type="button" onClick={() => setShowReport(false)} style={{ flex: 1, padding: '11px 0', borderRadius: 24, border: '1px solid #E2E8F0', background: '#F8FAFC', fontSize: 13, fontWeight: 600, color: '#475569', cursor: 'pointer', fontFamily: 'inherit' }}>
             {t('common.cancel', 'Cancel')}
           </button>
-          <button type="button" onClick={generateReport} disabled={generating || reportTickets().length === 0} style={{ flex: 2, padding: '11px 0', borderRadius: 24, border: 'none', background: (generating || reportTickets().length === 0) ? '#CBD5E1' : '#F47651', fontSize: 13, fontWeight: 700, color: '#fff', cursor: (generating || reportTickets().length === 0) ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
+          <button type="button" onClick={generateReport} disabled={generating || reportTickets().length === 0} style={{ flex: 2, padding: '11px 0', borderRadius: 24, border: 'none', background: (generating || reportTickets().length === 0) ? '#CBD5E1' : '#EF6C00', fontSize: 13, fontWeight: 700, color: '#fff', cursor: (generating || reportTickets().length === 0) ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}>
             {generating ? t('maint.generatingEllipsis', 'Generating…') : t('maint.generateCsvReport', 'Generate CSV report')}
           </button>
         </div>

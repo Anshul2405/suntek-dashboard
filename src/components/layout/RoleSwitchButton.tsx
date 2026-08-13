@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { ProfileAvatar } from './ProfileSwitcher';
 import type { MockProfile } from '../../lib/profiles';
+import { IconSwap, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
 
 // Access badge for the role list
 function AccessBadge({ profile }: { profile: MockProfile }) {
@@ -52,14 +53,9 @@ export function RoleSwitchButton() {
       <button
         title={t('topbar.switchPreviewRole', 'Switch / preview role')}
         onClick={() => setOpen((o) => !o)}
-        className={`w-9 h-9 max-[390px]:w-8 max-[390px]:h-8 md:w-10 md:h-10 shrink-0 rounded-[10px] border flex items-center justify-center transition-colors ${
-          open ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600'
-        }`}
+        className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}`}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m17 3 4 4-4 4" /><path d="M21 7H9" />
-          <path d="m7 21-4-4 4-4" /><path d="M3 17h12" />
-        </svg>
+        <IconSwap />
       </button>
 
       {open && (

@@ -7,6 +7,7 @@ import { useAnomalies } from '../../contexts/AnomalyContext';
 import { useTodo } from '../../contexts/TodoContext';
 import { useSearchPalette } from '../../contexts/SearchPaletteContext';
 import { profileCanAccess } from '../../lib/profiles';
+import { SuntekLogo } from '../brand/SuntekLogo';
 
 interface SidebarProps {
   user: AuthUser | null;
@@ -42,6 +43,10 @@ const FACTORY_ITEMS: NavItem[] = [
   { key: 'nav.storeReq',       path: '/dashboard/purchase/storereq' },
   { key: 'nav.purchaseOrders', path: '/dashboard/purchase/purchase' },
   { key: 'nav.batchSheet',     path: '/dashboard/batches'           },
+  // Entry tools (Log Reading / OCR / create). Technical has its own Batch entry
+  // branch; Admin / Unit Head need these under Factory too or the page is orphaned.
+  { key: 'nav.batchLogger',    path: '/dashboard/batch-entry', nav: '/dashboard/batch-entry?tab=reading' },
+  { key: 'nav.readingHistory', path: '/dashboard/batch-entry', nav: '/dashboard/batch-entry?tab=history' },
   { key: 'nav.nightManager',   path: '/dashboard/night-manager'     },
 ];
 
@@ -248,15 +253,30 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   const [adminOpen, setAdminOpen] = useState(true);
 
   // Technical Team (factory_operator) navigates via 3 dropdowns: Batch / Operations / Logs.
-  const isOperator = activeProfile.id === 'factory_operator';
+  // Also match provisioned users whose base role is factory_operator (id is db_<uuid>).
+  const isOperator =
+    activeProfile.id === 'factory_operator' || activeProfile.baseRoleId === 'factory_operator';
   const [batchOpen, setBatchOpen] = useState(true);
   const [opsOpen, setOpsOpen] = useState(
     location.pathname === '/dashboard/batches' || location.pathname === '/dashboard/stock'
   );
-  const [logsOpen, setLogsOpen] = useState(location.pathname === '/dashboard/daily-log');
+  const [logsOpen, setLogsOpen] = useState(
+    location.pathname === '/dashboard/daily-log' ||
+    (location.pathname === '/dashboard/batch-entry' &&
+      new URLSearchParams(location.search).get('tab') === 'history')
+  );
+  const [plantOpen, setPlantOpen] = useState(
+    location.pathname.startsWith('/dashboard/purchase/maint') ||
+    location.pathname.startsWith('/dashboard/purchase/storereq')
+  );
 
   /** True if the active profile can access this exact route (or its children). */
   const canSee = (route: string) => profileCanAccess(activeProfile, route);
+
+  // Extra plant links Technical may hold beyond the default Batch tools (e.g. Maintenance).
+  const showOperatorMaint = isOperator && canSee('/dashboard/purchase/maint');
+  const showOperatorStoreReq = isOperator && canSee('/dashboard/purchase/storereq');
+  const showOperatorPlant = showOperatorMaint || showOperatorStoreReq;
 
   // ── Section visibility ──────────────────────────────────────────────────────
   //
@@ -278,8 +298,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   const factoryVisible = (it: NavItem) => it.children ? it.children.some((c) => canSee(c.path)) : canSee(it.path);
   const visibleFactoryItems    = FACTORY_ITEMS.filter(factoryVisible);
   const visibleOperationsItems = OPERATIONS_ITEMS.filter((it) => canSee(it.path));
-  const showFactory    = visibleFactoryItems.length > 0;
-  const showOperations = visibleOperationsItems.length > 0;
+  // Technical Team uses its own Batch / Operations / Logs branch — hide the
+  // admin-style Factory + Operations accordions so Batch Sheet isn't listed twice
+  // and "Batch" isn't confused with Factory → Batch Sheet.
+  const showFactory    = !isOperator && visibleFactoryItems.length > 0;
+  const showOperations = !isOperator && visibleOperationsItems.length > 0;
 
   // L1 entry views — shown ONLY for the specific role that owns the task, as flat
   // items. Admin/Unit Head monitor via the Factory boards, not entry terminals.
@@ -336,12 +359,18 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
 
   // Child highlight. For the route shared by Factory→Purchase Order and
   // Operations→Purchase, only the entry the user opened (tracked by ?ctx=ops)
-  // lights up — never both.
+  // lights up — never both. Same idea for Batch Logger vs Reading History (?tab=).
   const itemActive = (it: NavItem) => {
     if (it.path === SHARED_PO_ROUTE) {
       if (!onSharedPO) return false;
       const isOpsEntry = it.nav?.includes('ctx=ops') ?? false;
       return isOpsEntry ? viaOps : !viaOps;
+    }
+    if (it.path === '/dashboard/batch-entry' && it.nav?.includes('tab=')) {
+      if (location.pathname !== '/dashboard/batch-entry') return false;
+      const want = new URLSearchParams(it.nav.split('?')[1] ?? '').get('tab') || 'reading';
+      const have = new URLSearchParams(location.search).get('tab') || 'reading';
+      return want === have;
     }
     return isActive(it.path);
   };
@@ -375,25 +404,23 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       }}
     >
       {/* Logo */}
-      <div className="flex items-center gap-3 mb-7 shrink-0">
-        <div className="w-11 h-11 rounded-2xl bg-[#F47651] text-white flex items-center justify-center font-extrabold text-lg shadow-sm shrink-0">
-          S°
-        </div>
-        <div className="sb-hide">
-          <div className="font-extrabold text-[15px] leading-tight text-white">Suntek Group</div>
-          <div className="text-slate-400 text-[11px]">CaratSense • v2.0</div>
+      <div className="flex items-center gap-3 mb-6 shrink-0">
+        <SuntekLogo size={40} />
+        <div className="sb-hide min-w-0">
+          <div className="font-heading font-semibold text-[16px] leading-tight text-white tracking-tight">Suntek</div>
+          <div className="text-slate-400 text-[11px] tracking-wide">Plant ERP</div>
         </div>
       </div>
 
-      {/* Quick Search */}
+      {/* Quick Search — quiet, not orange hero */}
       <button
-        className="btn-accent rounded-[10px] px-4 py-2.5 font-semibold text-[13px] flex items-center gap-2 mb-2 w-full justify-center shrink-0"
+        className="rounded-lg px-3 py-2 text-[13px] font-medium flex items-center gap-2 mb-3 w-full shrink-0 border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white cursor-pointer"
         title={`${t('nav.quickSearch')} (⌘K)`}
         onClick={() => { openPalette(); onClose?.(); }}
       >
         <IconSearch />
-        <span className="sb-hide">{t('nav.quickSearch')}</span>
-        <kbd className="sb-hide bg-white/15 border-white/15 text-white">⌘ K</kbd>
+        <span className="sb-hide flex-1 text-left">{t('nav.quickSearch')}</span>
+        <kbd className="sb-hide text-[10px] text-slate-400 bg-transparent border border-white/10 rounded px-1.5 py-0.5">⌘K</kbd>
       </button>
 
       {/* ── WORKSPACE ─────────────────────────────────────────────────────── */}
@@ -534,9 +561,9 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       {isOperator && (
       <nav className="flex flex-col gap-1">
 
-        {/* Batch dropdown */}
+        {/* Batch entry tools (log / create / OCR) — distinct from Batch Sheet register */}
         <a
-          className={`nav-link${location.pathname === '/dashboard/batch-entry' ? ' active' : ''}`}
+          className={`nav-link${location.pathname === '/dashboard/batch-entry' && currentTab !== 'history' ? ' active' : ''}`}
           onClick={() => { setBatchOpen((o) => !o); if (!batchOpen) navTo('/dashboard/batch-entry?tab=reading'); }}
         >
           <IconBatch />
@@ -546,12 +573,13 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
         {batchOpen && (
           <div className="nav-sub">
             <a className={`nav-link${isBatchTab('reading') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=reading')}>{t('nav.logReading')}</a>
+            <a className={`nav-link${isBatchTab('create-sheet') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=create-sheet')}>{t('nav.createBatchSheet', 'Create Batch Sheet')}</a>
             <a className={`nav-link${isBatchTab('new-batch') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=new-batch')}>{t('nav.newBatch')}</a>
             <a className={`nav-link${isBatchTab('upload') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=upload')}>{t('nav.uploadBatchSheet')}</a>
           </div>
         )}
 
-        {/* Operations dropdown */}
+        {/* Operations — live register views (Batch Sheet list, CP/Stock) */}
         <a
           className={`nav-link${(isActive('/dashboard/batches') || isActive('/dashboard/stock')) ? ' active' : ''}`}
           onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/batches'); }}
@@ -563,14 +591,48 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
         {opsOpen && (
           <div className="nav-sub">
             <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.batchSheet')}</a>
-            <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
+            {canSee('/dashboard/stock') && (
+              <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
+            )}
           </div>
         )}
 
-        {/* Logs dropdown */}
+        {/* Plant — only when Technical was also granted Maintenance / Store Req */}
+        {showOperatorPlant && (
+          <>
+            <a
+              className={`nav-link${(isActive('/dashboard/purchase/maint') || isActive('/dashboard/purchase/storereq')) ? ' active' : ''}`}
+              onClick={() => {
+                setPlantOpen((o) => !o);
+                if (!plantOpen) navTo(showOperatorMaint ? '/dashboard/purchase/maint' : '/dashboard/purchase/storereq');
+              }}
+            >
+              <IconBox />
+              <span>{t('nav.factory')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: plantOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {plantOpen && (
+              <div className="nav-sub">
+                {showOperatorMaint && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/maint') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/maint')}>{t('nav.maintenance')}</a>
+                )}
+                {showOperatorStoreReq && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/storereq') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/storereq')}>{t('nav.storeReq')}</a>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Logs */}
         <a
           className={`nav-link${(isActive('/dashboard/daily-log') || isBatchTab('history')) ? ' active' : ''}`}
-          onClick={() => { setLogsOpen((o) => !o); if (!logsOpen) navTo('/dashboard/daily-log'); }}
+          onClick={() => {
+            setLogsOpen((o) => !o);
+            if (!logsOpen) {
+              navTo(canSee('/dashboard/daily-log') ? '/dashboard/daily-log' : '/dashboard/batch-entry?tab=history');
+            }
+          }}
         >
           <IconClipboard />
           <span>{t('nav.logs')}</span>
@@ -578,7 +640,9 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
         </a>
         {logsOpen && (
           <div className="nav-sub">
-            <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>{t('nav.dailyUnitLog')}</a>
+            {canSee('/dashboard/daily-log') && (
+              <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>{t('nav.dailyUnitLog')}</a>
+            )}
             <a className={`nav-link${isBatchTab('history') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=history')}>{t('nav.readingHistory')}</a>
           </div>
         )}
@@ -609,7 +673,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
           >
             <IconMoon />
             <span>{t('nav.nightCheckin')}</span>
-            <span className="pill-count" style={{ background: '#EEF2FF', color: '#4F46E5' }}>{t('nav.pillEntry', 'entry')}</span>
+            <span className="pill-count" style={{ background: 'rgba(255,255,255,0.08)', color: '#94A3B8' }}>{t('nav.pillEntry', 'entry')}</span>
           </a>
         )}
 
@@ -638,13 +702,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showDailyLog && (
               <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>
                 <span>{t('nav.dailyUnitLog')}</span>
-                <span className="pill-count" style={{ background: '#FFFBEB', color: '#D97706' }}>OCR</span>
               </a>
             )}
             {showOilRatio && (
               <a className={`nav-link${isActive('/dashboard/oil-ratio') ? ' active' : ''}`} onClick={() => navTo('/dashboard/oil-ratio')}>
                 <span>{t('nav.oilRatioTable')}</span>
-                <span className="pill-count" style={{ background: '#FEF3C7', color: '#B45309' }}>{t('nav.pillBrain', 'brain')}</span>
               </a>
             )}
             {showAudit && (
@@ -753,19 +815,16 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showAdmin && (
               <a className={`nav-link${isActive('/dashboard/users') ? ' active' : ''}`} onClick={() => navTo('/dashboard/users')}>
                 <span>{t('nav.userManagement')}</span>
-                <span className="pill-count" style={{ background: '#FEF3C7', color: '#B45309' }}>{t('nav.pillAdmin', 'admin')}</span>
               </a>
             )}
             {showBlacklist && (
               <a className={`nav-link${isActive('/dashboard/blacklist') ? ' active' : ''}`} onClick={() => navTo('/dashboard/blacklist')}>
                 <span>{t('nav.blacklist')}</span>
-                <span className="pill-count" style={{ background: '#FEF2F2', color: '#DC2626' }}>{t('nav.pillRestrict', 'restrict')}</span>
               </a>
             )}
             {showUploads && (
               <a className={`nav-link${isActive('/dashboard/admin/uploads') ? ' active' : ''}`} onClick={() => navTo('/dashboard/admin/uploads')}>
                 <span>{t('nav.uploadHistory', 'Upload History')}</span>
-                <span className="pill-count" style={{ background: '#FEF2F2', color: '#DC2626' }}>{t('nav.pillDelete', 'delete')}</span>
               </a>
             )}
           </div>
@@ -774,17 +833,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       )}
 
       {/* ── User card — shows active profile, not real auth user ──────────── */}
-      <div className="sb-hide mt-6 p-3 rounded-xl bg-white/5">
+      <div className="sb-hide mt-6 p-2.5 rounded-lg border border-white/8 bg-white/[0.04]">
         <div className="flex items-center gap-2.5">
           <div
-            className={[
-              'w-9 h-9 rounded-full flex-shrink-0',
-              'bg-gradient-to-br',
-              activeProfile.avatarFrom,
-              activeProfile.avatarTo,
-              'flex items-center justify-center',
-              'text-white font-bold text-xs',
-            ].join(' ')}
+            className="w-9 h-9 rounded-lg flex-shrink-0 bg-[#EF6C00] flex items-center justify-center text-white font-bold text-xs"
           >
             {activeProfile.initials}
           </div>
@@ -794,7 +846,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             </div>
             <div className="text-[11px] text-slate-400">{activeProfile.roleLabel}</div>
             {activeProfile.plant && (
-              <div className="text-[10px] text-slate-500">📍 {activeProfile.plant}</div>
+              <div className="text-[10px] text-slate-500 truncate">{activeProfile.plant}</div>
             )}
             {activeProfile.accessNote && (
               <div className="text-[9px] text-slate-500 truncate mt-0.5" title={activeProfile.accessNote}>

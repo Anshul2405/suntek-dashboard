@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { updateRows } from '../../lib/db';
 import { applyLanguage, AVAILABLE_LANGUAGES } from '../../i18n';
 import { dropdownStyle } from '../../lib/uiPosition';
+import { IconGlobe, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
 
 /**
  * Globe dropdown in the top bar — change the UI language on the fly. The choice
@@ -58,13 +59,9 @@ export function LanguageSwitcher() {
         onClick={() => setOpen((v) => !v)}
         title={t('topbar.language')}
         aria-label={t('topbar.language')}
-        className={`w-9 h-9 max-[390px]:w-8 max-[390px]:h-8 md:w-10 md:h-10 shrink-0 rounded-[10px] border flex items-center justify-center ${open ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
+        className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}`}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="2" y1="12" x2="22" y2="12" />
-          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-        </svg>
+        <IconGlobe />
       </button>
 
       {open && (

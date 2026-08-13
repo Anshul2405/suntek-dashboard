@@ -34,7 +34,8 @@ export function BatchSheetUpload({ channel = 'batch', reviewing, onReset, docLab
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const reset = useCallback(() => { ocr.reset(channel); onReset?.(); }, [ocr, channel, onReset]);
-  const handleFile = useCallback((file: File) => { ocr.select(channel, file); }, [ocr, channel]);
+  // 1200px keeps Edge OCR under memory limits (90B path OOMs on large sheets).
+  const handleFile = useCallback((file: File) => { ocr.select(channel, file, 1200); }, [ocr, channel]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

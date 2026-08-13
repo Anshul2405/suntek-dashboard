@@ -9,17 +9,17 @@ const TONES: Record<PillTone, string> = {
   orange: 'bg-orange-50 text-orange-600',
   red:    'bg-red-50 text-red-700',
   blue:   'bg-blue-50 text-blue-700',
-  purple: 'bg-purple-50 text-purple-700',
+  purple: 'bg-slate-100 text-slate-700',
   slate:  'bg-slate-100 text-slate-600',
 };
 
 const DOTS: Record<PillTone, string> = {
-  green:  'bg-green-500',
+  green:  'bg-teal-600',
   amber:  'bg-amber-500',
   orange: 'bg-orange-500',
   red:    'bg-red-500',
   blue:   'bg-blue-500',
-  purple: 'bg-purple-500',
+  purple: 'bg-slate-500',
   slate:  'bg-slate-400',
 };
 

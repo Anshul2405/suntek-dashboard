@@ -78,7 +78,7 @@ insert into roles (id, label, level, description, home_route, allowed_routes, st
     array['/dashboard/purchase/maint','/dashboard/purchase/storereq'],
     false, false, false, 'from-teal-400', 'to-teal-600', 62),
 
-  ('technician_shd', 'Technician', 'L1', 'Maintenance tickets · repairs · photo proof',
+  ('technician_shd', 'Operator', 'L1', 'Maintenance tickets · repairs · photo proof',
     '/dashboard/purchase/maint',
     array['/dashboard/purchase/maint'],
     false, false, false, 'from-cyan-400', 'to-cyan-600', 70),

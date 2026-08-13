@@ -12,17 +12,17 @@ const ICON_TONES: Record<StatTone, string> = {
   orange:  'bg-orange-50 text-orange-500',
   green:   'bg-green-50 text-green-600',
   blue:    'bg-blue-50 text-blue-600',
-  purple:  'bg-purple-50 text-purple-600',
+  purple:  'bg-slate-100 text-slate-600',
 };
 
 const VALUE_TONES: Record<StatTone, string> = {
   default: 'text-slate-900',
-  amber:   'text-amber-600',
+  amber:   'text-amber-700',
   red:     'text-red-600',
   orange:  'text-orange-600',
-  green:   'text-green-600',
-  blue:    'text-blue-600',
-  purple:  'text-purple-600',
+  green:   'text-teal-700',
+  blue:    'text-blue-700',
+  purple:  'text-slate-700',
 };
 
 /**
@@ -78,7 +78,7 @@ export function StatCard({
         <button
           type="button"
           onClick={onView}
-          className="text-blue-600 text-xs font-medium mt-2.5 hover:underline flex items-center gap-1"
+          className="text-[#D84315] text-xs font-semibold mt-2.5 hover:underline flex items-center gap-1 cursor-pointer"
         >
           {viewLabel ?? t('common.view', 'View')} →
         </button>

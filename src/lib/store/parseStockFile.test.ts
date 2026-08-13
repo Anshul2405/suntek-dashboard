@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import * as XLSX from 'xlsx';
 import {
-  resolveClosing, reconcile, reconcileAll, labelForPeriod,
+  resolveClosing, reconcile, reconcileAll, labelForPeriod, parseStockFile,
   type MonthParse, type MonthItem,
 } from './parseStockFile';
 
@@ -330,5 +331,46 @@ describe('provenance — every anomaly says where its numbers came from', () => 
         expect(d.anomaly.prevPeriod).not.toBe(d.anomaly.currPeriod);
       }
     }
+  });
+});
+
+/** Drum Plant spare-parts workbook: Sales_Aug26 + SPARE/SPECIFICATION columns. */
+function drumPlantWorkbookFile(): File {
+  const wb = XLSX.utils.book_new();
+  const sales = [
+    ['S.NO', 'SPARE', 'SPECIFICATION', 'Op Stock', 1, 2, 3, 'Closing STOCKS'],
+    [1, 'MCCB', '100 AMP', 1, null, null, null, 1],
+    [2, 'MCB', '63 AMP', 4, 1, null, null, 3],
+  ];
+  const purchase = [
+    ['S.NO', 'SPARE', 'SPECIFICATION', 'Opening Stock', 1, 2, 3, 'Closing STOCKS'],
+    [1, 'MCCB', '100 AMP', 0, 1, null, null, 1],
+    [2, 'MCB', '63 AMP', 4, null, null, null, 4],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sales), 'Sales_Aug26');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(purchase), 'Purchase_Aug26');
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  return new File([buf], 'SPARE PARS STOCK DRUM PLANT.xlsx', {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+}
+
+describe('parseStockFile — Drum Plant SPARE layout', () => {
+  it('accepts Sales_Aug26 sheets and SPARE + SPECIFICATION columns', async () => {
+    const res = await parseStockFile(drumPlantWorkbookFile());
+    expect(res.months).toHaveLength(1);
+    expect(res.latest?.periodKey).toBe('2026-08');
+    expect(res.latest?.items.map(i => i.itemName).sort()).toEqual([
+      'MCCB 100 AMP',
+      'MCB 63 AMP',
+    ].sort());
+    const mcb = res.latest!.items.find(i => i.itemName === 'MCB 63 AMP')!;
+    expect(mcb.opening).toBe(4);
+    expect(mcb.used).toBe(1);
+    expect(mcb.closing).toBe(3);
+    expect(mcb.purchased).toBe(0);
+    const mccb = res.latest!.items.find(i => i.itemName === 'MCCB 100 AMP')!;
+    expect(mccb.purchased).toBe(1);
+    expect(mccb.opening).toBe(1);
   });
 });

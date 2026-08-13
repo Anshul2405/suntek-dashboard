@@ -893,6 +893,15 @@ export function StockRegister() {
                     {storeOptions.length === 0 && <option value="">{t('storereq.stockNoStoreOpt', '(no store)')}</option>}
                     {storeOptions.map(st => <option key={st.id} value={st.id}>{st.name}</option>)}
                   </select>
+                  {storeOptions.length === 0 ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, padding: '8px 10px' }}>
+                      {t('storereq.stockNoStoresConfigured', 'No stores configured yet. Refresh after admin seeds Rehla / Ganjam / Sikandrabad / Drum stores.')}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6, fontSize: 11, color: '#94A3B8' }}>
+                      {t('storereq.stockStoreHint', 'Jharkhand workbook → Rehla Common Store. Ganjam, Sikandrabad and Drum Plant each have their own register.')}
+                    </div>
+                  )}
                 </div>
                 {importAnoms.length > 0 && (
                   <div style={{ fontSize: 12, color: '#B45309', background: '#FFFBEB', border: '1px solid #FED7AA', borderRadius: 8, padding: 10, marginBottom: 12 }}>

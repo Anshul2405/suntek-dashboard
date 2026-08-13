@@ -688,10 +688,22 @@ export interface Database {
           total_drums: number | null;
           paraffin_weight: number | null;
           hcl_quantity: number | null;
+          opening_balance: number | null;
+          closing_balance: number | null;
+          oil_con_ratio_g_per_kg: number | null;
+          net_cp_kg: number | null;
+          sheet_details: Record<string, unknown>;
+          sheet_image_url: string | null;
+          helper_name: string | null;
+          operator_name: string | null;
+          technical_name: string | null;
+          type_of_oil: string | null;
+          total_batch_time: string | null;
         };
         // started_at has a DB default; treat as optional on insert.
-        Insert: OptionalNulls<Omit<Database['public']['Tables']['active_batches']['Row'], 'id' | 'started_at'>> & {
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['active_batches']['Row'], 'id' | 'started_at' | 'sheet_details'>> & {
           started_at?: string;
+          sheet_details?: Record<string, unknown>;
         };
         Update: Partial<Database['public']['Tables']['active_batches']['Insert']>;
       };
@@ -713,6 +725,56 @@ export interface Database {
           timestamp?: string;
         };
         Update: Partial<Database['public']['Tables']['batch_readings']['Insert']>;
+      };
+
+      // Meeting-spec production batch sheets (migration 0009 / query 81).
+      reactors: {
+        Row: {
+          id: string;
+          plant_id: string;
+          code: string;
+          name: string;
+          sort_order: number;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['reactors']['Row'], 'id' | 'created_at' | 'is_active' | 'sort_order'>> & {
+          sort_order?: number;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['reactors']['Insert']>;
+      };
+
+      production_batch_sheets: {
+        Row: {
+          id: string;
+          batch_no: string;
+          reactor_id: string;
+          reactor_seq: number;
+          plant_id: string;
+          density: number;
+          sheet_photo_urls: string[];
+          bucket_photo_urls: string[];
+          heat_sample_photo_urls: string[];
+          colour_note: string | null;
+          stage: 'created' | 'in_stock' | 'dispatched';
+          notes: string | null;
+          created_by: string | null;
+          created_by_name: string | null;
+          active_batch_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['production_batch_sheets']['Row'], 'id' | 'created_at' | 'updated_at' | 'stage' | 'sheet_photo_urls' | 'bucket_photo_urls' | 'heat_sample_photo_urls'>> & {
+          stage?: 'created' | 'in_stock' | 'dispatched';
+          sheet_photo_urls?: string[];
+          bucket_photo_urls?: string[];
+          heat_sample_photo_urls?: string[];
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['production_batch_sheets']['Insert']>;
       };
 
       // Per-device (IP) operator draft cache (BatchLogger). See migration 0004.

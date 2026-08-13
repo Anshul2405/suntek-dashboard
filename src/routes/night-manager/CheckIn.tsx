@@ -378,7 +378,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
   return (
     <div
       className={embedded ? 'pb-6' : 'min-h-screen pb-20'}
-      style={embedded ? {} : { background: '#f8fafc', fontFamily: 'Inter, sans-serif' }}
+      style={embedded ? {} : { background: '#f8fafc', fontFamily: 'inherit' }}
     >
       {/* Standalone header */}
       {!embedded && (

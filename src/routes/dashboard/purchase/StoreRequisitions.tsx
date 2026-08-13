@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
-import { insertRows } from '../../../lib/db';
+import { insertRows, updateRows } from '../../../lib/db';
 import { useMentionNotifier } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
@@ -17,6 +17,7 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../../contexts/RoleContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { RepairScrapPanel } from './RepairScrapPanel';
@@ -76,6 +77,12 @@ export function StoreRequisitions() {
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
   const { scopeQuery, allowedPlants } = usePlantScope();
+  const { activeProfile } = useRoleContext();
+  const canDecideReq =
+    activeProfile.id === 'admin' ||
+    activeProfile.id === 'unit_head' ||
+    activeProfile.id === 'management' ||
+    (activeProfile.capabilities || []).includes('manage_users');
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [items, setItems] = useState<ReqRow[]>([]);
@@ -86,6 +93,7 @@ export function StoreRequisitions() {
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
+  const [deciding, setDeciding] = useState(false);
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
@@ -187,6 +195,45 @@ export function StoreRequisitions() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
+  async function decideReq(row: ReqRow, status: 'approved' | 'rejected' | 'dispatched') {
+    if (!canDecideReq) {
+      toast.error(t('storereq.decide_forbidden', 'Only Unit Head / Admin can decide this request.'));
+      return;
+    }
+    setDeciding(true);
+    try {
+      const { error } = await updateRows('store_requisitions', { status }).eq('id', row.id);
+      if (error) {
+        toast.error(t('storereq.decide_failed', { message: error.message, defaultValue: 'Update failed: {{message}}' }));
+        return;
+      }
+      setItems(prev => prev.map(r => r.id === row.id ? { ...r, status } : r));
+      setDetailReq(prev => prev && prev.id === row.id ? { ...prev, status } : prev);
+      toast.success(
+        status === 'approved' ? t('storereq.approved_ok', 'Request approved') :
+        status === 'rejected' ? t('storereq.rejected_ok', 'Request rejected') :
+        t('storereq.dispatched_ok', 'Marked dispatched'),
+      );
+      insertRows('notifications', {
+        target_roles: ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
+        title: t('storereq.decide_notif_title', {
+          defaultValue: 'Store req {{status}}: {{item}}',
+          status,
+          item: row.item,
+        }),
+        body: `#${row.id.slice(0, 8)} · ${row.plants?.name ?? ''}`,
+        type: status === 'rejected' ? 'urgent' : 'info',
+        route: '/dashboard/purchase/storereq',
+        actor_name: activeProfile.name || '',
+        actor_role: activeProfile.id,
+        read_by: [],
+        plant_id: row.plant_id || null,
+      }).then(() => {}, () => {});
+    } finally {
+      setDeciding(false);
+    }
+  }
+
   // Summary tiles for the Requirements tab (computed from the loaded rows).
   const pendingCount   = items.filter(r => r.status === 'pending').length;
   const readyCount     = items.filter(r => ['approved', 'dispatched'].includes(r.status)).length;
@@ -232,7 +279,7 @@ export function StoreRequisitions() {
 
       {/* Requirements table */}
       <div className="relative">
-        <KpiInfoButton info={{ title: 'Open Store Requirements', what: 'All active store requisitions raised by plant/store keepers across SHD, Rehla, Ganjam, and HQ. Each row shows the approval stage, decision, and photo proof status. New requests are submitted via the "+ Raise request" button.', source: 'Mock data', formLabel: 'Raise request form', formPath: '/dashboard/purchase/storereq', note: 'Currently uses STORE_REQ mock data. Future: Supabase store_reqs table.' }} />
+        <KpiInfoButton info={{ title: 'Open Store Requirements', what: 'All active store requisitions raised by plant/store keepers. Each row shows approval stage and photo proof. Raise via "+ Raise request"; Unit Head / Admin can approve, reject, or mark dispatched.', source: 'Supabase', formLabel: 'Raise request form', formPath: '/dashboard/purchase/storereq', note: 'Live table store_requisitions. Maintenance part indents still flow via maintenance_store_requests on the Maintenance screen.' }} />
       <SectionCard
         flush
         title={t('storereq.open_req_title')}
@@ -410,6 +457,23 @@ export function StoreRequisitions() {
                 >
                   <img src={detailReq.photo_url} alt={detailReq.item} style={{ width: '100%', maxHeight: 220, objectFit: 'cover', display: 'block' }} />
                 </button>
+              )}
+              {canDecideReq && detailReq.status === 'pending' && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
+                    {t('storereq.approve_btn', 'Approve')}
+                  </ButtonV2>
+                  <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
+                    {t('storereq.reject_btn', 'Reject')}
+                  </ButtonV2>
+                </div>
+              )}
+              {canDecideReq && detailReq.status === 'approved' && (
+                <div style={{ marginTop: 16 }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'dispatched')}>
+                    {t('storereq.dispatch_btn', 'Mark dispatched')}
+                  </ButtonV2>
+                </div>
               )}
             </div>
           );

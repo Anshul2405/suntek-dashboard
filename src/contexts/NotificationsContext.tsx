@@ -3,6 +3,9 @@ import { supabase } from '../lib/supabase';
 import { insertRows, updateRows } from '../lib/db';
 import { useRoleContext } from './RoleContext';
 import { usePlantScope } from './PlantScopeContext';
+import { ticketIdFromRoute, resolvedTicketIdsFromLookup } from '../lib/notifications/ticketResolution';
+
+export { ticketIdFromRoute, resolvedTicketIdsFromLookup } from '../lib/notifications/ticketResolution';
 
 export interface AppNotification {
   id: string;
@@ -46,15 +49,15 @@ interface NotificationsContextValue {
   addNotification: (n: Omit<AppNotification, 'id' | 'created_at' | 'read_by'>) => Promise<boolean>;
   tableReady: boolean;
   /**
-   * True when this notification belongs to a workflow that has already finished
-   * (its ticket is closed). Computed DYNAMICALLY from live ticket state — the
-   * stored row is never modified — so the UI can show completed steps in a muted
-   * "done" style while preserving the full audit trail.
+   * True when this notification belongs to a workflow that is no longer
+   * actionable: its ticket is closed, OR the ticket was deleted. Computed
+   * DYNAMICALLY from live ticket state — the stored notification row is never
+   * modified — so the UI can mute finished steps while preserving the audit trail.
    */
   isNotificationCompleted: (n: AppNotification) => boolean;
   /**
    * True when the notification cannot be acted on from a work queue: its
-   * workflow is already closed, OR it is a dead maintenance link (points at the
+   * workflow is closed/deleted, OR it is a dead maintenance link (points at the
    * maintenance module with no `?ticket=` id, so it opens the default tab and
    * can never be resolved). To-Do uses THIS; the bell keeps showing the row as
    * history and only badges genuinely-completed ones.
@@ -73,16 +76,6 @@ const NotificationsContext = createContext<NotificationsContextValue>({
   isNotificationCompleted: () => false,
   isNotificationStale: () => false,
 });
-
-/** A maintenance notification deep-links to its ticket via `?ticket=<id>`; pull
- *  that id out so we can look up whether the workflow has completed. */
-function ticketIdFromRoute(route: string | null | undefined): string | null {
-  if (!route) return null;
-  const q = route.indexOf('?');
-  if (q === -1) return null;
-  try { return new URLSearchParams(route.slice(q + 1)).get('ticket'); }
-  catch { return null; }
-}
 
 /** The maintenance module's base path — notifications about a ticket point here. */
 const MAINT_ROUTE_PREFIX = '/dashboard/purchase/maint';
@@ -144,11 +137,13 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [tableReady, setTableReady] = useState(false);
-  // Ticket ids (from notification routes) whose workflow has completed (ticket
-  // closed). Derived from live DB state, never persisted onto the notifications.
-  const [completedTicketIds, setCompletedTicketIds] = useState<Set<string>>(new Set());
-  // Bumped when a ticket row changes (realtime) so the closed-lookup re-runs even
-  // when no new notification arrives — e.g. another user closes a ticket.
+  // Ticket ids (from notification routes) whose workflow is done: closed in DB,
+  // OR gone entirely (admin deleted the ticket). Derived from live DB state,
+  // never persisted onto the notifications — delete must clear To-Do without
+  // rewriting the audit trail.
+  const [resolvedTicketIds, setResolvedTicketIds] = useState<Set<string>>(new Set());
+  // Bumped when a ticket row changes (realtime) so the lookup re-runs even when
+  // no new notification arrives — e.g. another user closes or deletes a ticket.
   const [ticketRecheck, setTicketRecheck] = useState(0);
 
   // Does this notification belong to the active person?
@@ -233,28 +228,31 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     return [...ids].sort().join(',');
   }, [notifications]);
 
-  // Look up which of those tickets are closed. Read-only — we never write the
-  // completion state back to the notification rows (audit trail stays intact).
+  // Look up which referenced tickets are closed or missing. Read-only — we never
+  // write completion back onto notification rows (audit trail stays intact).
+  // Missing = deleted: `.in('id', ids)` simply omits them, so they must count as
+  // resolved or To-Do keeps "Maintenance ticket raised: …" forever after delete.
   useEffect(() => {
     const ids = ticketIdsKey ? ticketIdsKey.split(',') : [];
-    if (!ids.length) { setCompletedTicketIds(new Set()); return; }
+    if (!ids.length) { setResolvedTicketIds(new Set()); return; }
     let cancelled = false;
     supabase
       .from('maintenance_tickets')
-      .select('id')
+      .select('id, status')
       .in('id', ids)
-      .eq('status', 'closed')
-      .returns<{ id: string }[]>()
-      .then(({ data }) => { if (!cancelled) setCompletedTicketIds(new Set((data || []).map(r => r.id))); }, () => {});
+      .returns<{ id: string; status: string }[]>()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setResolvedTicketIds(resolvedTicketIdsFromLookup(ids, data || []));
+      }, () => {});
     return () => { cancelled = true; };
     // notifications.length is an extra trigger: a workflow closing always adds a
     // notification, so re-checking on count changes catches an in-session close
     // even when the ticket id was already present (ticketIdsKey unchanged).
-    // ticketRecheck covers closes that arrive with no new notification.
+    // ticketRecheck covers closes/deletes that arrive with no new notification.
   }, [ticketIdsKey, notifications.length, ticketRecheck]);
 
-  // Realtime: any maintenance ticket update may be a close/reopen — debounce and
-  // re-run the closed-lookup above so stale urgent alerts drop without a reload.
+  // Realtime: ticket close OR delete must drop stale urgent alerts without reload.
   useEffect(() => {
     if (!tableReady) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -262,14 +260,15 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     const channel = supabase
       .channel(`notif-ticket-status:${selfKey}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'maintenance_tickets' }, bump)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'maintenance_tickets' }, bump)
       .subscribe();
     return () => { clearTimeout(timer); supabase.removeChannel(channel); };
   }, [tableReady, selfKey]);
 
   const isNotificationCompleted = useCallback((n: AppNotification): boolean => {
     const id = ticketIdFromRoute(n.route);
-    return !!id && completedTicketIds.has(id);
-  }, [completedTicketIds]);
+    return !!id && resolvedTicketIds.has(id);
+  }, [resolvedTicketIds]);
 
   const isNotificationStale = useCallback((n: AppNotification): boolean =>
     isNotificationCompleted(n) || isDeadMaintenanceLink(n),

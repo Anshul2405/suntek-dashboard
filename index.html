@@ -2,12 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/brand/suntek-icon.png" />
+    <link rel="apple-touch-icon" href="/brand/suntek-official.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>suntek-dashboard</title>
+    <meta name="theme-color" content="#000000" />
+    <title>Suntek Operations</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Instant branded splash before React boots -->
+      <div id="boot-splash" style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#F7F5F1;font-family:system-ui,sans-serif">
+        <div style="text-align:center">
+          <img src="/brand/suntek-official.png" alt="Suntek" width="64" height="64" style="border-radius:14px;background:#000;display:block;margin:0 auto" />
+          <p style="margin:18px 0 0;font-size:12px;color:#64748B;letter-spacing:0.04em">Suntek Operations</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

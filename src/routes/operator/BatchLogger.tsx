@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { insertRows, upsertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
@@ -9,6 +9,7 @@ import type { Database } from '../../lib/database.types';
 import { BatchSheetUpload } from '../../components/BatchSheetUpload';
 import { useOcrJobs } from '../../contexts/OcrJobsContext';
 import { BatchSheetReview } from '../../components/BatchSheetReview';
+import { ProductionBatchSheetForm } from '../../components/ProductionBatchSheetForm';
 import type { ExtractedBatchSheet } from '../../lib/nvidiaOcr';
 // Sales/Purchase OCR upload moved to the Sales & Purchase pages (admin/unit-head/
 // accountant only). The Technical Team's batch logger no longer carries them.
@@ -35,6 +36,7 @@ interface BatchLoggerProps {
 export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   const { t } = useTranslation();
   const toast = useToast();
+  const navigate = useNavigate();
   const ocr = useOcrJobs();
   const { plantIds } = usePlantScope(); // the logged-in operator's plant(s)
   const [batchId, setBatchId] = useState('');
@@ -111,7 +113,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
             if (sess.temp_input) setTemp(sess.temp_input);
             if (sess.cp_gravity_input) setCpGravity(sess.cp_gravity_input);
             if (sess.cl2_press_input) setCl2Press(sess.cl2_press_input);
-            if (sess.active_tab && ['reading','new-batch','upload','history'].includes(sess.active_tab)) setActiveTab(sess.active_tab);
+            if (sess.active_tab && ['reading','new-batch','upload','history','create-sheet'].includes(sess.active_tab)) setActiveTab(sess.active_tab as 'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet');
             if (sess.new_batch_no_input) setNewBatchNo(sess.new_batch_no_input);
             if (sess.new_recipe_input) setNewRecipe(sess.new_recipe_input);
             if (sess.new_target_qty_input) setNewTargetQty(sess.new_target_qty_input);
@@ -142,7 +144,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               if (data.temp_input) setTemp(data.temp_input);
               if (data.cp_gravity_input) setCpGravity(data.cp_gravity_input);
               if (data.cl2_press_input) setCl2Press(data.cl2_press_input);
-              if (data.active_tab && ['reading','new-batch','upload','history'].includes(data.active_tab)) setActiveTab(data.active_tab as typeof activeTab);
+              if (data.active_tab && ['reading','new-batch','upload','history','create-sheet'].includes(data.active_tab)) setActiveTab(data.active_tab as typeof activeTab);
               if (data.new_batch_no_input) setNewBatchNo(data.new_batch_no_input);
               if (data.new_recipe_input) setNewRecipe(data.new_recipe_input);
               if (data.new_target_qty_input) setNewTargetQty(data.new_target_qty_input);
@@ -171,13 +173,13 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
   // Tab State — driven by the sidebar (?tab=) when embedded in the dashboard.
   const [searchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<'reading' | 'new-batch' | 'upload' | 'history'>('reading');
+  const [activeTab, setActiveTab] = useState<'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet'>('reading');
   // When embedded, the 3 sidebar dropdowns select the active panel via ?tab=.
   useEffect(() => {
     if (!embedded) return;
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['reading', 'new-batch', 'upload', 'history'].includes(tabParam)) {
-      setActiveTab(tabParam as 'reading' | 'new-batch' | 'upload' | 'history');
+    if (tabParam && ['reading', 'new-batch', 'upload', 'history', 'create-sheet'].includes(tabParam)) {
+      setActiveTab(tabParam as 'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet');
     }
   }, [searchParams, embedded]);
   const [newBatchNo, setNewBatchNo] = useState('');
@@ -408,7 +410,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   return (
     <div
       className={embedded ? 'flex flex-col' : 'h-screen flex flex-col'}
-      style={{ background: embedded ? 'transparent' : '#E2E8F0', fontFamily: 'Inter, sans-serif' }}
+      style={{ background: embedded ? 'transparent' : '#E2E8F0', fontFamily: 'inherit' }}
     >
       {/* Standalone-only header — hidden when embedded in the dashboard */}
       {!embedded && (
@@ -429,7 +431,27 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
         </header>
       )}
 
-      {/* Two-column body */}
+      {/* Meeting-spec production batch sheet — full-width linear wizard */}
+      {activeTab === 'create-sheet' && (
+        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-6'}>
+          <div className="mb-4">
+            <div className="text-base font-bold text-slate-800">{t('batchProd.title', 'Create production batch sheet')}</div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {t('batchProd.subtitle', 'Linear flow: reactor → density → evidence photos → submit. Continuous batch number + per-reactor sequence.')}
+            </p>
+          </div>
+          <ProductionBatchSheetForm
+            onCreated={(batchNo) => {
+              // After create, open the Batch Sheet register so the new row is visible
+              // (staying on Batch Logger felt like the sheet vanished).
+              navigate(`/dashboard/batches?highlight=${encodeURIComponent(batchNo)}`);
+            }}
+          />
+        </main>
+      )}
+
+      {/* Two-column body — reading / new-batch / upload / history */}
+      {activeTab !== 'create-sheet' && (
       <main className={embedded ? 'flex-1 flex gap-6' : 'flex-1 overflow-hidden p-6 flex gap-6'}>
 
         {/* LEFT: Tab switches and Forms */}
@@ -685,11 +707,13 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               imageUrl={uploadReview.imageUrl}
               batches={batches}
               ipAddress={ipAddress}
+              plantId={plantIds[0] ?? null}
               onSaved={(savedBatchNo) => {
                 ocr.reset('batch');
                 loadBatches();
                 setActiveTab('reading');
-                toast.success(t('batchEntry.batchSheetSaved', { batchNo: savedBatchNo }));
+                // BatchSheetReview already toasts with yield detail.
+                void savedBatchNo;
               }}
               onCancel={() => ocr.reset('batch')}
             />
@@ -757,9 +781,10 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               {t('batchEntry.closeBatchRunQc')}
             </button>
           </div>
-        </div>
+          </div>
 
       </main>
+      )}
     </div>
   );
 }

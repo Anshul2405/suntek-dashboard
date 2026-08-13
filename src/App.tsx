@@ -8,6 +8,7 @@ import { TodoProvider } from './contexts/TodoContext';
 import { BlacklistProvider } from './contexts/BlacklistContext';
 import { AnomalyProvider } from './contexts/AnomalyContext';
 import { OcrJobsProvider } from './contexts/OcrJobsContext';
+import { BrandLoader } from './components/brand/BrandLoader';
 
 // Layout + auth load eagerly (shell + entry — always needed, small).
 import { DashboardLayout } from './components/layout/DashboardLayout';
@@ -61,11 +62,7 @@ const BatchLogger = lazy(() => import('./routes/operator/BatchLogger').then(m =>
 
 /** Lightweight fallback while a route chunk loads. */
 function RouteFallback() {
-  return (
-    <div className="flex min-h-[40vh] items-center justify-center">
-      <div className="h-7 w-7 animate-spin rounded-full border-2 border-gray-200 border-t-gray-500" />
-    </div>
-  );
+  return <BrandLoader fullScreen={false} label="Loading…" />;
 }
 
 function App() {

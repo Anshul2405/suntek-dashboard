@@ -60,7 +60,7 @@ export interface MockProfile {
 export const CAPABILITIES: { key: string; label: string; description: string }[] = [
   { key: 'manage_users', label: 'Manage users', description: 'Create, edit, deactivate users and assign their roles' },
   { key: 'manage_roles', label: 'Manage roles & permissions', description: 'Create/edit roles, levels and dashboard access' },
-  { key: 'allocate_night_duty', label: 'Allocate night duty', description: 'Schedule technicians beneath them onto night-duty shifts' },
+  { key: 'allocate_night_duty', label: 'Allocate night duty', description: 'Schedule operators beneath them onto night-duty shifts' },
   // Grants the technician's side of the maintenance workflow to any role (e.g.
   // Operator / Technical Team) without cloning the technician role. Every
   // maintenance action used to be hardcoded to the 'technician_shd' slug, which
@@ -71,6 +71,7 @@ export const CAPABILITIES: { key: string; label: string; description: string }[]
   { key: 'view_asset_analytics', label: 'View asset analytics', description: 'See repair statistics and trend charts on an asset profile' },
   { key: 'add_stock_purchase', label: 'Add purchases to stock', description: 'Record a purchase (vendor, amount, invoice) and add the bought items to the stock register' },
   { key: 'resolve_stock_anomaly', label: 'Resolve stock anomalies', description: 'Review Stock Register anomalies and mark them confirmed / resolved / false positive (with a mandatory comment)' },
+  { key: 'complete_periodic_maintenance', label: 'Mark Complete (periodic maintenance)', description: 'Upload completion photo and mark periodic / scheduled maintenance as complete. Toggle this on any role that should do that work.' },
   { key: 'return_repairs', label: 'Return repaired items', description: 'Record repaired parts coming back from a vendor and add them to repaired stock' },
   { key: 'reverse_repair_return', label: 'Reverse repair returns', description: 'Reverse a recorded repair return with an offsetting stock movement (history is preserved)' },
   // Destructive and irreversible — deliberately the last entry, and granted to
