@@ -110,6 +110,11 @@ export function normalizeUnit(raw: unknown): string {
   return UNIT_MAP[s.toLowerCase()] ?? s;
 }
 
+/** Canonical units offered in pickers — the distinct outputs of UNIT_MAP. */
+export const UNIT_OPTIONS: string[] = [
+  'Pcs', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
+];
+
 // ── Equipment/model from the item name, e.g. "Acid Pump (NZRP50) Sleeve" ─────
 export function deriveEquipment(name: string): { equipment: string; model: string | null } {
   const m = name.match(/^\s*(.*?)\s*\(([^)]*)\)/);

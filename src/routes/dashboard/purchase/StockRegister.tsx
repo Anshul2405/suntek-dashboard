@@ -17,7 +17,7 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { profileHasCapability } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
-import { parseStockFile, reconcile, reconcileAll, labelForPeriod, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
+import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
 import { registerIdOf } from '../../../lib/store/registers';
 import { fetchAllRows } from '../../../lib/fetchAll';
@@ -138,7 +138,7 @@ export function StockRegister() {
 
   // Manual edit modal
   const [editItem, setEditItem] = useState<StockItem | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', onHand: '', reason: '' });
+  const [editForm, setEditForm] = useState({ name: '', onHand: '', unit: '', reason: '' });
 
   async function load() {
     try {
@@ -526,7 +526,10 @@ export function StockRegister() {
   function resetImport() { setStage('idle'); setParseResult(null); setErr(null); setCloudUrl(null); setImportAnoms([]); }
 
   // ── Manual edit (requires justification, logged to Activity Log) ─────────────
-  function openEdit(it: StockItem) { setEditItem(it); setEditForm({ name: it.item_name, onHand: String(it.on_hand), reason: '' }); }
+  function openEdit(it: StockItem) {
+    setEditItem(it);
+    setEditForm({ name: it.item_name, onHand: String(it.on_hand), unit: normalizeUnit(it.unit), reason: '' });
+  }
 
   async function saveEdit() {
     if (!editItem) return;
@@ -535,14 +538,18 @@ export function StockRegister() {
     const oldOnHand = Number(editItem.on_hand);
     const newOnHand = parseFloat(editForm.onHand);
     const newName = editForm.name.trim() || editItem.item_name;
+    const oldUnit = normalizeUnit(editItem.unit);
+    const newUnit = normalizeUnit(editForm.unit);
     const nameChanged = newName !== editItem.item_name;
     const qtyChanged = !isNaN(newOnHand) && newOnHand !== oldOnHand;
-    if (!nameChanged && !qtyChanged) { toast.error(t('storereq.stockToastNoChange', 'Nothing changed.')); return; }
+    const unitChanged = newUnit !== oldUnit;
+    if (!nameChanged && !qtyChanged && !unitChanged) { toast.error(t('storereq.stockToastNoChange', 'Nothing changed.')); return; }
     if (qtyChanged && newOnHand < 0) { toast.error(t('storereq.stockToastNegative', 'On-hand cannot be negative.')); return; }
     const delta = qtyChanged ? newOnHand - oldOnHand : 0;
     try {
       const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (nameChanged) patch.item_name = newName;
+      if (unitChanged) patch.unit = newUnit;
       if (qtyChanged) { patch.on_hand = newOnHand; patch.manual_delta = Number(editItem.manual_delta) + delta; }
       const { error } = await (supabase.from('store_items') as any).update(patch).eq('id', editItem.id);
       if (error) throw error;
@@ -558,7 +565,7 @@ export function StockRegister() {
       await insertRows('activity_logs', {
         equipment: `Stock: ${newName}`, type: 'stock_edit', date: new Date().toISOString().slice(0, 10),
         done_by: activeProfile.name, plant_id: editItem.plant_id,
-        note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${reason}`,
+        note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
       });
       setEditItem(null);
       toast.success(t('storereq.stockToastSaved', 'Stock updated and logged to the Activity Log.'));
@@ -965,9 +972,18 @@ export function StockRegister() {
               <div style={label}>{t('storereq.stockFieldItemName', 'Item name')}</div>
               <input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} style={{ ...inputStyle, width: '100%' }} />
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <div style={label}>{t('storereq.stockFieldOnHand', 'On-hand quantity')}</div>
-              <input type="number" value={editForm.onHand} onChange={e => setEditForm(f => ({ ...f, onHand: e.target.value }))} style={{ ...inputStyle, width: '100%' }} />
+            <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={label}>{t('storereq.stockFieldOnHand', 'On-hand quantity')}</div>
+                <input type="number" value={editForm.onHand} onChange={e => setEditForm(f => ({ ...f, onHand: e.target.value }))} style={{ ...inputStyle, width: '100%' }} />
+              </div>
+              <div style={{ width: 120 }}>
+                <div style={label}>{t('storereq.field_unit', 'Unit')}</div>
+                <select value={editForm.unit} onChange={e => setEditForm(f => ({ ...f, unit: e.target.value }))} style={{ ...inputStyle, width: '100%' }}>
+                  {(UNIT_OPTIONS.includes(editForm.unit) ? UNIT_OPTIONS : [...UNIT_OPTIONS, editForm.unit])
+                    .map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
             </div>
             <div style={{ marginBottom: 14 }}>
               <div style={label}>{t('storereq.stockFieldJustification', 'Justification (required)')}</div>
