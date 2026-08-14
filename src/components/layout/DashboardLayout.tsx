@@ -13,6 +13,7 @@ import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { SearchPaletteProvider } from '../../contexts/SearchPaletteContext';
 import { BrandLoader } from '../brand/BrandLoader';
+import { BatchFlowTourHost } from '../tour/BatchFlowTourHost';
 
 // ── Blacklisted overlay ───────────────────────────────────────────────────────
 
@@ -409,6 +410,7 @@ export function DashboardLayout() {
           <Footer />
         </div>
       </main>
+      <BatchFlowTourHost />
     </div>
     </SearchPaletteProvider>
   );

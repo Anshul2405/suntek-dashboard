@@ -2,12 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { CircleHelp } from 'lucide-react';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th } from '../../components/v2';
 import { updateRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { isProductionSheetBatchNo, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
+import { markTourSeen, tourWasSeen } from '../../components/tour/GuidedTour';
+import { launchBatchFlowTour, BATCH_FLOW_TOUR_ID } from '../../components/tour/BatchFlowTourHost';
 
 const QC_BADGE: Record<string, { bg: string; color: string }> = {
   pending:  { bg: '#FEF3C7', color: '#D97706' },
@@ -136,7 +139,19 @@ export function BatchSheet() {
   const [liveBatches, setLiveBatches] = useState<BatchDisplay[]>([]);
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
   const [updateFlash, setUpdateFlash] = useState<string | null>(null);
+  const [tourOffer, setTourOffer] = useState(false);
   const highlightBatchNo = searchParams.get('highlight');
+
+  useEffect(() => {
+    if (tourWasSeen(BATCH_FLOW_TOUR_ID)) return;
+    const tmr = window.setTimeout(() => setTourOffer(true), 600);
+    return () => window.clearTimeout(tmr);
+  }, []);
+
+  function openTour() {
+    setTourOffer(false);
+    launchBatchFlowTour();
+  }
   const batchSort = useSortable(liveBatches, {
     num: b => b.num,
     plant: b => b.plant,
@@ -349,7 +364,39 @@ export function BatchSheet() {
 
   return (
     <>
-      <div className="card2 p-6 mb-5">
+      {tourOffer && (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-bold text-amber-950">
+              {t('batchSheetTour.offerTitle', 'New here? Take the full batch walkthrough')}
+            </div>
+            <p className="text-xs text-amber-900/80 mt-0.5">
+              {t('batchSheetTour.offerBody', 'Follows one batch end to end: New Batch, hourly readings, close, batch sheet with density and photos, then stock and dispatch.')}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                markTourSeen(BATCH_FLOW_TOUR_ID);
+                setTourOffer(false);
+              }}
+              className="text-xs font-semibold text-amber-900/70 hover:text-amber-950 px-2 py-1.5"
+            >
+              {t('batchSheetTour.dismissOffer', 'Not now')}
+            </button>
+            <button
+              type="button"
+              onClick={openTour}
+              className="text-xs font-bold px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700"
+            >
+              {t('batchSheetTour.startOffer', 'Start walkthrough')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="card2 p-6 mb-5" data-tour="prod-register">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div>
             <div className="text-base font-bold font-heading">{t('batchProd.registerTitle', 'Production batch sheets')}</div>
@@ -357,12 +404,23 @@ export function BatchSheet() {
               {t('batchProd.registerSub', 'Batch no = reactor + sequence (e.g. P12-13) · density · evidence photos · stage')}
             </div>
           </div>
-          <Link
-            to="/dashboard/batch-entry?tab=create-sheet"
-            className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm no-underline inline-block text-center"
-          >
-            + {t('nav.createBatchSheet', 'Create Batch Sheet')}
-          </Link>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={openTour}
+              className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              <CircleHelp size={14} strokeWidth={2.25} />
+              {t('batchSheetTour.howThisWorks', 'How this works')}
+            </button>
+            <Link
+              data-tour="create-sheet-btn"
+              to="/dashboard/batch-entry?tab=create-sheet"
+              className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm no-underline inline-block text-center"
+            >
+              + {t('nav.createBatchSheet', 'Create Batch Sheet')}
+            </Link>
+          </div>
         </div>
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
@@ -374,7 +432,7 @@ export function BatchSheet() {
                 <th className="num">Rx seq</th>
                 <th className="num">Density</th>
                 <th>Photos</th>
-                <th>Stage</th>
+                <th data-tour="prod-stage">Stage</th>
                 <th>Created by</th>
                 <th></th>
               </tr>
@@ -468,7 +526,7 @@ export function BatchSheet() {
         </div>
       </div>
 
-      <div className="grid grid-cols-12 gap-4 mb-5">
+      <div className="grid grid-cols-12 gap-4 mb-5" data-tour="batch-kpis">
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-4">
           <div className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold">{t('batch.activeBatches')}</div>
           <div className="text-[28px] font-bold mt-1 num font-heading">{liveBatches.length}</div>
@@ -491,11 +549,11 @@ export function BatchSheet() {
         </div>
       </div>
 
-      <div className="card2 p-6">
+      <div className="card2 p-6" data-tour="active-batches">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div>
             <div className="text-base font-bold font-heading">{t('batch.activeBatches')}</div>
-            <div className="text-xs text-slate-500">{t('batch.liveReadingsSub')}</div>
+            <div className="text-xs text-slate-500" data-tour="edited-hint">{t('batch.liveReadingsSub')}</div>
           </div>
           <Link
             to="/dashboard/batch-entry?tab=create-sheet"
@@ -511,7 +569,8 @@ export function BatchSheet() {
                 <Th sortKey="num" s={batchSort}>{t('batch.colBatchNo')}</Th><Th sortKey="plant" s={batchSort}>{t('common.plant')}</Th><Th sortKey="recipe" s={batchSort}>{t('batch.colRecipe')}</Th>
                 <Th sortKey="target" s={batchSort} firstDir="desc" className="num">{t('batch.colTarget')}</Th><Th sortKey="current" s={batchSort} firstDir="desc" className="num">{t('batch.colCurrent')}</Th>
                 <Th sortKey="drums" s={batchSort} firstDir="desc" className="num">{t('batch.colDrums')}</Th><th className="num">{t('batch.colElapsed')}</th>
-                <Th sortKey="op" s={batchSort}>{t('batch.colOperator')}</Th><Th sortKey="qc" s={batchSort}>{t('batch.colQc')}</Th>
+                <Th sortKey="op" s={batchSort}>{t('batch.colOperator')}</Th>
+                <Th sortKey="qc" s={batchSort}><span data-tour="qc-col">{t('batch.colQc')}</span></Th>
               </tr>
             </thead>
             <tbody>

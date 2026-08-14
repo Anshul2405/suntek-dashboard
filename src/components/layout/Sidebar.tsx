@@ -561,9 +561,9 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       {isOperator && (
       <nav className="flex flex-col gap-1">
 
-        {/* Batch entry tools (log / create / OCR) — distinct from Batch Sheet register */}
+        {/* Batch entry — create/log tools + the sheet register (one place, not split with Operations) */}
         <a
-          className={`nav-link${location.pathname === '/dashboard/batch-entry' && currentTab !== 'history' ? ' active' : ''}`}
+          className={`nav-link${(location.pathname === '/dashboard/batch-entry' && currentTab !== 'history') || isActive('/dashboard/batches') ? ' active' : ''}`}
           onClick={() => { setBatchOpen((o) => !o); if (!batchOpen) navTo('/dashboard/batch-entry?tab=reading'); }}
         >
           <IconBatch />
@@ -574,27 +574,29 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
           <div className="nav-sub">
             <a className={`nav-link${isBatchTab('reading') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=reading')}>{t('nav.logReading')}</a>
             <a className={`nav-link${isBatchTab('create-sheet') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=create-sheet')}>{t('nav.createBatchSheet', 'Create Batch Sheet')}</a>
+            <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.sheetRegister', 'All sheets')}</a>
             <a className={`nav-link${isBatchTab('new-batch') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=new-batch')}>{t('nav.newBatch')}</a>
             <a className={`nav-link${isBatchTab('upload') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=upload')}>{t('nav.uploadBatchSheet')}</a>
           </div>
         )}
 
-        {/* Operations — live register views (Batch Sheet list, CP/Stock) */}
-        <a
-          className={`nav-link${(isActive('/dashboard/batches') || isActive('/dashboard/stock')) ? ' active' : ''}`}
-          onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/batches'); }}
-        >
-          <IconFlask />
-          <span>{t('section.operations')}</span>
-          <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
-        </a>
-        {opsOpen && (
-          <div className="nav-sub">
-            <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.batchSheet')}</a>
-            {canSee('/dashboard/stock') && (
-              <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
+        {/* Operations — only non-batch boards (e.g. CP/Stock) so Batch Sheet isn't listed twice */}
+        {canSee('/dashboard/stock') && (
+          <>
+            <a
+              className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`}
+              onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/stock'); }}
+            >
+              <IconFlask />
+              <span>{t('section.operations')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {opsOpen && (
+              <div className="nav-sub">
+                <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
+              </div>
             )}
-          </div>
+          </>
         )}
 
         {/* Plant — only when Technical was also granted Maintenance / Store Req */}

@@ -24,6 +24,7 @@ import {
   parseReactorBatchSeq,
   type CatalogReactor,
 } from '../lib/batch/reactorCatalog';
+import { BATCH_FLOW_WIZARD_EVENT, readWizardStep } from './tour/batchFlowTourSession';
 
 type StageStep = 0 | 1 | 2 | 3;
 
@@ -137,6 +138,17 @@ export function ProductionBatchSheetForm({
     })();
     return () => { cancelled = true; };
   }, [plantId, scopedPlants, plants]);
+
+  // The guided tour walks all four stages, so it can park the wizard on one.
+  useEffect(() => {
+    const sync = () => {
+      const requested = readWizardStep();
+      if (requested != null) setStep(requested as StageStep);
+    };
+    sync();
+    window.addEventListener(BATCH_FLOW_WIZARD_EVENT, sync);
+    return () => window.removeEventListener(BATCH_FLOW_WIZARD_EVENT, sync);
+  }, []);
 
   const addPhoto = useCallback((kind: PhotoKind, blob: Blob) => {
     setPhotos(prev => {
@@ -328,7 +340,7 @@ export function ProductionBatchSheetForm({
 
   return (
     <div className="mx-auto w-full max-w-2xl flex flex-col gap-5">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1" data-tour="tour-wizard-steps">
         {STEPS.map((label, i) => {
           const done = i < step;
           const active = i === step;
@@ -352,7 +364,7 @@ export function ProductionBatchSheetForm({
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         {step === 0 && (
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4" data-tour="tour-wizard-reactor">
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepReactor', 'Select plant & reactor')}</div>
               <p className="mt-1 text-xs text-slate-500">
@@ -409,7 +421,7 @@ export function ProductionBatchSheetForm({
         )}
 
         {step === 1 && (
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4" data-tour="tour-wizard-density">
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepDensity', 'Record density & colour')}</div>
               <p className="mt-1 text-xs text-slate-500">
@@ -459,7 +471,7 @@ export function ProductionBatchSheetForm({
         )}
 
         {step === 2 && (
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4" data-tour="tour-wizard-photos">
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepPhotos', 'Evidence photos')}</div>
               <p className="mt-1 text-xs text-slate-500">
@@ -521,7 +533,7 @@ export function ProductionBatchSheetForm({
         )}
 
         {step === 3 && (
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4" data-tour="tour-wizard-review">
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepReview', 'Review & submit')}</div>
               <p className="mt-1 text-xs text-slate-500">

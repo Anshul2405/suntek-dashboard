@@ -433,7 +433,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
       {/* Meeting-spec production batch sheet — full-width linear wizard */}
       {activeTab === 'create-sheet' && (
-        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-6'}>
+        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-6'} data-tour="tour-create-form">
           <div className="mb-4">
             <div className="text-base font-bold text-slate-800">{t('batchProd.title', 'Create production batch sheet')}</div>
             <p className="text-xs text-slate-500 mt-0.5">
@@ -530,12 +530,14 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
             )}
 
             {activeTab === 'upload' ? (
+              <div data-tour="tour-upload">
               <BatchSheetUpload
                 channel="batch"
                 reviewing={!!uploadReview}
                 docLabel={t('batchEntry.batchSheet')}
                 accentColor="#7c3aed"
               />
+              </div>
             ) : activeTab === 'history' ? (
               <div className="flex-1 flex flex-col gap-4">
                 {/* Batch selector — choose which batch's reading history to view */}
@@ -560,10 +562,10 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 </div>
               </div>
             ) : activeTab === 'reading' ? (
-              <form onSubmit={handleSave} className="space-y-5 flex-1 flex flex-col justify-between">
+              <form onSubmit={handleSave} className="space-y-5 flex-1 flex flex-col justify-between" data-tour="tour-log-reading">
                 <div className="space-y-4">
                   {/* Batch selector */}
-                  <div>
+                  <div data-tour="tour-reading-batch">
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
                       {t('batchEntry.selectActiveBatch')}
                     </label>
@@ -581,7 +583,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                   </div>
 
                   {/* Temperature */}
-                  <div>
+                  <div data-tour="tour-reading-values">
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
                       {t('batchEntry.temperature')}
                     </label>
@@ -639,7 +641,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleCreateBatch} className="space-y-5 flex-1 flex flex-col justify-between">
+              <form onSubmit={handleCreateBatch} className="space-y-5 flex-1 flex flex-col justify-between" data-tour="tour-new-batch">
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
@@ -699,7 +701,9 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
           </div>
         </div>
 
-        {/* RIGHT: Batch log table — or OCR review panels when upload is active */}
+        {/* RIGHT: Batch log table — only on Log Reading / History.
+            New Batch & Upload were still showing the selected active batch's
+            readings (e.g. p11-dummy), which looked like the same log everywhere. */}
         {activeTab === 'upload' && uploadReview ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             <BatchSheetReview
@@ -718,10 +722,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               onCancel={() => ocr.reset('batch')}
             />
           </div>
-        ) : null}
-        <div className={`flex-1 bg-white rounded-2xl flex flex-col overflow-hidden shadow-sm${
-          (activeTab === 'upload' && uploadReview) ? ' hidden' : ''
-        }`}>
+        ) : (activeTab === 'reading' || activeTab === 'history') ? (
+        <div className="flex-1 bg-white rounded-2xl flex flex-col overflow-hidden shadow-sm" data-tour="tour-reading-log">
           {/* Table header bar */}
           <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50 rounded-t-2xl shrink-0">
             <div>
@@ -757,31 +759,55 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                       background: i === 0 ? '#F0FDF4' : undefined,
                     }}
                   >
-                    <td className="p-4 font-mono text-xs text-slate-500">{r.time}</td>
-                    <td className="p-4 font-mono">{r.temp}</td>
-                    <td className="p-4 font-mono">{r.cpGravity}</td>
-                    <td className="p-4 font-mono">{r.cl2Press}</td>
-                    <td className="p-4 text-slate-500">{r.operator}</td>
+                    <td className="p-4 font-mono text-slate-500">{r.time}</td>
+                    <td className="p-4 font-bold">{r.temp}</td>
+                    <td className="p-4 font-bold text-blue-600">{r.cpGravity}</td>
+                    <td className="p-4 font-bold">{r.cl2Press}</td>
+                    <td className="p-4 text-slate-600">{r.operator}</td>
                   </tr>
                 ))}
+                {visibleReadings.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="p-8 text-center text-slate-400 text-sm">
+                      {t('batchEntry.noReadingsYet', 'No readings logged for this batch yet.')}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
 
-          {/* Close batch footer */}
-          <div className="p-4 border-t border-slate-100 flex items-center justify-between shrink-0 bg-slate-50">
-            <div className="text-xs text-slate-500">
+          <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center shrink-0">
+            <div className="text-xs text-slate-500 font-medium">
               {t('batchEntry.readingsLogged', { count: visibleReadings.length })}
             </div>
-            <button
-              className="text-xs font-bold px-4 py-2 rounded-xl border transition-colors hover:bg-red-50"
-              style={{ borderColor: '#FCA5A5', color: '#DC2626' }}
-              onClick={() => toast.info(t('batchEntry.closeBatchInfo'))}
-            >
-              {t('batchEntry.closeBatchRunQc')}
-            </button>
+            {activeTab === 'reading' && (
+              <button
+                type="button"
+                data-tour="tour-close-batch"
+                className="text-xs font-bold px-4 py-2 rounded-xl border transition-colors hover:bg-red-50"
+                style={{ borderColor: '#FCA5A5', color: '#DC2626' }}
+                onClick={() => toast.info(t('batchEntry.closeBatchInfo'))}
+              >
+                {t('batchEntry.closeBatchRunQc')}
+              </button>
+            )}
           </div>
+        </div>
+        ) : (
+          <div className="flex-1 bg-white rounded-2xl flex flex-col items-center justify-center shadow-sm px-8 text-center">
+            <div className="text-sm font-bold text-slate-700">
+              {activeTab === 'new-batch'
+                ? t('batchEntry.newBatchSideHintTitle', 'Start a live batch run')
+                : t('batchEntry.uploadSideHintTitle', 'Upload a sheet photo')}
+            </div>
+            <p className="mt-2 text-xs text-slate-500 max-w-sm leading-relaxed">
+              {activeTab === 'new-batch'
+                ? t('batchEntry.newBatchSideHint', 'This starts an Active Batch for Log Reading. It is not the production batch sheet list — use Create Batch Sheet / All sheets for those.')
+                : t('batchEntry.uploadSideHint', 'AI reads the photo into a review form. The live reading log stays under Log Reading.')}
+            </p>
           </div>
+        )}
 
       </main>
       )}
