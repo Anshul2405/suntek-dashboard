@@ -664,7 +664,7 @@ export function Maintenance() {
   const [changeReason, setChangeReason] = useState('');
   const [changeTags, setChangeTags] = useState<string[]>([]);
   const [resubmitting, setResubmitting] = useState(false);
-  const [resubmitForm, setResubmitForm] = useState({ equipment: '', description: '', plant: '', assessment: 'repairable' });
+  const [resubmitForm, setResubmitForm] = useState({ equipment: '', description: '', plant: '', assessment: 'repairable', farAssetId: '', equipmentMark: '' });
   const [resubmitPhotoBlob, setResubmitPhotoBlob] = useState<Blob | null>(null);
   const [savingRevision, setSavingRevision] = useState(false); // shared submit guard
   const [rejectReason, setRejectReason] = useState(''); // optional reason on a part-level reject
@@ -933,6 +933,10 @@ export function Maintenance() {
   const raiseFarAssets = useMemo(
     () => (raiseForm.plant ? farAssets.filter(a => a.plant_id === raiseForm.plant) : []),
     [farAssets, raiseForm.plant],
+  );
+  const resubmitFarAssets = useMemo(
+    () => (resubmitForm.plant ? farAssets.filter(a => a.plant_id === resubmitForm.plant) : farAssets),
+    [farAssets, resubmitForm.plant],
   );
 
   // Default the raise form's factory to the user's own when the panel opens.
@@ -1250,7 +1254,15 @@ export function Maintenance() {
   // Technician: open the revise form seeded from the current ticket.
   function startResubmit(t: TicketRow) {
     const assessment = /needs part/i.test(t.title || '') ? 'needs_part' : 'repairable';
-    setResubmitForm({ equipment: t.equipment || '', description: t.description || '', plant: t.plant_id || '', assessment });
+    const linked = t.far_asset_id ? farAssets.find(a => a.id === t.far_asset_id) : undefined;
+    setResubmitForm({
+      equipment: t.equipment || '',
+      description: t.description || '',
+      plant: t.plant_id || '',
+      assessment,
+      farAssetId: t.far_asset_id || '',
+      equipmentMark: linked?.identification_mark || '',
+    });
     setResubmitPhotoBlob(null);
     setResubmitting(true);
   }
@@ -1278,6 +1290,7 @@ export function Maintenance() {
         title,
         description: resubmitForm.description || null,
         plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
+        far_asset_id: resubmitForm.farAssetId || null,
         status: restoreStatus,
         revision_reason: null,
       };
@@ -2728,8 +2741,13 @@ export function Maintenance() {
           </div>
         )}
 
-        {/* DEFECTIVE RETURN + close (technician) */}
-        {status === 'pending_defective_return' && ((isTechnician || isAdmin) ? (
+        {/* DEFECTIVE RETURN + close.
+            Same gate as in-house completion: technician, admin, Technical
+            (factory_operator), or the person who raised / is assigned the
+            ticket. Gating on isTechnician alone hid the upload from Technical
+            users who had already done the whole job (e.g. Amit Kumar on the
+            9-watt LED ticket). */}
+        {status === 'pending_defective_return' && ((isTechnician || isAdmin || canWorkEmergency(tk)) ? (
           <div style={{ border: '1px solid #FED7AA', borderRadius: 14, padding: 14, background: '#FFF7ED' }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#EA580C', textTransform: 'uppercase', marginBottom: 8 }}>{t('maint.returnDefectiveClose', 'Return defective part & close')}</div>
             <PhotoUploader onBlobReady={setDefectiveBlob} label={t('maint.photoOfDefectivePart', 'Photo of defective part')} hint={t('maint.photoOfDefectivePartHint', 'Clear photo of the old/broken part')} />
@@ -3395,7 +3413,15 @@ export function Maintenance() {
                 <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>{t('maint.reviseResubmitSub', 'Fix what the reviewer flagged, then resubmit the same ticket for another review.')}</div>
                 {selectedTicket.revision_reason && <div style={{ fontSize: 12, color: '#7F1D1D', background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 10, padding: '8px 10px', marginBottom: 12 }}><strong>{t('maint.reviewerAsked', 'Reviewer asked:')}</strong> {selectedTicket.revision_reason}</div>}
                 <PanelField label={t('maint.equipmentAssetPlain', 'Equipment / asset')}>
-                  <PanelInput value={resubmitForm.equipment} onChange={e => setResubmitForm(f => ({ ...f, equipment: e.target.value }))} />
+                  <FarEquipField
+                    value={resubmitForm.equipment}
+                    assets={resubmitFarAssets}
+                    onChange={v => setResubmitForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
+                    onPick={a => setResubmitForm(f => ({ ...f, farAssetId: a?.id ?? '', equipmentMark: a?.identification_mark ?? '', plant: a?.plant_id ?? f.plant }))}
+                  />
+                  {resubmitForm.equipment.trim().length > 1 && (resubmitForm.farAssetId
+                    ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{resubmitForm.equipmentMark ? ` · ${resubmitForm.equipmentMark}` : ''}.</div>
+                    : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.manualEntryNotInFar', '✎ Manual entry — not in the FAR (allowed; the notification flags it).')}</div>)}
                 </PanelField>
                 <PanelRow>
                   <PanelField label={t('common.plant')}>
