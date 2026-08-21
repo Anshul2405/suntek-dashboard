@@ -167,6 +167,25 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
+    async function loadSessionRoles(userId: string) {
+      try {
+        const { data: acct } = await supabase
+          .from('user_accounts').select('id').eq('auth_user_id', userId).limit(1)
+          .returns<{ id: string }[]>();
+        const accountId = acct?.[0]?.id;
+        if (!accountId) {
+          if (!cancelled) setSessionRoleIds([]);
+          return;
+        }
+        const { data: urs } = await supabase
+          .from('user_roles').select('role_id').eq('user_account_id', accountId)
+          .returns<{ role_id: string }[]>();
+        if (!cancelled) setSessionRoleIds((urs ?? []).map((r) => r.role_id));
+      } catch {
+        if (!cancelled) setSessionRoleIds([]);
+      }
+    }
+
     async function resolveFromSession(userId: string | null) {
       if (!cancelled) setSessionUserId(userId);
       if (!userId) {
@@ -203,20 +222,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       // Load the user's full role set (multi-role). Additive: on any failure we
       // keep the empty set and fall back to the single primary role — never
       // reducing access.
-      try {
-        const { data: acct } = await supabase
-          .from('user_accounts').select('id').eq('auth_user_id', userId).limit(1)
-          .returns<{ id: string }[]>();
-        const accountId = acct?.[0]?.id;
-        if (accountId) {
-          const { data: urs } = await supabase
-            .from('user_roles').select('role_id').eq('user_account_id', accountId)
-            .returns<{ role_id: string }[]>();
-          if (!cancelled) setSessionRoleIds((urs ?? []).map((r) => r.role_id));
-        } else if (!cancelled) {
-          setSessionRoleIds([]);
-        }
-      } catch { if (!cancelled) setSessionRoleIds([]); }
+      await loadSessionRoles(userId);
 
       setSessionResolved(true);
     }
@@ -228,7 +234,25 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       setPreviewProfileId(null); // reset any preview on login/logout
       resolveFromSession(session?.user?.id ?? null);
     });
-    return () => { cancelled = true; clearTimeout(retryRef.current); subscription.unsubscribe(); };
+
+    // Admin may grant a second role while this person is already logged in.
+    // Re-read user_roles when the tab becomes visible so Store Req / etc.
+    // appear without forcing a logout.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        const uid = session?.user?.id;
+        if (uid) loadSessionRoles(uid);
+      });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(retryRef.current);
+      subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // ── DB directory — built from active user_accounts rows ─────────────────────
