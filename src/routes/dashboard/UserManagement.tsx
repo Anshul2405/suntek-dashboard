@@ -85,7 +85,7 @@ const ALL_DASHBOARD_SECTIONS: { route: string; label: string; labelKey: string }
   { route: '/dashboard/purchase/far',     label: 'Fixed Asset Register',       labelKey: 'userMgmt.sec_fixedAssetRegister' },
   { route: '/dashboard/purchase/qr',      label: 'Asset QR Codes',             labelKey: 'userMgmt.sec_assetQrCodes' },
   { route: '/dashboard/purchase/maint',   label: 'Maintenance',                labelKey: 'userMgmt.sec_maintenance' },
-  { route: '/dashboard/purchase/activity',label: 'Plant Activity Log',         labelKey: 'userMgmt.sec_plantActivityLog' },
+  { route: '/dashboard/purchase/activity',label: 'Activity Log',               labelKey: 'userMgmt.sec_plantActivityLog' },
   { route: '/dashboard/purchase/storereq',label: 'Store Requisitions',         labelKey: 'userMgmt.sec_storeRequisitions' },
   { route: '/dashboard/purchase/purchase',label: 'Purchase Orders',            labelKey: 'userMgmt.sec_purchaseOrders' },
   { route: '/dashboard/purchase/marine',  label: 'Marine Insurance',           labelKey: 'userMgmt.sec_marineInsurance' },
@@ -1558,6 +1558,9 @@ export function UserManagement() {
         </div>
 
         <PanelField label={t('userMgmt.allowedSectionsLabel', 'Dashboard sections this role can access')}>
+          <p style={{ fontSize: 11, color: '#64748B', margin: '0 0 8px' }}>
+            {t('userMgmt.activityLogGrantHint', 'Activity Log is also togglable from Factory → Activity Log (admin).')}
+          </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, maxHeight: 320, overflowY: 'auto', padding: 4 }}>
             {ALL_DASHBOARD_SECTIONS.map(s => {
               const on = roleForm.allowed_routes.includes(s.route);

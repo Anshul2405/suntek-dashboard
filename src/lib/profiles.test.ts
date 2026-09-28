@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { profileCanAccess, roleToProfile, initialsFrom, type MockProfile, type RoleRow } from './profiles';
+import { profileCanAccess, roleToProfile, initialsFrom, canViewBatchOilRatio, canViewBatchFacet, canViewBatchRegister, canSelectBatchGrade, isAdminProfile, isManagementProfile, type MockProfile, type RoleRow } from './profiles';
 
 // Synthetic profiles (the role catalog is now DB-driven; tests use fixtures).
 function mk(allowed: string[], overrides: Partial<MockProfile> = {}): MockProfile {
@@ -92,5 +92,120 @@ describe('roleToProfile', () => {
     expect(p.initials).toBe('VJ');
     expect(profileCanAccess(p, '/dashboard/stock')).toBe(true);
     expect(profileCanAccess(p, '/dashboard/sales')).toBe(false);
+  });
+
+  it('does not grant Activity Log to Technical unless the role lists the route', () => {
+    const tech = mk(['/dashboard/batch-entry'], {
+      id: 'db_anand',
+      baseRoleId: 'factory_operator',
+    });
+    expect(profileCanAccess(tech, '/dashboard/batches')).toBe(true);
+    expect(profileCanAccess(tech, '/dashboard/batch-entry')).toBe(true);
+    expect(profileCanAccess(tech, '/dashboard/purchase/activity')).toBe(false);
+  });
+
+  it('grants Batch Logger when only Batch Sheets is ticked in Manage Roles', () => {
+    const tech = mk(['/dashboard/batches'], { id: 'db_nilesh', baseRoleId: 'factory_operator' });
+    expect(profileCanAccess(tech, '/dashboard/batches')).toBe(true);
+    expect(profileCanAccess(tech, '/dashboard/batch-entry')).toBe(true);
+  });
+
+  it('grants Batch Logger entry to any role with Batch Sheets route', () => {
+    const p = mk(['/dashboard/batches']);
+    expect(profileCanAccess(p, '/dashboard/batch-entry')).toBe(true);
+  });
+
+  it('grants Activity Log when the role includes the route', () => {
+    const tech = mk(['/dashboard/purchase/activity'], {
+      id: 'db_anand',
+      baseRoleId: 'factory_operator',
+    });
+    expect(profileCanAccess(tech, '/dashboard/purchase/activity')).toBe(true);
+  });
+
+  it('maps factory_operator to Batch Sheet home and both batch routes', () => {
+    const techRole: RoleRow = {
+      id: 'factory_operator',
+      label: 'Technical',
+      level: 'L1',
+      description: '',
+      home_route: '/dashboard/batch-entry',
+      allowed_routes: ['/dashboard/stock'],
+      standalone_only: false,
+      is_admin: false,
+      is_system: false,
+      capabilities: [],
+      avatar_from: null,
+      avatar_to: null,
+      sort_order: 50,
+    };
+    const p = roleToProfile(techRole, { name: 'Nilesh Kumar', id: 'db_x', baseRoleId: 'factory_operator' });
+    expect(p.homeRoute).toBe('/dashboard/batches');
+    expect(p.allowedDashboardRoutes).toContain('/dashboard/batches');
+    expect(p.allowedDashboardRoutes).toContain('/dashboard/batch-entry');
+  });
+});
+
+describe('isAdminProfile', () => {
+  it('treats provisioned owners (db_<uuid>) as admin via * routes', () => {
+    expect(isAdminProfile(mk(['*'], { id: 'db_abc', baseRoleId: 'admin' }))).toBe(true);
+    expect(isAdminProfile(mk(['/dashboard'], { id: 'db_x', baseRoleId: 'unit_head' }))).toBe(false);
+  });
+});
+
+describe('canViewBatchFacet', () => {
+  it('keeps full access when no batch caps are set', () => {
+    const tech = mk(['/dashboard/batch-entry'], { id: 'db_nilesh', baseRoleId: 'factory_operator' });
+    expect(canViewBatchFacet(tech, 'raw')).toBe(true);
+    expect(canViewBatchFacet(tech, 'sheet')).toBe(true);
+    expect(canViewBatchFacet(tech, 'mat')).toBe(true);
+  });
+
+  it('limits Technical to the granted Raw / Sheet / Mat toggle', () => {
+    const tech = mk(['/dashboard/batch-entry'], {
+      id: 'db_nilesh',
+      baseRoleId: 'factory_operator',
+      capabilities: ['batch_raw'],
+    });
+    expect(canViewBatchFacet(tech, 'raw')).toBe(true);
+    expect(canViewBatchFacet(tech, 'sheet')).toBe(false);
+    expect(canViewBatchFacet(tech, 'mat')).toBe(false);
+  });
+});
+
+describe('canSelectBatchGrade', () => {
+  it('is on for admin and off for Technical until granted', () => {
+    expect(canSelectBatchGrade(mk(['*'], { id: 'admin' }))).toBe(true);
+    expect(canSelectBatchGrade(mk(['/dashboard'], { id: 'db_sagar', baseRoleId: 'admin' }))).toBe(true);
+    const tech = mk(['/dashboard/batch-entry'], { id: 'db_nilesh', baseRoleId: 'factory_operator' });
+    expect(canSelectBatchGrade(tech)).toBe(false);
+    expect(canSelectBatchGrade({ ...tech, capabilities: ['batch_grade'] })).toBe(true);
+  });
+});
+
+describe('canViewBatchRegister', () => {
+  it('hides the sheet register from a raw-only Technical user', () => {
+    const raw = mk(['/dashboard/batch-entry'], {
+      id: 'db_raw',
+      baseRoleId: 'factory_operator',
+      capabilities: ['batch_raw'],
+    });
+    expect(canViewBatchRegister(raw)).toBe(false);
+    expect(profileCanAccess(raw, '/dashboard/batches')).toBe(false);
+    expect(profileCanAccess(raw, '/dashboard/batch-entry')).toBe(true);
+  });
+});
+
+describe('canViewBatchOilRatio', () => {
+  it('allows management roles', () => {
+    expect(isManagementProfile(mk(['*'], { id: 'admin' }))).toBe(true);
+    expect(canViewBatchOilRatio(mk(['/dashboard'], { id: 'management' }), 'Someone Else')).toBe(true);
+    expect(canViewBatchOilRatio(mk(['/dashboard'], { id: 'unit_head' }), null)).toBe(true);
+  });
+
+  it('allows the uploader by name match', () => {
+    const tech = mk(['/dashboard/batch-entry'], { id: 'db_pankaj', name: 'Pankaj Kumar Pandey' });
+    expect(canViewBatchOilRatio(tech, 'Pankaj Kumar Pandey')).toBe(true);
+    expect(canViewBatchOilRatio(tech, 'Other Person')).toBe(false);
   });
 });

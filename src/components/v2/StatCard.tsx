@@ -53,8 +53,15 @@ export function StatCard({
   className?: string;
 }) {
   const { t } = useTranslation();
+  const clickable = !!onView;
   return (
-    <div className={cn('card2 p-5', className)}>
+    <div
+      className={cn('card2 p-5', clickable && 'cursor-pointer hover:border-slate-300 hover:shadow-sm transition', className)}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? onView : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onView?.(); } } : undefined}
+    >
       <div className="flex items-center gap-2.5 mb-3">
         {icon && (
           <span
@@ -75,13 +82,9 @@ export function StatCard({
       </div>
       {caption && <div className="text-xs text-slate-500 mt-2">{caption}</div>}
       {onView && (
-        <button
-          type="button"
-          onClick={onView}
-          className="text-[#D84315] text-xs font-semibold mt-2.5 hover:underline flex items-center gap-1 cursor-pointer"
-        >
+        <span className="text-[#D84315] text-xs font-semibold mt-2.5 hover:underline flex items-center gap-1">
           {viewLabel ?? t('common.view', 'View')} →
-        </button>
+        </span>
       )}
     </div>
   );

@@ -14,12 +14,12 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
-import { profileHasCapability } from '../../../lib/profiles';
-import { withEmbedFallback } from '../../../lib/scopedList';
+import { isAdminProfile, profileHasCapability } from '../../../lib/profiles';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
 import { registerIdOf } from '../../../lib/store/registers';
+import { assignSequentialJobNos, jobNoStock, persistMissingJobNos, ticketShort } from '../../../lib/jobNo';
 import { fetchAllRows } from '../../../lib/fetchAll';
 import { createImportBatch, setImportBatchRowCount, buildItemOwnerMap, resolveItemOwner } from '../../../lib/imports/batches';
 import { AddPurchaseModal } from './AddPurchaseModal';
@@ -31,10 +31,11 @@ type StockItem = Database['public']['Tables']['store_items']['Row'];
 type StockMonthRow = Database['public']['Tables']['store_stock_months']['Row'];
 type Plant = { id: string; name: string };
 
-interface StoreBreakdown { id: string; plantId: string | null; plant: string; onHand: number; issued: number; procured: number; repaired: number; raw: StockItem; }
+interface StoreBreakdown { id: string; plantId: string | null; plant: string; opening: number; onHand: number; issued: number; procured: number; repaired: number; raw: StockItem; }
 interface MergedRow {
   key: string; itemName: string; equipment: string; model: string | null; unit: string;
-  onHand: number; issued: number; procured: number; repaired: number; stores: StoreBreakdown[];
+  opening: number; onHand: number; issued: number; procured: number; repaired: number; stores: StoreBreakdown[];
+  jobNo: string; ticketNos: string[];
 }
 
 const CHUNK = 500;
@@ -96,6 +97,57 @@ function monthsFromRows(rows: StockMonthRow[]): MonthParse[] {
     .map(([pk, items]) => ({ periodKey: pk.slice(0, 7), periodMonth: pk, label: labelForPeriod(pk), items, hasSales: true, hasPurchase: true }));
 }
 
+type RegisterItem = StockItem & { plants?: { name: string | null } | null };
+
+/** Rows synthesized from the latest monthly snapshot per register. */
+function snapshotFallbackItems(months: StockMonthRow[]): RegisterItem[] {
+  if (!months.length) return [];
+  const latestPeriod = new Map<string, string>();
+  for (const row of months) {
+    const regId = registerIdOf(row);
+    if (!regId) continue;
+    const cur = latestPeriod.get(regId);
+    if (!cur || row.period_month > cur) latestPeriod.set(regId, row.period_month);
+  }
+  const now = new Date().toISOString();
+  const out: RegisterItem[] = [];
+  for (const row of months) {
+    const regId = registerIdOf(row);
+    if (!regId || row.period_month !== latestPeriod.get(regId)) continue;
+    out.push({
+      id: `snapshot:${row.id}`,
+      plant_id: row.plant_id,
+      store_id: row.store_id,
+      job_no: null,
+      reserved_qty: 0,
+      item_name: row.item_name,
+      unit: row.unit,
+      equipment: null,
+      model: null,
+      baseline_qty: Math.max(0, Number(row.computed_closing)),
+      baseline_month: row.period_month,
+      procured_qty: Number(row.purchased),
+      issued_qty: Number(row.used),
+      manual_delta: 0,
+      ticket_procured_qty: 0,
+      repaired_qty: 0,
+      on_hand: Math.max(0, Number(row.computed_closing)),
+      created_by_batch_id: null,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  return out.sort((a, b) => a.item_name.localeCompare(b.item_name));
+}
+
+function isSnapshotItem(id: string): boolean {
+  return id.startsWith('snapshot:');
+}
+
+function normSearch(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 const inputStyle: React.CSSProperties = {
   border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', outline: 'none',
 };
@@ -107,7 +159,7 @@ export function StockRegister() {
   const { storeQuery, allowedPlants, stores, allowedStores, storeIdFor } = usePlantScope();
   const { activeProfile } = useRoleContext();
 
-  const [items, setItems] = useState<(StockItem & { plants?: { name: string | null } | null })[]>([]);
+  const [items, setItems] = useState<RegisterItem[]>([]);
   const [months, setMonths] = useState<StockMonthRow[]>([]);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [loading, setLoading] = useState(true);
@@ -138,7 +190,17 @@ export function StockRegister() {
 
   // Manual edit modal
   const [editItem, setEditItem] = useState<StockItem | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', onHand: '', unit: '', reason: '' });
+  const [editForm, setEditForm] = useState({ name: '', equipment: '', model: '', onHand: '', unit: '', reason: '' });
+  const [deleteItem, setDeleteItem] = useState<StockItem | null>(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  /** store_item_id → emergency ticket ids that issued this part */
+  const [issueTickets, setIssueTickets] = useState<Record<string, string[]>>({});
+
+  const canUploadExcel =
+    isAdminProfile(activeProfile);
+  const canDeleteStockItem =
+    canUploadExcel || activeProfile.allowedDashboardRoutes.includes('*');
 
   async function load() {
     try {
@@ -148,12 +210,25 @@ export function StockRegister() {
       // with one anchor factory (SCPL – Rehla), so a plant filter showed the
       // shared register as empty to a keeper granted the store and the other
       // two factories — the exact case this screen exists for.
-      const { data: si } = await withEmbedFallback(
-        storeQuery(supabase.from('store_items').select('*, plants(name)')).order('item_name').returns<(StockItem & { plants?: { name: string | null } | null })[]>(),
-        () => storeQuery(supabase.from('store_items').select('*')).order('item_name').returns<(StockItem & { plants?: { name: string | null } | null })[]>(),
-        'StockRegister.items',
-      );
-      setItems(si || []);
+      // PAGED: PostgREST caps at 1000 rows silently — a large register would
+      // otherwise show a random slice and miss items like "Cup brush".
+      const pageItems = (select: string) => (from: number, to: number) =>
+        storeQuery(supabase.from('store_items').select(select))
+          .order('item_name', { ascending: true }).order('id', { ascending: true })
+          .range(from, to)
+          .returns<RegisterItem[]>()
+          .then(({ data, error }) => ({ data, error }));
+      let siRes = await fetchAllRows<RegisterItem>(pageItems('*, plants(name)'));
+      if (siRes.error) {
+        console.error('[StockRegister.items] embed failed; retrying without plants(name):', siRes.error);
+        siRes = await fetchAllRows<RegisterItem>(pageItems('*'));
+      }
+      if (siRes.error) throw siRes.error;
+      const loaded = siRes.data || [];
+      setItems(loaded);
+      persistMissingJobNos('store_items', loaded, 'STK').then(map => {
+        setItems(prev => prev.map(it => ({ ...it, job_no: map.get(it.id) ?? it.job_no })));
+      }).catch(() => { /* column may not exist until 0019 is applied */ });
       // PAGED: ~1,791 snapshot rows already, and PostgREST caps a response at
       // 1000 silently. A truncated read here does not error — it just makes the
       // reconciler compare months it only partially loaded, which is the worst
@@ -171,6 +246,21 @@ export function StockRegister() {
         ).returns<AnomalyResolutionRow[]>();
         setResolutions(arErr ? [] : (ar || []));
       } catch { setResolutions([]); }
+      try {
+        const { data: sr } = await fetchAllRows<{ store_item_id: string | null; ticket_id: string | null }>((from, to) =>
+          supabase.from('maintenance_store_requests').select('store_item_id, ticket_id')
+            .not('store_item_id', 'is', null)
+            .not('ticket_id', 'is', null)
+            .range(from, to)
+            .returns<{ store_item_id: string | null; ticket_id: string | null }[]>());
+        const map: Record<string, string[]> = {};
+        for (const r of sr || []) {
+          if (!r.store_item_id || !r.ticket_id) continue;
+          const arr = map[r.store_item_id] || (map[r.store_item_id] = []);
+          if (!arr.includes(r.ticket_id)) arr.push(r.ticket_id);
+        }
+        setIssueTickets(map);
+      } catch { setIssueTickets({}); }
     } catch (e) {
       console.error('[StockRegister] load failed', e);
     } finally {
@@ -178,6 +268,14 @@ export function StockRegister() {
     }
   }
   useEffect(() => { load(); }, [storeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When the living register is empty but monthly snapshots exist, show the
+  // latest month's closing balances so search still works (e.g. Cup brush).
+  const { registerItems, fromSnapshot } = useMemo(() => {
+    if (items.length) return { registerItems: items, fromSnapshot: false };
+    const snap = snapshotFallbackItems(months);
+    return { registerItems: snap, fromSnapshot: snap.length > 0 };
+  }, [items, months]);
 
   // (No plantOptions here: this screen is keyed on STORES, not factories — see
   // storeChips below. A factory list was left over from before the store split.)
@@ -286,7 +384,7 @@ export function StockRegister() {
   // are still empty — never as the source of the selector, see storeChips.
   const plantsInData = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const it of items) {
+    for (const it of registerItems) {
       const id = registerIdOf(it);
       if (!id) continue;
       const label = it.store_id
@@ -295,7 +393,7 @@ export function StockRegister() {
       seen.set(id, label);
     }
     return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [items, plants, stores]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [registerItems, plants, stores]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The store selector.
@@ -351,21 +449,28 @@ export function StockRegister() {
   // case: a user with access to several SEPARATE stores (say Ganjam and
   // Sikandarabad) viewing them together. `stores` on each row records which
   // register each contribution came from, so the breakdown stays visible.
+  const stockJobMap = useMemo(() => assignSequentialJobNos(registerItems, 'STK'), [registerItems]);
   const merged = useMemo<MergedRow[]>(() => {
-    const q = search.trim().toLowerCase();
+    const q = normSearch(search);
     const map = new Map<string, MergedRow>();
-    for (const it of items) {
+    for (const it of registerItems) {
       const regId = registerIdOf(it);
       if (plantFilter.length && !(regId && plantFilter.includes(regId))) continue;
-      if (q && !(it.item_name.toLowerCase().includes(q) || (it.equipment || '').toLowerCase().includes(q) || (it.model || '').toLowerCase().includes(q))) continue;
+      const tickets = issueTickets[it.id] || [];
+      const job = stockJobMap.get(it.id) || jobNoStock(it.id, it.job_no);
+      const hay = normSearch([it.item_name, it.equipment || '', it.model || '', job, ...tickets.map(ticketShort)].join(' '));
+      if (q && !hay.includes(q)) continue;
       const key = it.item_name.toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
-      const store = { id: it.id, plantId: it.plant_id, plant: (it.store_id ? stores.find(s => s.id === it.store_id)?.name : null) || it.plants?.name || plantName(it.plant_id), onHand: Number(it.on_hand), issued: Number(it.issued_qty), procured: Number(it.ticket_procured_qty || 0), repaired: Number(it.repaired_qty || 0), raw: it };
+      const store = { id: it.id, plantId: it.plant_id, plant: (it.store_id ? stores.find(s => s.id === it.store_id)?.name : null) || it.plants?.name || plantName(it.plant_id), opening: Number(it.baseline_qty), onHand: Number(it.on_hand), issued: Number(it.issued_qty), procured: Number(it.ticket_procured_qty || 0), repaired: Number(it.repaired_qty || 0), raw: it };
       const ex = map.get(key);
-      if (ex) { ex.onHand += store.onHand; ex.issued += store.issued; ex.procured += store.procured; ex.repaired += store.repaired; ex.stores.push(store); }
-      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store] });
+      if (ex) {
+        ex.opening += store.opening; ex.onHand += store.onHand; ex.issued += store.issued; ex.procured += store.procured; ex.repaired += store.repaired; ex.stores.push(store);
+        for (const tid of tickets) if (!ex.ticketNos.includes(tid)) ex.ticketNos.push(tid);
+      }
+      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets] });
     }
     return [...map.values()].sort((a, b) => a.itemName.localeCompare(b.itemName));
-  }, [items, plantFilter, search, plants, stores]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
     let inStock = 0, low = 0, out = 0;
@@ -376,6 +481,7 @@ export function StockRegister() {
   // Column sort — click a header to sort by it (toggles asc/desc).
   const mergedSort = useSortable(merged, {
     item: r => r.itemName,
+    opening: r => r.opening,
     onHand: r => r.onHand,
     issued: r => r.issued,
     procured: r => r.procured,
@@ -527,8 +633,19 @@ export function StockRegister() {
 
   // ── Manual edit (requires justification, logged to Activity Log) ─────────────
   function openEdit(it: StockItem) {
+    if (isSnapshotItem(it.id)) {
+      toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
+      return;
+    }
     setEditItem(it);
-    setEditForm({ name: it.item_name, onHand: String(it.on_hand), unit: normalizeUnit(it.unit), reason: '' });
+    setEditForm({
+      name: it.item_name,
+      equipment: it.equipment || '',
+      model: it.model || '',
+      onHand: String(it.on_hand),
+      unit: normalizeUnit(it.unit),
+      reason: '',
+    });
   }
 
   async function saveEdit() {
@@ -538,17 +655,25 @@ export function StockRegister() {
     const oldOnHand = Number(editItem.on_hand);
     const newOnHand = parseFloat(editForm.onHand);
     const newName = editForm.name.trim() || editItem.item_name;
+    const newEquipment = editForm.equipment.trim();
+    const newModel = editForm.model.trim();
+    const oldEquipment = (editItem.equipment || '').trim();
+    const oldModel = (editItem.model || '').trim();
     const oldUnit = normalizeUnit(editItem.unit);
     const newUnit = normalizeUnit(editForm.unit);
     const nameChanged = newName !== editItem.item_name;
+    const equipmentChanged = newEquipment !== oldEquipment;
+    const modelChanged = newModel !== oldModel;
     const qtyChanged = !isNaN(newOnHand) && newOnHand !== oldOnHand;
     const unitChanged = newUnit !== oldUnit;
-    if (!nameChanged && !qtyChanged && !unitChanged) { toast.error(t('storereq.stockToastNoChange', 'Nothing changed.')); return; }
+    if (!nameChanged && !equipmentChanged && !modelChanged && !qtyChanged && !unitChanged) { toast.error(t('storereq.stockToastNoChange', 'Nothing changed.')); return; }
     if (qtyChanged && newOnHand < 0) { toast.error(t('storereq.stockToastNegative', 'On-hand cannot be negative.')); return; }
     const delta = qtyChanged ? newOnHand - oldOnHand : 0;
     try {
       const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (nameChanged) patch.item_name = newName;
+      if (equipmentChanged) patch.equipment = newEquipment || null;
+      if (modelChanged) patch.model = newModel || null;
       if (unitChanged) patch.unit = newUnit;
       if (qtyChanged) { patch.on_hand = newOnHand; patch.manual_delta = Number(editItem.manual_delta) + delta; }
       const { error } = await (supabase.from('store_items') as any).update(patch).eq('id', editItem.id);
@@ -565,13 +690,55 @@ export function StockRegister() {
       await insertRows('activity_logs', {
         equipment: `Stock: ${newName}`, type: 'stock_edit', date: new Date().toISOString().slice(0, 10),
         done_by: activeProfile.name, plant_id: editItem.plant_id,
-        note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
+        note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${equipmentChanged ? `Equipment "${oldEquipment || '—'}" → "${newEquipment || '—'}". ` : ''}${modelChanged ? `Model "${oldModel || '—'}" → "${newModel || '—'}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
       });
       setEditItem(null);
       toast.success(t('storereq.stockToastSaved', 'Stock updated and logged to the Activity Log.'));
       await load();
     } catch (e) {
       toast.error(errMsg(e, { action: 'save this stock change', context: 'StockRegister.saveEdit' }));
+    }
+  }
+
+  function openDelete(it: StockItem) {
+    if (!canDeleteStockItem) return;
+    if (isSnapshotItem(it.id)) {
+      toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
+      return;
+    }
+    setDeleteItem(it);
+    setDeleteReason('');
+  }
+
+  async function confirmDelete() {
+    if (!deleteItem || !canDeleteStockItem) return;
+    const reason = deleteReason.trim();
+    if (!reason) {
+      toast.error(t('storereq.stockDeleteNeedJust', 'A justification is required to delete a stock item.'));
+      return;
+    }
+    setDeleting(true);
+    try {
+      await insertRows('activity_logs', {
+        equipment: `Stock: ${deleteItem.item_name}`,
+        type: 'stock_delete',
+        date: new Date().toISOString().slice(0, 10),
+        done_by: activeProfile.name,
+        plant_id: deleteItem.plant_id,
+        note: `Deleted stock item "${deleteItem.item_name}" (on-hand ${Number(deleteItem.on_hand)} ${normalizeUnit(deleteItem.unit)}). ${reason}`,
+      });
+      // Movement history cascades with the row (store_stock_events.item_id ON DELETE CASCADE).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await (supabase.from('store_items') as any).delete().eq('id', deleteItem.id);
+      if (error) throw error;
+      setDeleteItem(null);
+      setDeleteReason('');
+      toast.success(t('storereq.stockToastDeleted', 'Stock item removed and logged to the Activity Log.'));
+      await load();
+    } catch (e) {
+      toast.error(errMsg(e, { action: 'delete this stock item', context: 'StockRegister.confirmDelete' }));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -585,12 +752,12 @@ export function StockRegister() {
         <div>
           <div className="text-base font-bold font-heading">{t('storereq.stockHeading', 'Stock register')}</div>
           <div className="text-xs text-slate-500">
-            {t('storereq.stockSubtitle', 'On-hand seeded from the monthly Store Keeping file, adjusted live as parts are issued.')}
+            {t('storereq.stockSubtitle', 'Software register — Excel / raw upload does not write to Busy. OP − Issue (+ restock / repair / manual) = CL.')}
             {latestUpload ? ` · ${t('storereq.stockLatestMonth', { defaultValue: 'Latest month: {{month}}', month: latestUpload.slice(0, 7) })}` : ''}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {items.length > 0 && profileHasCapability(activeProfile, 'add_stock_purchase') && (
+          {items.length > 0 && !fromSnapshot && profileHasCapability(activeProfile, 'add_stock_purchase') && (
             <button onClick={() => setShowPurchase(true)} className="pill px-4 py-2 font-semibold text-sm" style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#334155', cursor: 'pointer' }}>{t('storereq.stockAddPurchase', '＋ Add Purchase')}</button>
           )}
           {/* The delete-a-bad-upload flow lives in Admin → Upload History, but
@@ -615,13 +782,17 @@ export function StockRegister() {
               {t('storereq.manageUploads', '⌫ Manage uploads')}
             </button>
           )}
-          <button onClick={() => fileRef.current?.click()} className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm">{t('storereq.stockUploadExcel', '↑ Upload Excel')}</button>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
+          {canUploadExcel && (
+            <>
+              <button onClick={() => fileRef.current?.click()} className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm">{t('storereq.stockUploadExcel', '↑ Upload Excel')}</button>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
+            </>
+          )}
         </div>
       </div>
 
-      {loading ? <SkeletonRows rows={4} /> : items.length === 0 ? (
+      {loading ? <SkeletonRows rows={4} /> : registerItems.length === 0 ? (
         // The empty state names the store too. "No stock file uploaded yet" on
         // its own is the worst version of the reported bug: the one screen where
         // the user most needs to know WHICH register they are looking at said
@@ -634,10 +805,18 @@ export function StockRegister() {
               </span>
             </div>
           )}
-          {t('storereq.stockEmptyTitle', 'No stock file uploaded yet.')}<br />{t('storereq.stockEmptyBodyPre', 'Upload the monthly')} <strong>{t('storereq.stockEmptyBodyStrong', 'Store Keeping')}</strong> {t('storereq.stockEmptyBodyPost', 'Excel to seed the register.')}
+          {t('storereq.stockEmptyTitle', 'No stock file uploaded yet.')}<br />
+          {canUploadExcel
+            ? <>{t('storereq.stockEmptyBodyPre', 'Upload the monthly')} <strong>{t('storereq.stockEmptyBodyStrong', 'Store Keeping')}</strong> {t('storereq.stockEmptyBodyPost', 'Excel to seed the register.')}</>
+            : t('storereq.stockEmptyAskAdmin', 'Ask an administrator to upload the monthly Store Keeping Excel.')}
         </div>
       ) : (
         <>
+          {fromSnapshot && (
+            <div className="mb-3 text-sm" style={{ background: '#FFFBEB', border: '1px solid #FED7AA', borderRadius: 10, padding: '10px 14px', color: '#92400E' }}>
+              {t('storereq.stockSnapshotBanner', 'Living register is empty — showing quantities from the latest uploaded monthly snapshot. Re-upload the Store Keeping Excel to refresh on-hand stock.')}
+            </div>
+          )}
           {/* Summary strip + expand toggle (the big table stays collapsed) */}
           <div className="flex items-center justify-between flex-wrap gap-2" style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: '10px 14px' }}>
             <div style={{ fontSize: 13, color: '#334155' }}>
@@ -696,7 +875,7 @@ export function StockRegister() {
                 </div>
               )}
 
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('storereq.stockSearchPh', 'Search item / equipment…')} style={{ ...inputStyle, width: '100%', marginBottom: 12 }} />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('storereq.stockSearchPh', 'Search item, job no, or ticket #…')} style={{ ...inputStyle, width: '100%', marginBottom: 12 }} />
 
               {/* Anomalies — open ones count; settled (resolved / false-positive) collapse
                   behind a toggle. Review actions go through the resolve_stock_anomaly RPC. */}
@@ -794,15 +973,20 @@ export function StockRegister() {
                 <table className="dt2">
                   <thead>
                     <tr>
-                      <Th sortKey="item" s={mergedSort}>{t('storereq.col_item', 'Item')}</Th><th>{t('storereq.col_equipment', 'Equipment')}</th>{multiStore && <th>{t('storereq.stockColStores', 'Stores')}</th>}<th>{t('storereq.field_unit', 'Unit')}</th>
-                      <Th sortKey="onHand" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColOnHand', 'On-hand')}</Th>
-                      <Th sortKey="issued" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColIssued', 'Issued')}</Th>
-                      <Th sortKey="procured" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColProcured', 'Procured')}</Th>
+                      <Th sortKey="item" s={mergedSort}>{t('storereq.col_item', 'Item')}</Th>
+                      <th>{t('storereq.col_jobNo', 'Job No')}</th>
+                      <th>{t('storereq.col_equipment', 'Equipment')}</th>
+                      {multiStore && <th>{t('storereq.stockColStores', 'Stores')}</th>}
+                      <th>{t('storereq.field_unit', 'Unit')}</th>
+                      <Th sortKey="opening" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColOp', 'OP')}</Th>
+                      <Th sortKey="issued" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColIssued', 'Issue')}</Th>
+                      <Th sortKey="onHand" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColCl', 'CL')}</Th>
+                      <th>{t('storereq.col_ticket', 'Ticket #')}</th>
                       <Th sortKey="status" s={mergedSort} firstDir="desc">{t('storereq.col_status', 'Status')}</Th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 9 : 8} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
+                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 11 : 10} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
                     {pageRows.map(m => {
                       const st = stockStatus(m.onHand);
                       const isOpen = expanded === m.key;
@@ -811,21 +995,46 @@ export function StockRegister() {
                         <React.Fragment key={m.key}>
                           <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : m.key)}>
                             <td className="font-semibold text-slate-700">{m.itemName}</td>
+                            <td className="font-mono text-xs text-slate-500">{m.jobNo}</td>
                             <td className="text-slate-500 text-xs">{m.equipment}{m.model ? ` · ${m.model}` : ''}</td>
                             {multiStore && <td className="text-slate-500 text-xs">{single ? m.stores[0].plant : t('storereq.stockStoresCount', { defaultValue: '{{n}} stores', n: m.stores.length })}</td>}
                             <td className="text-slate-500 text-xs">{m.unit}</td>
+                            <td className="num" title={t('storereq.stockColOpHint', 'Opening / baseline')}>{m.opening}</td>
+                            <td className="num" style={{ color: m.issued > 0 ? '#2563EB' : '#CBD5E1' }}>{m.issued || '—'}</td>
                             <td className="num font-bold" style={{ color: st.color }}
-                              title={m.repaired > 0 ? t('storereq.stockOnHandTooltip', { defaultValue: 'New: {{fresh}} · Repaired: {{repaired}} · Total: {{total}}', fresh: m.onHand - m.repaired, repaired: m.repaired, total: m.onHand }) : undefined}>
+                              title={t('storereq.stockClHint', { defaultValue: 'Closing = OP − Issue + restock / repair / manual. New: {{fresh}} · Repaired: {{repaired}}', fresh: m.onHand - m.repaired, repaired: m.repaired })}>
                               {m.onHand}{m.repaired > 0 && <span aria-label={`includes ${m.repaired} repaired unit(s)`} style={{ color: '#7C3AED' }}>*</span>}
                             </td>
-                            <td className="num" style={{ color: m.issued > 0 ? '#2563EB' : '#CBD5E1' }}>{m.issued || '—'}</td>
-                            <td className="num" style={{ color: m.procured > 0 ? '#7C3AED' : '#CBD5E1' }}>{m.procured || '—'}</td>
+                            <td className="text-xs" onClick={e => e.stopPropagation()}>
+                              {m.ticketNos.length === 0 ? <span className="text-slate-300">—</span> : m.ticketNos.slice(0, 3).map(tid => (
+                                <button
+                                  key={tid}
+                                  type="button"
+                                  onClick={() => navigate(`/dashboard/purchase/maint?ticket=${tid}`)}
+                                  className="num text-blue-600 font-semibold mr-1"
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+                                  title={t('storereq.open_ticket', 'Open maintenance ticket')}
+                                >#{ticketShort(tid)}</button>
+                              ))}
+                              {m.ticketNos.length > 3 ? <span className="text-slate-400">+{m.ticketNos.length - 3}</span> : null}
+                            </td>
                             <td><span className="badge" style={{ background: st.bg, color: st.color, fontWeight: 700 }}>{t(STATUS_LABEL_KEYS[st.key], st.label)}</span></td>
-                            <td>{single ? <button onClick={e => { e.stopPropagation(); openEdit(m.stores[0].raw); }} className="text-xs" style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('storereq.stockEdit', 'Edit')}</button> : <span className="text-xs text-slate-400">▾</span>}</td>
+                            <td>
+                              {single && !fromSnapshot ? (
+                                <span className="inline-flex items-center gap-2 text-xs" onClick={e => e.stopPropagation()}>
+                                  <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                  {canDeleteStockItem && (
+                                    <button onClick={() => openDelete(m.stores[0].raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-slate-400">{single ? '—' : '▾'}</span>
+                              )}
+                            </td>
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={multiStore ? 9 : 8} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
+                              <td colSpan={multiStore ? 11 : 10} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
                                 {m.stores.map(s => (
                                   <div key={s.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, fontSize: 11.5, color: '#64748B', padding: '3px 0' }}>
                                     <strong style={{ color: '#334155', minWidth: 70 }}>{s.plant}</strong>
@@ -836,7 +1045,14 @@ export function StockRegister() {
                                     <span style={{ color: '#7C3AED' }}>{t('storereq.stockExpProcuredTickets', 'Procured for tickets')}: <strong>{s.procured}</strong></span>
                                     {Number(s.raw.procured_qty) > 0 && <span>+ {t('storereq.stockExpRestocked', 'Restocked')}: <strong>{Number(s.raw.procured_qty)}</strong></span>}
                                     <span>{t('storereq.stockExpManual', 'Manual')}: <strong>{Number(s.raw.manual_delta) > 0 ? '+' : ''}{Number(s.raw.manual_delta)}</strong></span>
-                                    <button onClick={e => { e.stopPropagation(); openEdit(s.raw); }} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                    {!fromSnapshot && (
+                                      <span className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                                        <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                        {canDeleteStockItem && (
+                                          <button onClick={() => openDelete(s.raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
+                                        )}
+                                      </span>
+                                    )}
                                   </div>
                                 ))}
                               </td>
@@ -974,6 +1190,16 @@ export function StockRegister() {
             </div>
             <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
               <div style={{ flex: 1 }}>
+                <div style={label}>{t('storereq.col_equipment', 'Equipment')}</div>
+                <input value={editForm.equipment} onChange={e => setEditForm(f => ({ ...f, equipment: e.target.value }))} style={{ ...inputStyle, width: '100%' }} placeholder={t('storereq.stockFieldEquipmentPh', 'e.g. same as item, or the machine this part fits')} />
+              </div>
+              <div style={{ width: 140 }}>
+                <div style={label}>{t('storereq.stockFieldModel', 'Model')}</div>
+                <input value={editForm.model} onChange={e => setEditForm(f => ({ ...f, model: e.target.value }))} style={{ ...inputStyle, width: '100%' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+              <div style={{ flex: 1 }}>
                 <div style={label}>{t('storereq.stockFieldOnHand', 'On-hand quantity')}</div>
                 <input type="number" value={editForm.onHand} onChange={e => setEditForm(f => ({ ...f, onHand: e.target.value }))} style={{ ...inputStyle, width: '100%' }} />
               </div>
@@ -993,6 +1219,43 @@ export function StockRegister() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setEditItem(null)} style={btnGhost}>{t('storereq.stockCancel', 'Cancel')}</button>
               <button onClick={saveEdit} style={{ ...btnPrimary, flex: 1, opacity: editForm.reason.trim() ? 1 : 0.5 }} disabled={!editForm.reason.trim()}>{t('storereq.stockSaveLog', 'Save & log')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Admin delete modal ───────────────────────────────────────────────── */}
+      {deleteItem && (
+        <div style={overlay} onClick={() => { if (!deleting) { setDeleteItem(null); setDeleteReason(''); } }}>
+          <div style={modal} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: '#DC2626' }}>{t('storereq.stockDeleteModalTitle', 'Delete stock item')}</div>
+            <div style={{ fontSize: 13, color: '#475569', marginBottom: 12, lineHeight: 1.5 }}>
+              {t('storereq.stockDeleteConfirm', {
+                defaultValue: 'Remove "{{name}}" from the living register? On-hand {{qty}} {{unit}}. This cannot be undone. Monthly snapshots are kept for history.',
+                name: deleteItem.item_name,
+                qty: Number(deleteItem.on_hand),
+                unit: normalizeUnit(deleteItem.unit),
+              })}
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={label}>{t('storereq.stockFieldJustification', 'Justification (required)')}</div>
+              <textarea
+                value={deleteReason}
+                onChange={e => setDeleteReason(e.target.value)}
+                rows={3}
+                style={{ ...inputStyle, width: '100%', resize: 'vertical' }}
+                placeholder={t('storereq.stockDeleteJustPh', 'e.g. Duplicate row / wrong item uploaded — removing from register.')}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => { setDeleteItem(null); setDeleteReason(''); }} disabled={deleting} style={btnGhost}>{t('storereq.stockCancel', 'Cancel')}</button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting || !deleteReason.trim()}
+                style={{ ...btnPrimary, flex: 1, background: '#DC2626', opacity: (deleting || !deleteReason.trim()) ? 0.5 : 1 }}
+              >
+                {deleting ? t('storereq.stockDeleting', 'Deleting…') : t('storereq.stockDeleteConfirmBtn', 'Delete & log')}
+              </button>
             </div>
           </div>
         </div>

@@ -83,28 +83,36 @@ alter table public.reactors enable row level security;
 alter table public.production_batch_sheets enable row level security;
 
 drop policy if exists "anon_all" on public.reactors;
-create policy "anon_all" on public.reactors for all using (true) with check (true);
+drop policy if exists "scope_all" on public.reactors;
+create policy "scope_all" on public.reactors for all
+  using      (public.plant_in_scope(plant_id))
+  with check (public.plant_in_scope(plant_id));
 
 drop policy if exists "anon_all" on public.production_batch_sheets;
-create policy "anon_all" on public.production_batch_sheets for all using (true) with check (true);
+drop policy if exists "scope_all" on public.production_batch_sheets;
+create policy "scope_all" on public.production_batch_sheets for all
+  using      (public.plant_in_scope(plant_id))
+  with check (public.plant_in_scope(plant_id));
 
 -- Official reactor IDs by factory (client note). Drum Plant (DRUM_REHLA) is omitted.
+-- Display names are plant-local: Reactor 1(P33) … Reactor 11(P43) for Madan, etc.
 insert into public.reactors (plant_id, code, name, sort_order)
 select p.id,
        'P' || g.n,
-       'Reactor P' || g.n,
+       'Reactor ' || (g.n - g.from_n + 1)::text || '(P' || g.n || ')',
        g.n
 from public.plants p
 join lateral (
-  select generate_series(r.from_n, r.to_n) as n
+  select gs.n as n, r.from_n as from_n
   from (
     values
       ('SCPL_REHLA', 1, 12),
-      ('SPPL_REHLA', 13, 27),
-      ('SPPLK_REHLA', 28, 32),
+      ('SPPL_REHLA', 13, 28),
+      ('SPPLK_REHLA', 29, 32),
       ('MADAN_SIKANDRABAD', 33, 43),
       ('SCPL_GANJAM', 44, 49)
   ) as r(factory_code, from_n, to_n)
+  cross join lateral generate_series(r.from_n, r.to_n) as gs(n)
   where r.factory_code = p.factory_code
 ) g on true
 where p.factory_code is not null

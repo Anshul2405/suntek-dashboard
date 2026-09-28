@@ -35,6 +35,8 @@ export interface MockProfile {
   roleLabel: string;
   roleDescription: string;
   initials: string;
+  /** Optional profile photo (Cloudinary URL). When set, ProfileAvatar prefers it over initials. */
+  photoUrl?: string | null;
   /** Full Tailwind class e.g. 'from-orange-300' */
   avatarFrom: string;
   /** Full Tailwind class e.g. 'to-orange-500' */
@@ -80,7 +82,18 @@ export const CAPABILITIES: { key: string; label: string; description: string }[]
   // "restricted to authorised administrator accounts".
   { key: 'delete_user', label: 'Delete user profiles', description: 'Delete a user from User Management. The profile is hidden from the app and the person can no longer log in; the record is retained for audit and can be restored. Cannot delete yourself or the last remaining administrator.' },
   { key: 'delete_import_batch', label: 'Delete uploaded data', description: 'Delete the records imported through an incorrect CSV / Excel upload, so a corrected file can be uploaded. Only rows from that file are removed; manual entries are never touched. Every deletion is audited.' },
+  { key: 'batch_raw', label: 'Batch — Raw / readings', description: 'See New Batch and Log Reading on Batch Logger (raw production entry). If none of the three Batch toggles are set, the person keeps the old full access.' },
+  { key: 'batch_sheet', label: 'Batch — Sheet', description: 'See Create Batch Sheet and photo upload on Batch Logger / Batch Sheet.' },
+  { key: 'batch_mat', label: 'Batch — Material / history', description: 'See batch history and material-side batch tools. Use with Raw / Sheet to limit what Technical can open.' },
+  { key: 'batch_grade', label: 'Batch — Grade type select', description: 'See and set Grade (NP / HNP / IMP / Grade B) on Create Batch Sheet. Off = the field is hidden and not required; the sheet still saves. Owner/Admin always has this.' },
 ];
+
+/** Owner/Admin — including provisioned users whose id is db_<uuid>. */
+export function isAdminProfile(profile: Pick<MockProfile, 'id' | 'baseRoleId' | 'allowedDashboardRoutes'>): boolean {
+  return profile.allowedDashboardRoutes.includes('*')
+    || profile.id === 'admin'
+    || profile.baseRoleId === 'admin';
+}
 
 /**
  * True if the profile holds the privileged capability.
@@ -93,6 +106,48 @@ export const CAPABILITIES: { key: string; label: string; description: string }[]
 export function profileHasCapability(profile: MockProfile, cap: string): boolean {
   if (profile.allowedDashboardRoutes.includes('*')) return true;
   return (profile.capabilities || []).includes(cap);
+}
+
+/** Admin, Management, Unit Head — roles that may view sensitive batch fields (e.g. oil ratio). */
+export function isManagementProfile(profile: MockProfile): boolean {
+  if (profile.allowedDashboardRoutes.includes('*')) return true;
+  const role = profile.baseRoleId ?? profile.id;
+  return role === 'admin' || role === 'management' || role === 'unit_head';
+}
+
+/** True when User Management has restricted Batch Logger to Raw / Sheet / Mat. */
+export function hasBatchFacetCaps(profile: MockProfile): boolean {
+  if (isAdminProfile(profile)) return false;
+  const caps = profile.capabilities || [];
+  return caps.includes('batch_raw') || caps.includes('batch_sheet') || caps.includes('batch_mat');
+}
+
+/** Batch Logger facets. If none of the three caps are set, keep full access. */
+export function canViewBatchFacet(profile: MockProfile, facet: 'raw' | 'sheet' | 'mat'): boolean {
+  if (isAdminProfile(profile)) return true;
+  const caps = profile.capabilities || [];
+  const any = caps.includes('batch_raw') || caps.includes('batch_sheet') || caps.includes('batch_mat');
+  if (!any) return true;
+  return caps.includes(`batch_${facet}`);
+}
+
+/** Grade dropdown on Create Batch Sheet. Admin always; others only if granted. */
+export function canSelectBatchGrade(profile: MockProfile): boolean {
+  return isAdminProfile(profile) || profileHasCapability(profile, 'batch_grade');
+}
+
+/** Batch Sheet register. Raw-only Technical goes to Log Reading, not the list. */
+export function canViewBatchRegister(profile: MockProfile): boolean {
+  if (isAdminProfile(profile)) return true;
+  if (!hasBatchFacetCaps(profile)) return true;
+  return canViewBatchFacet(profile, 'sheet') || canViewBatchFacet(profile, 'mat');
+}
+
+export function canViewBatchOilRatio(profile: MockProfile, createdByName: string | null | undefined): boolean {
+  if (isManagementProfile(profile)) return true;
+  const creator = createdByName?.trim().toLowerCase();
+  const viewer = profile.name?.trim().toLowerCase();
+  return !!creator && !!viewer && creator === viewer;
 }
 
 /**
@@ -173,6 +228,18 @@ export function roleToProfile(role: RoleRow, overrides?: Partial<MockProfile>): 
   const merged = { ...base, ...overrides };
   // Always recompute initials from the resolved name (override may set name).
   merged.initials = initialsFrom(merged.name);
+  if (role.id === 'factory_operator') {
+    const rawOnly = hasBatchFacetCaps(merged)
+      && canViewBatchFacet(merged, 'raw')
+      && !canViewBatchFacet(merged, 'sheet')
+      && !canViewBatchFacet(merged, 'mat');
+    merged.homeRoute = rawOnly ? '/dashboard/batch-entry?tab=reading' : '/dashboard/batches';
+    if (!merged.allowedDashboardRoutes.includes('*')) {
+      merged.allowedDashboardRoutes = [
+        ...new Set([...merged.allowedDashboardRoutes, ...BATCH_SHEET_ROUTES]),
+      ];
+    }
+  }
   return merged;
 }
 
@@ -210,7 +277,31 @@ export const ADMIN_FALLBACK: MockProfile = {
  *
  * All allowed routes are listed explicitly, so prefix matching is not needed.
  */
+function isFactoryOperator(profile: MockProfile): boolean {
+  return profile.id === 'factory_operator' || profile.baseRoleId === 'factory_operator';
+}
+
+/** Batch Sheet register + the create/logger flow are one workflow for Technical. */
+export const BATCH_SHEET_ROUTES = ['/dashboard/batches', '/dashboard/batch-entry'] as const;
+
 export function profileCanAccess(profile: MockProfile, route: string): boolean {
   if (profile.allowedDashboardRoutes.includes('*')) return true;
+  // Technical always reaches Batch Sheet + Batch Logger even if the live roles
+  // row only ticked one of them in Manage Roles.
+  if (isFactoryOperator(profile) && route === '/dashboard/batches') {
+    return canViewBatchRegister(profile);
+  }
+  if (isFactoryOperator(profile) && route === '/dashboard/batch-entry') {
+    return !hasBatchFacetCaps(profile)
+      || canViewBatchFacet(profile, 'raw')
+      || canViewBatchFacet(profile, 'sheet');
+  }
+  // Anyone granted the register may create sheets (Create Batch Sheet → batch-entry).
+  if (
+    route === '/dashboard/batch-entry' &&
+    profile.allowedDashboardRoutes.includes('/dashboard/batches')
+  ) {
+    return true;
+  }
   return profile.allowedDashboardRoutes.includes(route);
 }

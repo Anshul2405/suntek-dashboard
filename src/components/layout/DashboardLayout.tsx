@@ -152,7 +152,7 @@ const PAGE_SUBTITLES: Record<string, L> = {
   '/dashboard/night-manager': ['nav.subNightManager', 'Night duty roster and check-ins.'],
   '/dashboard/sales': ['nav.subSales', 'Contracts, dispatches and acid tracking.'],
   '/dashboard/stock': ['nav.subStock', 'Tanks, drums and store stock by plant.'],
-  '/dashboard/batches': ['nav.subBatches', 'Active batches, QC and production sheets.'],
+  '/dashboard/batches': ['nav.subBatches', 'Production sheets — TDS, COA and photo evidence.'],
   '/dashboard/customers': ['nav.subCustomers', 'Customer ledger and payment history.'],
   '/dashboard/oil-ratio': ['nav.subOilRatio', 'Density ↔ oil-ratio reference table.'],
   '/dashboard/audit': ['nav.subAudit', 'Security and change log.'],
@@ -182,6 +182,7 @@ const PURCHASE_TAB_PATHS = [
   '/dashboard/purchase/activity',
   '/dashboard/purchase/storereq',
   '/dashboard/purchase/purchase',
+  '/dashboard/purchase/qr',
   '/dashboard/purchase/marine',
   '/dashboard/purchase/labour',
 ];

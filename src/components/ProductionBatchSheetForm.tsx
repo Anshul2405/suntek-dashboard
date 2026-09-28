@@ -9,19 +9,23 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Camera, Check, ChevronLeft, ChevronRight, ImageUp, X } from 'lucide-react';
+import { Camera, Check, ChevronLeft, ChevronRight, Eye, ImageUp, X } from 'lucide-react';
 import { CameraCapture } from './CameraCapture';
+import { ImageLightbox, type LightboxImage } from './ui/ImageLightbox';
 import { uploadWorkflowImage } from '../lib/cloudinary';
-import { callRpc, insertRows } from '../lib/db';
+import { insertRows } from '../lib/db';
+import { humanizeError, rawErrorText } from '../lib/errors';
 import { supabase } from '../lib/supabase';
 import { usePlantScope } from '../contexts/PlantScopeContext';
 import { useRoleContext } from '../contexts/RoleContext';
+import { canSelectBatchGrade } from '../lib/profiles';
 import { useToast } from './ui/toast';
 import {
   isBatchSheetPlant,
   preferCatalogIfDbStale,
-  formatReactorBatchNo,
   parseReactorBatchSeq,
+  isValidReactorBatchNo,
+  reactorBatchPrefix,
   type CatalogReactor,
 } from '../lib/batch/reactorCatalog';
 import { BATCH_FLOW_WIZARD_EVENT, readWizardStep } from './tour/batchFlowTourSession';
@@ -47,6 +51,19 @@ export const BATCH_COLOUR_OPTIONS = [
   'Off-spec / Other',
 ] as const;
 
+/** Product family / grade for TDS / COA. */
+export const BATCH_OIL_GRADES = ['NP', 'HNP', 'IMP (imported)', 'Grade B'] as const;
+
+/** Gravity-style numbers only (1400 or 1.40) — used for TDS column highlight. */
+export function parseTypedOilRatio(raw: string): number | null {
+  const cleaned = String(raw).trim().replace(/,/g, '');
+  if (/[a-zA-Z%]/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n < 10) return Math.round(n * 1000);
+  return Math.round(n);
+}
+
 const MAX_PHOTOS = 2;
 const STEPS = ['Reactor', 'Density', 'Photos', 'Review'] as const;
 
@@ -59,6 +76,7 @@ export function ProductionBatchSheetForm({
   const toast = useToast();
   const { plants, plantIds, isGlobal, ready } = usePlantScope();
   const { activeProfile } = useRoleContext();
+  const showGrade = canSelectBatchGrade(activeProfile);
 
   const scopedPlants = useMemo(
     () => (isGlobal ? plants : plants.filter(p => plantIds.includes(p.id)))
@@ -84,18 +102,43 @@ export function ProductionBatchSheetForm({
   const [step, setStep] = useState<StageStep>(0);
   const [plantId, setPlantId] = useState('');
   const [reactorId, setReactorId] = useState('');
+  const [batchNoInput, setBatchNoInput] = useState('');
   const [reactors, setReactors] = useState<ReactorRow[]>([]);
   const [usingFallbackReactors, setUsingFallbackReactors] = useState(false);
   const [density, setDensity] = useState('');
+  const [oilGrade, setOilGrade] = useState('');
+  const [oilRatio, setOilRatio] = useState('');
   const [colourNote, setColourNote] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [cameraKind, setCameraKind] = useState<PhotoKind | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<{ images: LightboxImage[]; index: number } | null>(null);
   const [photos, setPhotos] = useState<Record<PhotoKind, PhotoItem[]>>({
     sheet: [],
     bucket: [],
     heat: [],
   });
+
+  function openSlotPreview(kind: PhotoKind, index: number) {
+    const images = photos[kind].map((p, i) => ({
+      url: p.previewUrl,
+      label: `${slotMeta[kind].label} ${i + 1}`,
+    }));
+    if (images.length === 0) return;
+    setPhotoPreview({ images, index });
+  }
+
+  function openAllPhotosPreview(startUrl: string) {
+    const images: LightboxImage[] = [];
+    (Object.keys(photos) as PhotoKind[]).forEach(kind => {
+      photos[kind].forEach((p, i) => {
+        images.push({ url: p.previewUrl, label: `${slotMeta[kind].label} ${i + 1}` });
+      });
+    });
+    const index = Math.max(0, images.findIndex(img => img.url === startUrl));
+    if (images.length === 0) return;
+    setPhotoPreview({ images, index });
+  }
 
   useEffect(() => {
     if (!ready || plantId) return;
@@ -150,6 +193,21 @@ export function ProductionBatchSheetForm({
     return () => window.removeEventListener(BATCH_FLOW_WIZARD_EVENT, sync);
   }, []);
 
+  // Auto-fill P{reactor}- prefix when the selected reactor changes.
+  useEffect(() => {
+    const reactor = reactors.find(r => r.id === reactorId);
+    if (!reactor?.code) return;
+    const prefix = reactorBatchPrefix(reactor.code);
+    setBatchNoInput((prev) => {
+      const upper = prev.trim().toUpperCase();
+      if (upper.startsWith(prefix)) {
+        const suffix = upper.slice(prefix.length).replace(/\D/g, '');
+        return prefix + suffix;
+      }
+      return prefix;
+    });
+  }, [reactorId, reactors]);
+
   const addPhoto = useCallback((kind: PhotoKind, blob: Blob) => {
     setPhotos(prev => {
       if (prev[kind].length >= MAX_PHOTOS) return prev;
@@ -180,77 +238,81 @@ export function ProductionBatchSheetForm({
 
   const selectedReactor = reactors.find(r => r.id === reactorId);
   const selectedPlant = scopedPlants.find(p => p.id === plantId);
+  const batchPrefix = selectedReactor?.code ? reactorBatchPrefix(selectedReactor.code) : '';
   const densityNum = Number(density);
   const densityOk = Number.isFinite(densityNum) && densityNum > 0;
+  const oilRatioText = oilRatio.trim();
+  const gradeOk = !showGrade || BATCH_OIL_GRADES.includes(oilGrade as typeof BATCH_OIL_GRADES[number]);
+  const oilOk = gradeOk && oilRatioText.length > 0;
   const photosOk = photos.sheet.length >= 1 && photos.bucket.length >= 1 && photos.heat.length >= 1;
 
+  const batchNoTyped = batchNoInput.trim().toUpperCase();
+  const batchNoOk = !!(selectedReactor?.code && isValidReactorBatchNo(batchNoTyped, selectedReactor.code));
+  const batchNoTouched = batchNoTyped.length > batchPrefix.length;
+  const batchNoInvalid = batchNoTouched && !batchNoOk;
+
   const canNext =
-    step === 0 ? !!(plantId && reactorId) :
-    step === 1 ? densityOk :
+    step === 0 ? !!(plantId && reactorId && batchNoOk) :
+    step === 1 ? densityOk && oilOk :
     step === 2 ? photosOk :
     true;
 
+  function handleBatchNoChange(raw: string) {
+    if (!batchPrefix) {
+      setBatchNoInput(raw);
+      return;
+    }
+    const upper = raw.toUpperCase();
+    if (!upper.startsWith(batchPrefix)) {
+      const suffix = upper.replace(/^P?\d*-?/i, '').replace(/\D/g, '');
+      setBatchNoInput(batchPrefix + suffix);
+      return;
+    }
+    const suffix = upper.slice(batchPrefix.length).replace(/\D/g, '');
+    setBatchNoInput(batchPrefix + suffix);
+  }
+
+  function selectReactor(id: string) {
+    setReactorId(id);
+  }
+
+  async function nextReactorSeq(reactorCode: string): Promise<number> {
+    let maxSeq = 0;
+    const { data: legacyRows } = await supabase
+      .from('active_batches')
+      .select('batch_no, sheet_details')
+      .eq('plant_id', plantId)
+      .limit(1000)
+      .returns<{ batch_no: string; sheet_details: { reactorCode?: string; reactor_seq?: number } | null }[]>();
+    for (const row of legacyRows ?? []) {
+      const d = row.sheet_details;
+      if (d?.reactorCode === reactorCode && typeof d.reactor_seq === 'number') {
+        maxSeq = Math.max(maxSeq, d.reactor_seq);
+      }
+      const parsed = parseReactorBatchSeq(row.batch_no, reactorCode);
+      if (parsed != null) maxSeq = Math.max(maxSeq, parsed);
+    }
+    const { data: nativeRows } = await supabase
+      .from('production_batch_sheets')
+      .select('batch_no, reactor_seq')
+      .eq('plant_id', plantId)
+      .limit(500)
+      .returns<{ batch_no: string; reactor_seq: number }[]>();
+    for (const row of nativeRows ?? []) {
+      maxSeq = Math.max(maxSeq, row.reactor_seq || parseReactorBatchSeq(row.batch_no, reactorCode) || 0);
+    }
+    return maxSeq + 1;
+  }
+
   async function handleSubmit() {
-    if (!canNext || !reactorId || !plantId || !photosOk || !densityOk) return;
+    if (!canNext || !reactorId || !plantId || !photosOk || !densityOk || !batchNoOk) return;
     setSaving(true);
     try {
       const creator = activeProfile.name || 'Technical';
       const reactorCode = selectedReactor?.code || 'P1';
-
-      let batchNo = '';
-      let reactorSeq = 0;
-      let useLegacyActiveBatches = usingFallbackReactors || reactorId.startsWith('fallback:');
-
-      if (!useLegacyActiveBatches) {
-        const { data: nums, error: allocErr } = await callRpc<{ batch_no: string; reactor_seq: number }[]>(
-          'allocate_production_batch_numbers',
-          { p_reactor_id: reactorId },
-        );
-        if (allocErr) {
-          console.warn('[ProductionBatchSheet] allocate RPC missing — fallback path', allocErr.message);
-          useLegacyActiveBatches = true;
-        } else {
-          const allocated = Array.isArray(nums) ? nums[0] : (nums as { batch_no: string; reactor_seq: number } | null);
-          if (!allocated?.batch_no || allocated.reactor_seq == null) {
-            useLegacyActiveBatches = true;
-          } else {
-            // Always encode as reactor-seq (P12-13), even if RPC still returns PBS-*.
-            reactorSeq = allocated.reactor_seq;
-            batchNo = formatReactorBatchNo(reactorCode, reactorSeq);
-          }
-        }
-      }
-
-      if (useLegacyActiveBatches) {
-        // Next sequence for this reactor: scan existing sheet rows (PBS-* or P12-n).
-        let maxSeq = 0;
-        const { data: legacyRows } = await supabase
-          .from('active_batches')
-          .select('batch_no, sheet_details')
-          .eq('plant_id', plantId)
-          .limit(1000)
-          .returns<{ batch_no: string; sheet_details: { reactorCode?: string; reactor_seq?: number } | null }[]>();
-        for (const row of legacyRows ?? []) {
-          const d = row.sheet_details;
-          if (d?.reactorCode === reactorCode && typeof d.reactor_seq === 'number') {
-            maxSeq = Math.max(maxSeq, d.reactor_seq);
-          }
-          const parsed = parseReactorBatchSeq(row.batch_no, reactorCode);
-          if (parsed != null) maxSeq = Math.max(maxSeq, parsed);
-        }
-        const { data: nativeRows } = await supabase
-          .from('production_batch_sheets')
-          .select('batch_no, reactor_seq')
-          .eq('plant_id', plantId)
-          .like('batch_no', `${reactorCode}-%`)
-          .limit(500)
-          .returns<{ batch_no: string; reactor_seq: number }[]>();
-        for (const row of nativeRows ?? []) {
-          maxSeq = Math.max(maxSeq, row.reactor_seq || parseReactorBatchSeq(row.batch_no, reactorCode) || 0);
-        }
-        reactorSeq = maxSeq + 1;
-        batchNo = formatReactorBatchNo(reactorCode, reactorSeq);
-      }
+      const batchNo = batchNoTyped;
+      const reactorSeq = await nextReactorSeq(reactorCode);
+      const useLegacyActiveBatches = usingFallbackReactors || reactorId.startsWith('fallback:');
 
       const uploadKind = async (kind: PhotoKind, items: PhotoItem[]) => {
         const urls: string[] = [];
@@ -289,6 +351,8 @@ export function ProductionBatchSheetForm({
             reactorCode,
             reactor_seq: reactorSeq,
             density: densityNum,
+            oil_grade: showGrade ? (oilGrade || null) : null,
+            oil_ratio: oilRatioText,
             colourNote: colourNote || null,
             notes: notes.trim() || null,
             sheet_photo_urls: sheetUrls,
@@ -299,20 +363,44 @@ export function ProductionBatchSheetForm({
         });
         if (insertErr) throw insertErr;
       } else {
-        const { error: insertErr } = await insertRows('production_batch_sheets', {
+        const nativePayload = {
           batch_no: batchNo,
           reactor_id: reactorId,
           reactor_seq: reactorSeq,
           plant_id: plantId,
           density: densityNum,
+          oil_grade: showGrade ? (oilGrade || null) : null,
+          oil_ratio: oilRatioText,
           sheet_photo_urls: sheetUrls,
           bucket_photo_urls: bucketUrls,
           heat_sample_photo_urls: heatUrls,
           colour_note: colourNote || null,
-          stage: 'created',
+          stage: 'created' as const,
           notes: notes.trim() || null,
           created_by_name: creator,
-        });
+        };
+        let { error: insertErr } = await insertRows('production_batch_sheets', nativePayload);
+        // Live DB may still have oil_ratio as integer until 88_oil_ratio_text.sql.
+        if (insertErr) {
+          const raw = rawErrorText(insertErr).toLowerCase();
+          const code = String((insertErr as { code?: unknown })?.code ?? '');
+          const typeMismatch =
+            code === '22P02' ||
+            raw.includes('invalid input syntax') ||
+            (raw.includes('oil_ratio') && raw.includes('integer'));
+          if (typeMismatch) {
+            const asNum = parseTypedOilRatio(oilRatioText);
+            const notesWithRatio = [nativePayload.notes, `Oil ratio: ${oilRatioText}`]
+              .filter(Boolean)
+              .join('\n');
+            const retry = await insertRows('production_batch_sheets', {
+              ...nativePayload,
+              oil_ratio: asNum,
+              notes: notesWithRatio || null,
+            });
+            insertErr = retry.error;
+          }
+        }
         if (insertErr) throw insertErr;
       }
 
@@ -326,13 +414,15 @@ export function ProductionBatchSheetForm({
 
       clearAllPhotos();
       setDensity('');
+      setOilGrade('');
+      setOilRatio('');
+      setBatchNoInput('');
       setColourNote('');
       setNotes('');
       setStep(0);
       onCreated?.(batchNo);
     } catch (e) {
-      console.error(e);
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(humanizeError(e, { action: 'create this batch sheet', context: 'ProductionBatchSheetForm' }));
     } finally {
       setSaving(false);
     }
@@ -368,7 +458,7 @@ export function ProductionBatchSheetForm({
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepReactor', 'Select plant & reactor')}</div>
               <p className="mt-1 text-xs text-slate-500">
-                {t('batchProd.stepReactorHint', 'Each reactor keeps its own sequence. Batch number = reactor + sequence (e.g. P12-13).')}
+                {t('batchProd.stepReactorHint', 'Pick the plant and reactor, then type the batch number as written on the physical sheet.')}
               </p>
             </div>
             <label className="flex flex-col gap-1.5">
@@ -395,15 +485,15 @@ export function ProductionBatchSheetForm({
                     <button
                       key={r.id}
                       type="button"
-                      onClick={() => setReactorId(r.id)}
+                      onClick={() => selectReactor(r.id)}
                       className={`rounded-xl border px-3 py-3 text-left transition ${
                         reactorId === r.id
                           ? 'border-amber-500 bg-amber-50 shadow-sm'
                           : 'border-slate-200 bg-slate-50 hover:border-slate-300'
                       }`}
                     >
-                      <div className="text-xs font-bold text-slate-800">{r.code}</div>
-                      <div className="text-[11px] text-slate-500">{r.name}</div>
+                      <div className="text-xs font-bold text-slate-800">{r.name}</div>
+                      <div className="text-[11px] text-slate-500">{r.code}</div>
                     </button>
                   ))}
                 </div>
@@ -415,6 +505,37 @@ export function ProductionBatchSheetForm({
                     'Using official reactor IDs (P1–P49 by plant). Sheets save to active batches until the reactors table is seeded.',
                   )}
                 </p>
+              )}
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                {t('batchProd.batchNo', 'Batch number')} *
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoCapitalize="characters"
+                value={batchNoInput}
+                onChange={e => handleBatchNoChange(e.target.value)}
+                placeholder={batchPrefix ? `${batchPrefix}04` : 'P33-04'}
+                className={`rounded-xl border bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400 ${
+                  batchNoInvalid ? 'border-red-400 bg-red-50' : 'border-slate-200'
+                }`}
+              />
+              {batchNoInvalid ? (
+                <span className="text-[10px] text-red-600 font-semibold">
+                  {t('batchProd.batchNoInvalid', {
+                    defaultValue: 'Use format {{prefix}}XX — reactor number is filled automatically; type digits after the hyphen.',
+                    prefix: batchPrefix || 'PXX-',
+                  })}
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-400">
+                  {t('batchProd.batchNoHint', {
+                    defaultValue: 'Format {{prefix}}XX — select a reactor first; then type the batch sequence after the hyphen.',
+                    prefix: batchPrefix || 'PXX-',
+                  })}
+                </span>
               )}
             </label>
           </div>
@@ -429,7 +550,7 @@ export function ProductionBatchSheetForm({
               </p>
             </div>
             <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600">
-              {selectedPlant?.name ?? '—'} · {selectedReactor ? `${selectedReactor.code} (${selectedReactor.name})` : '—'}
+              {selectedPlant?.name ?? '—'} · {selectedReactor?.name ?? '—'}
             </div>
             <label className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Density *</span>
@@ -441,7 +562,50 @@ export function ProductionBatchSheetForm({
                 placeholder="e.g. 1400"
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400"
               />
+              <span className="text-[10px] text-slate-400">
+                {t('batchProd.densityFromTdsHint', 'From TDS Specific Gravity × 1000 (e.g. 1.20 → 1200).')}
+              </span>
             </label>
+            <div className={`grid gap-3 ${showGrade ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {showGrade && (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                  {t('batchProd.oilGrade', 'Grade')} *
+                </span>
+                <select
+                  value={oilGrade}
+                  onChange={e => setOilGrade(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-amber-400"
+                >
+                  <option value="">— Select —</option>
+                  {BATCH_OIL_GRADES.map(g => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              </label>
+              )}
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                  {t('batchProd.oilRatio', 'Oil ratio')} *
+                </span>
+                <input
+                  type="text"
+                  inputMode="text"
+                  enterKeyHint="next"
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={oilRatio}
+                  onChange={e => setOilRatio(e.target.value)}
+                  placeholder={t('batchProd.oilRatioPlaceholder', 'e.g. 80%HNPU, 20% C10')}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400"
+                />
+                <span className="text-[10px] text-slate-400">
+                  {t('batchProd.oilRatioHint', 'Letters, numbers and % — phone keyboard is full text, not digits only.')}
+                </span>
+              </label>
+            </div>
             <label className="flex flex-col gap-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Colour label (optional)</span>
               <select
@@ -476,6 +640,8 @@ export function ProductionBatchSheetForm({
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepPhotos', 'Evidence photos')}</div>
               <p className="mt-1 text-xs text-slate-500">
                 {t('batchProd.stepPhotosHint', 'All three slots required. Maximum 2 photos per slot.')}
+                {' '}
+                {t('batchProd.tapToPreview', 'Tap a photo to preview full size.')}
               </p>
             </div>
             {(Object.keys(slotMeta) as PhotoKind[]).map(kind => {
@@ -489,11 +655,26 @@ export function ProductionBatchSheetForm({
                     <div className="mb-2 grid grid-cols-2 gap-2">
                       {items.map((item, idx) => (
                         <div key={item.previewUrl} className="relative">
-                          <img src={item.previewUrl} alt={`${meta.label} ${idx + 1}`} className="h-28 w-full rounded-lg object-cover border border-slate-100" />
                           <button
                             type="button"
-                            onClick={() => removePhoto(kind, idx)}
-                            className="absolute top-1 right-1 rounded-full bg-white/90 p-1 text-slate-500 hover:text-red-500 shadow"
+                            onClick={() => openSlotPreview(kind, idx)}
+                            className="block w-full text-left"
+                            aria-label={t('batchProd.previewPhoto', 'Preview photo')}
+                          >
+                            <img
+                              src={item.previewUrl}
+                              alt={`${meta.label} ${idx + 1}`}
+                              className="h-28 w-full rounded-lg object-cover border border-slate-100"
+                            />
+                            <span className="pointer-events-none absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-white">
+                              <Eye size={11} /> {t('common.preview', 'Preview')}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={e => { e.stopPropagation(); removePhoto(kind, idx); }}
+                            className="absolute top-1 right-1 z-10 rounded-full bg-white/90 p-1 text-slate-500 hover:text-red-500 shadow"
+                            aria-label={t('common.remove', 'Remove')}
                           >
                             <X size={12} />
                           </button>
@@ -537,7 +718,7 @@ export function ProductionBatchSheetForm({
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepReview', 'Review & submit')}</div>
               <p className="mt-1 text-xs text-slate-500">
-                {t('batchProd.stepReviewHint', 'Submitting assigns the next number for this reactor (e.g. P12-13). Factory accountant moves stage later.')}
+                {t('batchProd.stepReviewHint', 'Check plant, reactor, batch number, density, grade and oil ratio before submitting.')}
               </p>
             </div>
             <dl className="grid grid-cols-2 gap-3 text-sm">
@@ -547,11 +728,25 @@ export function ProductionBatchSheetForm({
               </div>
               <div className="rounded-xl bg-slate-50 px-3 py-2">
                 <dt className="text-[10px] font-bold uppercase text-slate-400">Reactor</dt>
-                <dd className="font-semibold text-slate-800">{selectedReactor ? `${selectedReactor.code}` : '—'}</dd>
+                <dd className="font-semibold text-slate-800">{selectedReactor?.name ?? '—'}</dd>
+              </div>
+              <div className="rounded-xl bg-slate-50 px-3 py-2">
+                <dt className="text-[10px] font-bold uppercase text-slate-400">{t('batchProd.batchNo', 'Batch number')}</dt>
+                <dd className="font-semibold text-slate-800 font-mono">{batchNoTyped || '—'}</dd>
               </div>
               <div className="rounded-xl bg-slate-50 px-3 py-2">
                 <dt className="text-[10px] font-bold uppercase text-slate-400">Density</dt>
                 <dd className="font-semibold text-slate-800">{density}</dd>
+              </div>
+              {showGrade && (
+              <div className="rounded-xl bg-slate-50 px-3 py-2">
+                <dt className="text-[10px] font-bold uppercase text-slate-400">{t('batchProd.oilGrade', 'Grade')}</dt>
+                <dd className="font-semibold text-slate-800">{oilGrade || '—'}</dd>
+              </div>
+              )}
+              <div className="rounded-xl bg-slate-50 px-3 py-2">
+                <dt className="text-[10px] font-bold uppercase text-slate-400">{t('batchProd.oilRatio', 'Oil ratio')}</dt>
+                <dd className="font-semibold text-slate-800">{oilRatio || '—'}</dd>
               </div>
               <div className="rounded-xl bg-slate-50 px-3 py-2">
                 <dt className="text-[10px] font-bold uppercase text-slate-400">Colour</dt>
@@ -564,10 +759,24 @@ export function ProductionBatchSheetForm({
             <div className="grid grid-cols-3 gap-2">
               {(Object.keys(photos) as PhotoKind[]).flatMap(kind =>
                 photos[kind].map(p => (
-                  <img key={p.previewUrl} src={p.previewUrl} alt={kind} className="h-20 w-full rounded-lg object-cover border border-slate-100" />
+                  <button
+                    key={p.previewUrl}
+                    type="button"
+                    onClick={() => openAllPhotosPreview(p.previewUrl)}
+                    className="relative group block w-full text-left"
+                    aria-label={t('batchProd.previewPhoto', 'Preview photo')}
+                  >
+                    <img src={p.previewUrl} alt={kind} className="h-20 w-full rounded-lg object-cover border border-slate-100" />
+                    <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/0 opacity-0 transition group-hover:bg-slate-900/40 group-hover:opacity-100">
+                      <Eye size={14} className="text-white" />
+                    </span>
+                  </button>
                 )),
               )}
             </div>
+            <p className="text-[11px] text-slate-400">
+              {t('batchProd.tapToPreview', 'Tap a photo to preview full size.')}
+            </p>
           </div>
         )}
       </div>
@@ -594,7 +803,7 @@ export function ProductionBatchSheetForm({
         ) : (
           <button
             type="button"
-            disabled={saving || !photosOk || !densityOk}
+            disabled={saving || !photosOk || !densityOk || !oilOk || !batchNoOk}
             onClick={handleSubmit}
             className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white disabled:opacity-40"
           >
@@ -611,6 +820,13 @@ export function ProductionBatchSheetForm({
           if (cameraKind) addPhoto(cameraKind, blob);
           setCameraKind(null);
         }}
+      />
+
+      <ImageLightbox
+        images={photoPreview?.images ?? []}
+        startIndex={photoPreview?.index ?? 0}
+        open={!!photoPreview}
+        onClose={() => setPhotoPreview(null)}
       />
     </div>
   );

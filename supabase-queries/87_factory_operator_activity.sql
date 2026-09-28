@@ -1,0 +1,18 @@
+-- Activity Log access is granted per role from the app:
+-- Factory → Activity Log → "Who can view this" (admin), or User Management → Edit Role
+-- → Dashboard sections → Activity Log.
+--
+-- Optional: grant Technical from SQL instead of the UI.
+--
+-- UPDATE public.roles
+-- SET allowed_routes = (
+--   SELECT ARRAY(
+--     SELECT DISTINCT e
+--     FROM unnest(
+--       coalesce(allowed_routes, '{}'::text[])
+--       || ARRAY['/dashboard/purchase/activity']
+--     ) AS e
+--   )
+-- )
+-- WHERE id = 'factory_operator';
+SELECT 1;

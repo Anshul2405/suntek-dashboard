@@ -17,6 +17,12 @@ export const FREQ_LABEL: Record<string, string> = {
 export const FREQ_DAYS: Record<string, number> = { daily: 1, weekly: 7, fortnightly: 15 };
 export const FREQ_MONTHS: Record<string, number> = { monthly: 1, bimonthly: 2, quarterly: 3, biannual: 6, triannual: 9, annual: 12 };
 
+/** Cadence rank for table sort — Daily first, not A–Z (which puts Weekly above Daily). */
+export function freqSortRank(frequency: string): number {
+  const i = FREQ_OPTIONS.indexOf(frequency);
+  return i < 0 ? FREQ_OPTIONS.length : i;
+}
+
 export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: string; color: string }> = {
   open:                     { label: 'Open',              labelKey: 'maint.statusOpen',             bg: '#DBEAFE', color: '#2563EB' },
   in_progress:              { label: 'In Progress',       labelKey: 'maint.statusInProgress',       bg: '#FEF3C7', color: '#D97706' },
@@ -25,7 +31,7 @@ export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: 
   pending_purchase:         { label: 'Purchasing',        labelKey: 'maint.statusPurchasing',       bg: '#EDE9FE', color: '#7C3AED' },
   pending_purchase_manager: { label: 'Bill & Dispatch',   labelKey: 'maint.statusBillDispatch',     bg: '#FAE8FF', color: '#A21CAF' },
   pending_handover:         { label: 'Handover',          labelKey: 'maint.statusHandover',         bg: '#F3E8FF', color: '#9333EA' },
-  pending_defective_return: { label: 'Defective Return',  labelKey: 'maint.statusDefectiveReturn',  bg: '#FEF3C7', color: '#D97706' },
+  pending_defective_return: { label: 'Used or return',    labelKey: 'maint.statusDefectiveReturn',  bg: '#FEF3C7', color: '#D97706' },
   changes_requested:        { label: 'Changes Requested', labelKey: 'maint.statusChangesRequested', bg: '#FEF2F2', color: '#DC2626' },
   closed:                   { label: 'Closed',            labelKey: 'maint.statusClosed',           bg: '#DCFCE7', color: '#16A34A' },
 };
@@ -39,7 +45,7 @@ export const EMERGENCY_STAGES = [
 export const STAGE_LABELS: Record<string, string> = {
   open: 'Raised', in_progress: 'Assessed', pending_store: 'Store Check',
   pending_unit_head: 'Unit Head', pending_purchase: 'Purchase', pending_purchase_manager: 'Purchase Mgr',
-  pending_handover: 'Handover', pending_defective_return: 'Defective', closed: 'Closed',
+  pending_handover: 'Handover', pending_defective_return: 'Used / Return', closed: 'Closed',
 };
 
 /** i18n keys for STAGE_LABELS — translate at render with t(key, STAGE_LABELS[stage]). */
@@ -65,13 +71,27 @@ export const INHOUSE_STAGE_LABEL_KEYS: Record<string, string> = {
 
 // Part needed but AVAILABLE in store → no procurement, so the Purchase / Purchase Mgr
 // stages are omitted entirely (not just greyed): Raised → Assessed → Store Check →
-// Unit Head → Handover → Defective → Closed.
+// Unit Head → Handover → Used / Return → Closed.
 export const AVAILABLE_STAGES = [
   'open', 'in_progress', 'pending_store', 'pending_unit_head',
   'pending_handover', 'pending_defective_return', 'closed',
 ];
 
 // ── Pure helpers ────────────────────────────────────────────────────────────────
+
+/** Human label for how issued parts were settled after handover. */
+export function partDecisionLabel(decision: string | null | undefined, t?: TFn): string {
+  if (!decision) return '';
+  const map: Record<string, { key: string; fallback: string }> = {
+    consumed: { key: 'maint.decisionConsumed', fallback: 'Consumed' },
+    repair: { key: 'maint.decisionRepair', fallback: 'Repair' },
+    scrap: { key: 'maint.decisionScrap', fallback: 'Scrap' },
+    mixed: { key: 'maint.decisionMixed', fallback: 'Repair & scrap' },
+  };
+  const hit = map[decision];
+  if (!hit) return decision;
+  return t ? t(hit.key, hit.fallback) : hit.fallback;
+}
 
 export function statusBadge(status: string, t?: TFn) {
   const cfg = STATUS_CFG[status] || { label: status, bg: '#F1F5F9', color: '#475569' };
@@ -163,7 +183,7 @@ export function PhotoUploader({ onBlobReady, label, hint }: {
 
 // ── Stage progress strip ──────────────────────────────────────────────────────
 
-export function StageStrip({ status, skippedStages = [], onStageClick, activeStage, stages = EMERGENCY_STAGES, labels = STAGE_LABELS }: {
+export function StageStrip({ status, skippedStages = [], onStageClick, activeStage, stages = EMERGENCY_STAGES, labels = STAGE_LABELS, statusNote }: {
   status: string;
   skippedStages?: string[];
   /** Click a reached stage to see what happened there (read-only). */
@@ -173,46 +193,59 @@ export function StageStrip({ status, skippedStages = [], onStageClick, activeSta
    *  INHOUSE_STAGES for a simplified in-house repair timeline. */
   stages?: string[];
   labels?: Record<string, string>;
+  /** Small markup under the strip (e.g. "Requested changes" while paused for revision). */
+  statusNote?: string | null;
 }) {
   const { t } = useTranslation();
   const idx = stages.indexOf(status);
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, marginBottom: 20, overflowX: 'auto', paddingBottom: 2 }}>
-      {stages.map((s, i) => {
-        const isPast = i < idx;
-        const isCurrent = i === idx;
-        const isSkipped = skippedStages.includes(s);
-        const isLast = i === stages.length - 1;
-        // A stage is inspectable once reached (past or current) and not skipped.
-        const clickable = !!onStageClick && i <= idx && !isSkipped;
-        const isActive = activeStage === s;
-        return (
-          <React.Fragment key={s}>
-            <div
-              onClick={clickable ? () => onStageClick!(s) : undefined}
-              title={clickable ? t('maint.viewStageDetails', { defaultValue: 'View {{stage}} details', stage: labels[s] }) : undefined}
-              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, cursor: clickable ? 'pointer' : 'default' }}
-            >
-              <div style={{
-                width: 22, height: 22, borderRadius: '50%',
-                background: isSkipped ? '#E2E8F0' : isCurrent ? '#F47651' : isPast ? '#16A34A' : '#E2E8F0',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                border: isActive ? '2px solid #0F172A' : isCurrent ? '2px solid #F47651' : 'none',
-                boxShadow: isActive ? '0 0 0 3px rgba(15,23,42,0.12)' : 'none',
-                opacity: isSkipped ? 0.4 : 1,
-              }}>
-                {isPast && !isSkipped && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6 9 17l-5-5"/></svg>}
-                {isSkipped && <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="3"><path d="M5 12h14"/></svg>}
-                {isCurrent && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />}
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, overflowX: 'auto', paddingBottom: 2 }}>
+        {stages.map((s, i) => {
+          const isPast = i < idx;
+          const isCurrent = i === idx;
+          const isSkipped = skippedStages.includes(s);
+          const isLast = i === stages.length - 1;
+          // A stage is inspectable once reached (past or current) and not skipped.
+          const clickable = !!onStageClick && i <= idx && !isSkipped;
+          const isActive = activeStage === s;
+          return (
+            <React.Fragment key={s}>
+              <div
+                onClick={clickable ? () => onStageClick!(s) : undefined}
+                title={clickable ? t('maint.viewStageDetails', { defaultValue: 'View {{stage}} details', stage: labels[s] }) : undefined}
+                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, cursor: clickable ? 'pointer' : 'default' }}
+              >
+                <div style={{
+                  width: 22, height: 22, borderRadius: '50%',
+                  background: isSkipped ? '#E2E8F0' : isCurrent ? '#F47651' : isPast ? '#16A34A' : '#E2E8F0',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  border: isActive ? '2px solid #0F172A' : isCurrent ? '2px solid #F47651' : 'none',
+                  boxShadow: isActive ? '0 0 0 3px rgba(15,23,42,0.12)' : 'none',
+                  opacity: isSkipped ? 0.4 : 1,
+                }}>
+                  {isPast && !isSkipped && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6 9 17l-5-5"/></svg>}
+                  {isSkipped && <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="3"><path d="M5 12h14"/></svg>}
+                  {isCurrent && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />}
+                </div>
+                <div style={{ fontSize: 8.5, fontWeight: isActive || isCurrent ? 700 : 500, color: isActive ? '#0F172A' : isSkipped ? '#CBD5E1' : isCurrent ? '#F47651' : isPast ? '#16A34A' : '#94A3B8', marginTop: 3, whiteSpace: 'nowrap', textDecoration: clickable ? 'underline dotted' : 'none', textUnderlineOffset: 2 }}>
+                  {labels[s]}{isSkipped ? ` ${t('maint.skippedSuffix', '(skipped)')}` : ''}
+                </div>
               </div>
-              <div style={{ fontSize: 8.5, fontWeight: isActive || isCurrent ? 700 : 500, color: isActive ? '#0F172A' : isSkipped ? '#CBD5E1' : isCurrent ? '#F47651' : isPast ? '#16A34A' : '#94A3B8', marginTop: 3, whiteSpace: 'nowrap', textDecoration: clickable ? 'underline dotted' : 'none', textUnderlineOffset: 2 }}>
-                {labels[s]}{isSkipped ? ` ${t('maint.skippedSuffix', '(skipped)')}` : ''}
-              </div>
-            </div>
-            {!isLast && <div style={{ height: 2, flex: 1, minWidth: 12, background: (isPast && !isSkipped) ? '#16A34A' : '#E2E8F0', marginTop: 10, flexShrink: 0 }} />}
-          </React.Fragment>
-        );
-      })}
+              {!isLast && <div style={{ height: 2, flex: 1, minWidth: 12, background: (isPast && !isSkipped) ? '#16A34A' : '#E2E8F0', marginTop: 10, flexShrink: 0 }} />}
+            </React.Fragment>
+          );
+        })}
+      </div>
+      {statusNote && (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 8,
+          padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+          background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA',
+        }}>
+          <span aria-hidden>↩</span> {statusNote}
+        </div>
+      )}
     </div>
   );
 }

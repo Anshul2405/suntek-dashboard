@@ -18,6 +18,7 @@ import { SegmentTabs, StatCard, SectionCard, ButtonV2, TablePaginationV2, ThV2 a
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
+import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { RepairScrapPanel } from './RepairScrapPanel';
@@ -69,19 +70,27 @@ export function StoreRequisitions() {
   const navigate = useNavigate();
   // ?tab= keeps the active tab deep-linkable (single route → no RBAC change).
   const [searchParams, setSearchParams] = useSearchParams();
+  const { activeProfile } = useRoleContext();
+  const isTechnical =
+    activeProfile.id === 'factory_operator' || activeProfile.baseRoleId === 'factory_operator';
   const rawTab = searchParams.get('tab');
-  const tab: StoreTab = rawTab === 'stock' || rawTab === 'scrap' ? rawTab : 'requirements';
+  // Meet Aug 2026: Technical only sees Stock Register under Store Req.
+  const tab: StoreTab = isTechnical
+    ? 'stock'
+    : (rawTab === 'stock' || rawTab === 'scrap' ? rawTab : 'requirements');
   const setTab = (k: StoreTab) => {
+    if (isTechnical && k !== 'stock') return;
     setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', k); return p; }, { replace: true });
   };
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
   const { scopeQuery, allowedPlants } = usePlantScope();
-  const { activeProfile } = useRoleContext();
   const canDecideReq =
-    activeProfile.id === 'admin' ||
+    isAdminProfile(activeProfile) ||
     activeProfile.id === 'unit_head' ||
+    activeProfile.baseRoleId === 'unit_head' ||
     activeProfile.id === 'management' ||
+    activeProfile.baseRoleId === 'management' ||
     (activeProfile.capabilities || []).includes('manage_users');
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -244,11 +253,13 @@ export function StoreRequisitions() {
       {/* Tab bar — Requirements · Stock Register · Scrap */}
       <SegmentTabs
         className="mb-5"
-        items={[
-          { key: 'requirements', label: t('storereq.tab_requirements', 'Requirements'), icon: <ListChecks /> },
-          { key: 'stock',        label: t('storereq.tab_stock', 'Stock Register'),      icon: <Package /> },
-          { key: 'scrap',        label: t('storereq.tab_scrap', 'Repair/Scrap'),        icon: <Recycle /> },
-        ]}
+        items={isTechnical
+          ? [{ key: 'stock', label: t('storereq.tab_stock', 'Stock Register'), icon: <Package /> }]
+          : [
+              { key: 'requirements', label: t('storereq.tab_requirements', 'Requirements'), icon: <ListChecks /> },
+              { key: 'stock',        label: t('storereq.tab_stock', 'Stock Register'),      icon: <Package /> },
+              { key: 'scrap',        label: t('storereq.tab_scrap', 'Repair/Scrap'),        icon: <Recycle /> },
+            ]}
         value={tab}
         onChange={setTab}
       />
@@ -265,20 +276,28 @@ export function StoreRequisitions() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
           label={t('storereq.stat_total', 'Total Requirements')} value={String(items.length).padStart(2, '0')}
-          caption={t('storereq.stat_total_sub', 'Open requests')} />
+          caption={t('storereq.stat_total_sub', 'Open requests')}
+          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={String(pendingCount).padStart(2, '0')}
-          caption={t('storereq.stat_pending_sub', 'Awaiting approval')} />
+          caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
+          onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={String(readyCount).padStart(2, '0')}
-          caption={t('storereq.stat_ready_sub', 'Approved & in progress')} />
+          caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
+          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
           label={t('storereq.stat_urgent', 'Urgent')} value={String(urgentCount).padStart(2, '0')}
-          caption={t('storereq.stat_urgent_sub', 'High priority requests')} />
+          caption={t('storereq.stat_urgent_sub', 'High priority requests')}
+          onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          viewLabel={t('storereq.viewUrgent', 'See urgent')} />
       </div>
 
       {/* Requirements table */}
-      <div className="relative">
+      <div className="relative" id="open-reqs">
         <KpiInfoButton info={{ title: 'Open Store Requirements', what: 'All active store requisitions raised by plant/store keepers. Each row shows approval stage and photo proof. Raise via "+ Raise request"; Unit Head / Admin can approve, reject, or mark dispatched.', source: 'Supabase', formLabel: 'Raise request form', formPath: '/dashboard/purchase/storereq', note: 'Live table store_requisitions. Maintenance part indents still flow via maintenance_store_requests on the Maintenance screen.' }} />
       <SectionCard
         flush

@@ -59,7 +59,7 @@ insert into roles (id, label, level, description, home_route, allowed_routes, st
     false, false, false, 'from-indigo-400', 'to-indigo-600', 40),
 
   ('factory_operator', 'Technical Team', 'L1', 'Data entry · OCR uploads · batch logging',
-    '/dashboard/batch-entry',
+    '/dashboard/batches',
     array['/dashboard/batch-entry','/dashboard/batches','/dashboard/stock','/dashboard/daily-log'],
     false, false, false, 'from-purple-400', 'to-purple-600', 50),
 

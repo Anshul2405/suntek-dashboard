@@ -12,8 +12,8 @@ import { storeScopeFilter } from '../lib/store/registers';
  * discarded before; here it drives query filtering, create-time stamping, and
  * notification delivery.
  *
- * NOTE: scope follows the REAL logged-in user, not an admin's "view as" preview
- * (admins are global and see all data regardless of the previewed role).
+ * When an admin uses "view as", scope follows the previewed person's plant
+ * membership so QA matches what that employee sees on the floor.
  *
  * This is the visible/testable half. Phase 2 enforces the same rules in the DB
  * with RLS so they can't be bypassed via the API.
@@ -40,6 +40,46 @@ export interface StoreRow { id: string; location_id: string | null; name: string
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000'; // matches no row (fail-closed)
 const EMPTY_IDS: string[] = []; // stable ref so scope memoization doesn't churn each render
+
+type AccountMembership = {
+  isGlobal: boolean;
+  plantIds: string[];
+  unitIds: string[];
+  storeIds: string[];
+};
+
+/** Resolve plant/unit/store grants for a user_accounts row (with legacy plant_id / plant_name fallbacks). */
+async function resolveAccountMembership(accountId: string): Promise<AccountMembership | null> {
+  const { data: acct } = await supabase
+    .from('user_accounts')
+    .select('id, is_global, plant_id, plant_name')
+    .eq('id', accountId)
+    .limit(1)
+    .returns<{ id: string; is_global: boolean | null; plant_id: string | null; plant_name: string | null }[]>();
+  const row = acct?.[0];
+  if (!row) return null;
+  if (row.is_global) return { isGlobal: true, plantIds: [], unitIds: [], storeIds: [] };
+
+  const [{ data: ups }, { data: uus }, uss] = await Promise.all([
+    supabase.from('user_plants').select('plant_id').eq('user_account_id', row.id).returns<{ plant_id: string }[]>(),
+    supabase.from('user_units').select('unit_id').eq('user_account_id', row.id).returns<{ unit_id: string }[]>(),
+    supabase.from('user_stores').select('store_id').eq('user_account_id', row.id).returns<{ store_id: string }[]>(),
+  ]);
+
+  let plantIds = (ups ?? []).map((r) => r.plant_id);
+  if (plantIds.length === 0 && row.plant_id) plantIds = [row.plant_id];
+  if (plantIds.length === 0 && row.plant_name) {
+    const { data: pl } = await supabase.from('plants').select('id').eq('name', row.plant_name).limit(1).returns<{ id: string }[]>();
+    if (pl?.[0]) plantIds = [pl[0].id];
+  }
+
+  return {
+    isGlobal: false,
+    plantIds,
+    unitIds: (uus ?? []).map((r) => r.unit_id),
+    storeIds: (uss.data ?? []).map((r) => r.store_id),
+  };
+}
 
 interface PlantScopeValue {
   /** True once plants/units are loaded and the user's scope is resolved. */
@@ -97,7 +137,7 @@ interface PlantScopeValue {
 const PlantScopeContext = createContext<PlantScopeValue | null>(null);
 
 export function PlantScopeProvider({ children }: { children: React.ReactNode }) {
-  const { canSwitch, authResolved } = useRoleContext();
+  const { canSwitch, authResolved, isViewingAs, activeProfile } = useRoleContext();
 
   const [plants, setPlants] = useState<PlantRow[]>([]);
   const [units, setUnits] = useState<UnitRow[]>([]);
@@ -168,49 +208,62 @@ export function PlantScopeProvider({ children }: { children: React.ReactNode }) 
     return () => subscription.unsubscribe();
   }, []);
 
-  // Resolve the user's membership. Global (admin/dev) short-circuits any lookup.
+  // Resolve the user's membership. Admins are global unless previewing someone else.
   useEffect(() => {
     let cancelled = false;
+    const applyMembership = (m: AccountMembership) => {
+      if (cancelled) return;
+      setMembership({ isGlobal: m.isGlobal, plantIds: m.plantIds, unitIds: m.unitIds });
+      setStoreIds(m.storeIds);
+      setScopeReady(true);
+    };
     (async () => {
       if (!authResolved) return;
-      if (canSwitch) { // Owner/Admin or dev bypass → global
-        if (!cancelled) { setMembership({ isGlobal: true, plantIds: [], unitIds: [] }); setScopeReady(true); }
+
+      if (canSwitch && !isViewingAs) {
+        applyMembership({ isGlobal: true, plantIds: [], unitIds: [], storeIds: [] });
         return;
       }
-      if (!authUserId) { // no session (and not dev) → no scope
-        if (!cancelled) { setMembership({ isGlobal: false, plantIds: [], unitIds: [] }); setScopeReady(true); }
+
+      if (canSwitch && isViewingAs) {
+        const previewAccountId = activeProfile.id.startsWith('db_') ? activeProfile.id.slice(3) : null;
+        if (previewAccountId) {
+          const resolved = await resolveAccountMembership(previewAccountId);
+          if (resolved) { applyMembership(resolved); return; }
+        }
+        if (activeProfile.plant) {
+          const { data: pl } = await supabase.from('plants').select('id').eq('name', activeProfile.plant).limit(1).returns<{ id: string }[]>();
+          if (cancelled) return;
+          const pid = pl?.[0]?.id;
+          applyMembership({ isGlobal: false, plantIds: pid ? [pid] : [], unitIds: [], storeIds: [] });
+          return;
+        }
+        applyMembership({ isGlobal: false, plantIds: [], unitIds: [], storeIds: [] });
         return;
       }
-      // Find this user's directory row, then their plant/unit memberships.
+
+      if (!authUserId) {
+        applyMembership({ isGlobal: false, plantIds: [], unitIds: [], storeIds: [] });
+        return;
+      }
+
       const { data: acct } = await supabase
         .from('user_accounts')
-        .select('id, is_global')
+        .select('id')
         .eq('auth_user_id', authUserId)
         .limit(1)
-        .returns<{ id: string; is_global: boolean | null }[]>();
+        .returns<{ id: string }[]>();
       const row = acct?.[0];
-      if (!row) { if (!cancelled) { setMembership({ isGlobal: false, plantIds: [], unitIds: [] }); setScopeReady(true); } return; }
-      if (row.is_global) { if (!cancelled) { setMembership({ isGlobal: true, plantIds: [], unitIds: [] }); setScopeReady(true); } return; }
-
-      const [{ data: ups }, { data: uus }, uss] = await Promise.all([
-        supabase.from('user_plants').select('plant_id').eq('user_account_id', row.id).returns<{ plant_id: string }[]>(),
-        supabase.from('user_units').select('unit_id').eq('user_account_id', row.id).returns<{ unit_id: string }[]>(),
-        // Store access is its OWN grant, deliberately not derived from factory
-        // membership — a Rehla store keeper serves three factories without
-        // gaining any of their asset registers.
-        supabase.from('user_stores').select('store_id').eq('user_account_id', row.id).returns<{ store_id: string }[]>(),
-      ]);
-      if (cancelled) return;
-      setMembership({
-        isGlobal: false,
-        plantIds: (ups ?? []).map((r) => r.plant_id),
-        unitIds: (uus ?? []).map((r) => r.unit_id),
-      });
-      setStoreIds((uss.data ?? []).map((r) => r.store_id));
-      setScopeReady(true);
+      if (!row) {
+        applyMembership({ isGlobal: false, plantIds: [], unitIds: [], storeIds: [] });
+        return;
+      }
+      const resolved = await resolveAccountMembership(row.id);
+      if (resolved) applyMembership(resolved);
+      else applyMembership({ isGlobal: false, plantIds: [], unitIds: [], storeIds: [] });
     })();
     return () => { cancelled = true; };
-  }, [authResolved, canSwitch, authUserId, nonce]);
+  }, [authResolved, canSwitch, authUserId, isViewingAs, activeProfile.id, activeProfile.plant, nonce]);
 
   const isGlobal = membership?.isGlobal ?? false;
   const allPlantIds = useMemo(() => plants.map((p) => p.id), [plants]);

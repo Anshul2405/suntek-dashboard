@@ -4,6 +4,7 @@ import { insertRows, updateRows } from '../lib/db';
 import { useRoleContext } from './RoleContext';
 import { usePlantScope } from './PlantScopeContext';
 import { ticketIdFromRoute, resolvedTicketIdsFromLookup } from '../lib/notifications/ticketResolution';
+import { showBrowserPush } from '../lib/pushNotifications';
 
 export { ticketIdFromRoute, resolvedTicketIdsFromLookup } from '../lib/notifications/ticketResolution';
 
@@ -211,6 +212,12 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
         const n = payload.new as AppNotification;
         if (isForMe(n) && (!floor || n.created_at >= floor) && !getClearedSet(selfKey).has(n.id)) {
           setNotifications(prev => (prev.some((x) => x.id === n.id) ? prev : [n, ...prev]));
+          showBrowserPush({
+            title: n.title,
+            body: n.body,
+            tag: n.id,
+            onClickUrl: n.route,
+          });
         }
       })
       .subscribe();

@@ -48,7 +48,7 @@ const ENTITIES: EntityConfig[] = [
     type: 'ticket',
     table: 'maintenance_tickets',
     select: 'id, title, equipment, description, raised_by, assigned_to, status',
-    columns: ['title', 'equipment', 'description', 'raised_by', 'assigned_to'],
+    columns: ['id', 'title', 'equipment', 'description', 'raised_by', 'assigned_to'],
     route: '/dashboard/purchase/maint',
     groupKey: 'palette.groupTickets',
     map: (r) => ({
@@ -94,11 +94,11 @@ const ENTITIES: EntityConfig[] = [
   {
     type: 'asset',
     table: 'fixed_assets',
-    select: 'id, name, model, identification_mark, account_head',
-    columns: ['name', 'identification_mark', 'model', 'capacity', 'invoice_no', 'account_head'],
+    select: 'id, name, model, identification_mark, account_head, job_no',
+    columns: ['name', 'identification_mark', 'model', 'capacity', 'invoice_no', 'account_head', 'job_no'],
     route: '/dashboard/purchase/far',
     groupKey: 'palette.groupAssets',
-    map: (r) => ({ id: str(r.id), title: str(r.name) || 'Asset', subtitle: join([r.model, r.identification_mark, r.account_head]), route: '/dashboard/purchase/far' }),
+    map: (r) => ({ id: str(r.id), title: str(r.name) || 'Asset', subtitle: join([r.job_no, r.model, r.identification_mark, r.account_head]), route: '/dashboard/purchase/far' }),
   },
   {
     type: 'blacklist',
@@ -108,6 +108,20 @@ const ENTITIES: EntityConfig[] = [
     route: '/dashboard/blacklist',
     groupKey: 'palette.groupBlacklist',
     map: (r) => ({ id: str(r.id), title: str(r.name), subtitle: join([r.type, r.severity, r.reason]), route: '/dashboard/blacklist' }),
+  },
+  {
+    type: 'batch',
+    table: 'production_batch_sheets',
+    select: 'id, batch_no, colour_note, created_by_name, oil_grade, density',
+    columns: ['batch_no', 'colour_note', 'created_by_name', 'oil_grade'],
+    route: '/dashboard/batches',
+    groupKey: 'palette.groupBatches',
+    map: (r) => ({
+      id: str(r.id),
+      title: str(r.batch_no) ? `#${str(r.batch_no)}` : 'Batch sheet',
+      subtitle: join([r.oil_grade, r.density, r.created_by_name]),
+      route: `/dashboard/batches?highlight=${encodeURIComponent(str(r.batch_no))}`,
+    }),
   },
   {
     type: 'batch',

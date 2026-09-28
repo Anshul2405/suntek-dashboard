@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
-import { insertRows } from '../../../lib/db';
+import { insertRows, updateRows } from '../../../lib/db';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
 import { KpiInfoButton } from '../../../components/KpiInfoButton';
 import { useToast } from '../../../components/ui/toast';
@@ -17,6 +17,7 @@ import { TableSearch } from '../../../components/ui/TableSearch';
 import { useDirectory, extractMentionIds, truncate } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { useRoleContext } from '../../../contexts/RoleContext';
+import { profileHasCapability, type RoleRow } from '../../../lib/profiles';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { useNotifications } from '../../../contexts/NotificationsContext';
@@ -145,11 +146,16 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
     // 2) Defective-part decision
     if (tk.defective_part_decision) {
       const defPhotos = photoList([[tk.defective_part_photo_url, t('activity.photoDefectivePart', 'Defective part')]]);
+      const consumed = tk.defective_part_decision === 'consumed';
       out.push({
         key: `${tk.id}:defective`, equipment: tk.equipment,
-        type: tk.defective_part_decision === 'scrap'
-          ? t('activity.evtDefectiveScrapped', 'Defective part scrapped')
-          : t('activity.evtDefectiveSentRepair', 'Defective part sent for repair'),
+        type: consumed
+          ? t('activity.evtPartsConsumed', 'Issued parts consumed')
+          : tk.defective_part_decision === 'scrap'
+            ? t('activity.evtDefectiveScrapped', 'Defective part scrapped')
+            : tk.defective_part_decision === 'mixed'
+              ? t('activity.evtDefectiveMixed', 'Defective parts sent for repair and scrap')
+              : t('activity.evtDefectiveSentRepair', 'Defective part sent for repair'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null, verifiedBy: null, plant,
         hasPhoto: defPhotos.length > 0, photos: defPhotos, ticketRef: ref, source: 'maintenance',
       });
@@ -169,6 +175,129 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
     }
   }
   return out;
+}
+
+const ACTIVITY_ROUTE = '/dashboard/purchase/activity';
+
+/** Admin-only: grant Activity Log to other roles without opening Role Manager. */
+function ActivityRoleAccessCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const { authProfile, roles, refreshRoles } = useRoleContext();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const mayEdit = !!authProfile && profileHasCapability(authProfile, 'manage_roles');
+  const grantable = useMemo(
+    () => roles.filter((r) => !r.is_admin && !(r.allowed_routes ?? []).includes('*')),
+    [roles],
+  );
+  const enabledCount = grantable.filter((r) => (r.allowed_routes ?? []).includes(ACTIVITY_ROUTE)).length;
+
+  if (!mayEdit) return null;
+
+  async function toggleRole(role: RoleRow) {
+    const current = role.allowed_routes ?? [];
+    const on = current.includes(ACTIVITY_ROUTE);
+    const next = on
+      ? current.filter((x) => x !== ACTIVITY_ROUTE)
+      : [...new Set([...current, ACTIVITY_ROUTE])];
+    setBusyId(role.id);
+    try {
+      const { error } = await updateRows('roles', { allowed_routes: next }).eq('id', role.id);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      await refreshRoles();
+      toast.success(
+        on
+          ? t('activity.accessRevoked', { defaultValue: 'Activity Log hidden for {{role}}', role: role.label })
+          : t('activity.accessGranted', { defaultValue: 'Activity Log enabled for {{role}}', role: role.label }),
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="card2 p-4 mb-5" style={{ border: '1px solid #FED7AA' }}>
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-3 text-left bg-transparent border-0 p-0 cursor-pointer"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <div className="text-sm font-bold font-heading text-slate-900">
+            {t('activity.whoCanView', 'Who can view Activity Log')}
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            {t('activity.whoCanViewSub', {
+              defaultValue: 'Always on for Admin. Enabled for {{count}} other role(s).',
+              count: enabledCount,
+            })}
+          </div>
+        </div>
+        <span className="text-xs font-semibold text-orange-700 shrink-0">
+          {open ? t('activity.hideRoles', 'Hide') : t('activity.editRoles', 'Enable for roles')}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {grantable.map((role) => {
+            const on = (role.allowed_routes ?? []).includes(ACTIVITY_ROUTE);
+            const busy = busyId === role.id;
+            return (
+              <div
+                key={role.id}
+                className="flex items-center gap-3 px-3 py-2 rounded-xl border"
+                style={{
+                  borderColor: on ? '#FDBA74' : '#E2E8F0',
+                  background: on ? '#FFF7ED' : '#F8FAFC',
+                }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold text-slate-800 truncate">{role.label}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">{role.id}</div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={on}
+                  title={on ? t('activity.revokeAccess', 'Turn off for this role') : t('activity.grantAccess', 'Turn on for this role')}
+                  onClick={() => toggleRole(role)}
+                  style={{
+                    width: 44,
+                    height: 24,
+                    borderRadius: 12,
+                    background: on ? '#EA580C' : '#CBD5E1',
+                    border: 'none',
+                    cursor: busy ? 'wait' : 'pointer',
+                    position: 'relative',
+                    flexShrink: 0,
+                    opacity: busy ? 0.6 : 1,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: '50%',
+                      background: '#fff',
+                      position: 'absolute',
+                      top: 3,
+                      transition: 'left 0.2s',
+                      left: on ? 22 : 4,
+                    }}
+                  />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ActivityLog() {
@@ -340,6 +469,7 @@ export function ActivityLog() {
 
   return (
     <>
+      <ActivityRoleAccessCard />
       {/* KPI row */}
       <div className="grid grid-cols-12 gap-5 mb-5">
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>

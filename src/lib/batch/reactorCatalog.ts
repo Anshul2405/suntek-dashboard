@@ -1,11 +1,11 @@
 /**
- * Official Batch Sheet reactor catalogue (client note, Aug 2026).
+ * Official Batch Sheet reactor catalogue (client note, Aug 2026 / meet Aug 2026).
  *
- *   SCPL (Rehla)        P1  – P12
- *   SPPL (Rehla)        P13 – P27
- *   SPPL (K) (Rehla)    P28 – P32
- *   Madan Chemical      P33 – P43
- *   SCPL (Ganjam)       P44 – P49
+ *   SCPL (Rehla)        P1  – P12   (12)  → Reactor 1(P1) … Reactor 12(P12)
+ *   SPPL (Rehla)        P13 – P28   (16)  → Reactor 1(P13) … Reactor 16(P28)
+ *   SPPL (K) (Rehla)    P29 – P32   (4)   → Reactor 1(P29) … Reactor 4(P32)
+ *   Madan Chemical      P33 – P43   (11)
+ *   SCPL (Ganjam)       P44 – P49   (6)
  *
  * Drum Plant is excluded from Create Batch Sheet.
  */
@@ -15,8 +15,8 @@ export const BATCH_SHEET_EXCLUDED_FACTORY_CODES = new Set(['DRUM_REHLA']);
 /** Inclusive P-number ranges keyed by plants.factory_code. */
 export const REACTOR_RANGE_BY_FACTORY: Record<string, { from: number; to: number }> = {
   SCPL_REHLA: { from: 1, to: 12 },
-  SPPL_REHLA: { from: 13, to: 27 },
-  SPPLK_REHLA: { from: 28, to: 32 },
+  SPPL_REHLA: { from: 13, to: 28 },
+  SPPLK_REHLA: { from: 29, to: 32 },
   MADAN_SIKANDRABAD: { from: 33, to: 43 },
   SCPL_GANJAM: { from: 44, to: 49 },
 };
@@ -58,6 +58,22 @@ export function reactorRangeForPlant(p: BatchSheetPlantRef): { from: number; to:
   return null;
 }
 
+/**
+ * Display name within a plant: Reactor 1(P33), Reactor 2(P34), …
+ * Local index resets per plant (Madan P33–P43 → 1–11; Ganjam P44–P49 → 1–6).
+ */
+export function formatReactorLabel(localIndex: number, code: string): string {
+  return `Reactor ${localIndex}(${code})`;
+}
+
+function localIndexForCode(code: string, range: { from: number; to: number }, fallback: number): number {
+  const m = /^P(\d+)$/i.exec(code);
+  if (!m) return fallback;
+  const pNum = parseInt(m[1], 10);
+  if (!Number.isFinite(pNum) || pNum < range.from || pNum > range.to) return fallback;
+  return pNum - range.from + 1;
+}
+
 /** Synthetic reactor rows used when `reactors` table is missing or still on R-1…R-6. */
 export function catalogReactorsForPlant(p: BatchSheetPlantRef): CatalogReactor[] {
   const range = reactorRangeForPlant(p);
@@ -65,11 +81,12 @@ export function catalogReactorsForPlant(p: BatchSheetPlantRef): CatalogReactor[]
   const rows: CatalogReactor[] = [];
   for (let n = range.from; n <= range.to; n++) {
     const code = `P${n}`;
+    const localIndex = n - range.from + 1;
     rows.push({
       id: `fallback:${p.id}:${code}`,
       plant_id: p.id,
       code,
-      name: `Reactor ${code}`,
+      name: formatReactorLabel(localIndex, code),
       sort_order: n,
     });
   }
@@ -83,16 +100,22 @@ export function preferCatalogIfDbStale<T extends { code: string }>(
 ): { rows: CatalogReactor[]; usingCatalog: boolean } {
   const catalog = catalogReactorsForPlant(plant);
   if (!catalog.length) return { rows: [], usingCatalog: true };
+  const range = reactorRangeForPlant(plant)!;
   const dbLooksOfficial = dbRows.length > 0 && dbRows.every((r) => /^P\d+$/i.test(r.code));
   if (dbLooksOfficial) {
     return {
-      rows: dbRows.map((r, i) => ({
-        id: (r as { id?: string }).id ?? `db:${plant.id}:${r.code}`,
-        plant_id: plant.id,
-        code: r.code,
-        name: (r as { name?: string }).name ?? `Reactor ${r.code}`,
-        sort_order: (r as { sort_order?: number }).sort_order ?? i + 1,
-      })),
+      rows: dbRows.map((r, i) => {
+        const code = r.code;
+        const localIndex = localIndexForCode(code, range, i + 1);
+        return {
+          id: (r as { id?: string }).id ?? `db:${plant.id}:${code}`,
+          plant_id: plant.id,
+          code,
+          // Always use plant-local labels — DB may still have legacy "Reactor P33".
+          name: formatReactorLabel(localIndex, code),
+          sort_order: (r as { sort_order?: number }).sort_order ?? i + 1,
+        };
+      }),
       usingCatalog: false,
     };
   }
@@ -102,6 +125,19 @@ export function preferCatalogIfDbStale<T extends { code: string }>(
 /** Client rule: batch no = reactor code + "-" + per-reactor sequence (P12-13). */
 export function formatReactorBatchNo(reactorCode: string, seq: number): string {
   return `${reactorCode}-${seq}`;
+}
+
+/** Prefix auto-filled when a reactor is selected — user types digits after the hyphen. */
+export function reactorBatchPrefix(reactorCode: string): string {
+  return `${reactorCode.trim().toUpperCase()}-`;
+}
+
+/** True when batch no matches P{reactor}-digits (e.g. P33-04, P12-13). */
+export function isValidReactorBatchNo(batchNo: string, reactorCode: string): boolean {
+  const code = reactorCode.trim();
+  if (!code) return false;
+  const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${esc}-\\d+$`, 'i').test(batchNo.trim());
 }
 
 export function parseReactorBatchSeq(batchNo: string, reactorCode?: string): number | null {

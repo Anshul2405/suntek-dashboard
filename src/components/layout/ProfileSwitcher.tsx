@@ -22,10 +22,21 @@ export function ProfileAvatar({
   profile: MockProfile;
   size?: AvatarSize;
 }) {
+  const sizeCls = AVATAR_SIZE_CLASSES[size];
+  if (profile.photoUrl) {
+    return (
+      <img
+        src={profile.photoUrl}
+        alt={profile.name}
+        className={[sizeCls, 'rounded-full flex-shrink-0 object-cover bg-slate-200'].join(' ')}
+        referrerPolicy="no-referrer"
+      />
+    );
+  }
   return (
     <div
       className={[
-        AVATAR_SIZE_CLASSES[size],
+        sizeCls,
         'rounded-full flex-shrink-0',
         'bg-gradient-to-br',
         profile.avatarFrom,

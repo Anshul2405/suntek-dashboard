@@ -39,6 +39,7 @@ export interface Database {
           name: string;
           phone: string | null;
           preferred_language: string | null;
+          photo_url: string | null;
           created_at: string;
         };
         Insert: Omit<Database['public']['Tables']['profiles']['Row'], 'created_at'>;
@@ -219,6 +220,7 @@ export interface Database {
           mobile_norm: string | null;    // generated: normalized last-10-digit phone, used as login key
           is_global: boolean | null;     // true = sees every plant (Owner/Admin, all-India accountant)
           preferred_language: string | null;
+          photo_url: string | null;
         };
         // is_deleted is DB-defaulted (false) and only ever written by
         // soft_delete_user(), so it must not be required on a client insert.
@@ -399,6 +401,7 @@ export interface Database {
           /** Claimed by approved-but-not-handed-over requests. Free = on_hand - reserved_qty. */
           reserved_qty: number;
           item_name: string;
+          job_no: string | null;
           unit: string | null;
           equipment: string | null;
           model: string | null;
@@ -603,7 +606,7 @@ export interface Database {
            *  differs from the store owner — it is what makes per-factory
            *  consumption and cost reporting possible. */
           requesting_plant_id: string | null;
-          event_type: 'baseline' | 'issue' | 'procure' | 'manual_edit' | 'rename';
+          event_type: 'baseline' | 'issue' | 'unissue' | 'procure' | 'manual_edit' | 'rename';
           qty_delta: number;
           on_hand_after: number | null;
           ref: string | null;
@@ -658,6 +661,23 @@ export interface Database {
         };
         Insert: Omit<Database['public']['Tables']['drum_inventory']['Row'], 'id'>;
         Update: Partial<Database['public']['Tables']['drum_inventory']['Insert']>;
+      };
+
+      oil_ratios: {
+        Row: {
+          id: string;
+          brand: string;
+          density: number;
+          np: string | null;
+          wx: string | null;
+          cl: string | null;
+          hcl: string | null;
+          vr: number | null;
+          ok: boolean | null;
+          sort_order: number;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['oil_ratios']['Row'], 'id'>> & { id?: string };
+        Update: Partial<Database['public']['Tables']['oil_ratios']['Insert']>;
       };
 
       oil_ratio_table: {
@@ -758,6 +778,10 @@ export interface Database {
           bucket_photo_urls: string[];
           heat_sample_photo_urls: string[];
           colour_note: string | null;
+          oil_grade: string | null;
+          oil_ratio: number | string | null;
+          coa_results: Record<string, string> | null;
+          coa_issued_at: string | null;
           stage: 'created' | 'in_stock' | 'dispatched';
           notes: string | null;
           created_by: string | null;
@@ -1033,6 +1057,7 @@ export interface Database {
           plant_id: string | null;
           name: string;
           identification_mark: string | null;
+          job_no: string | null;
           make: string | null;
           serial_no: string | null;
           quantity: number | null;
@@ -1141,7 +1166,7 @@ export interface Database {
           far_asset_id: string | null;
           completion_photo_url: string | null;
           defective_part_photo_url: string | null;
-          defective_part_decision: 'repair' | 'scrap' | null;
+          defective_part_decision: 'repair' | 'scrap' | 'mixed' | 'consumed' | null;
           repair_qty: number;             // units sent for repair (55_repair_returns.sql; legacy default 1)
           repair_returned_qty: number;    // units already returned to stock via receipts
           defective_raise_photo_url: string | null; // optional photo of the broken item at raise
@@ -1165,6 +1190,10 @@ export interface Database {
           revision_requested_at: string | null;     // when changes were requested
           revision_count: number | null;            // how many review cycles so far
           revision_prev_status: string | null;      // stage to restore on resubmit
+          assessed_by: string | null;
+          verified_by: string | null;
+          defective_decided_by: string | null;
+          closed_by: string | null;
           closed_at: string | null;
           created_at: string;
         };
@@ -1212,6 +1241,13 @@ export interface Database {
           store_item_id: string | null;
           split_group: string | null;
           purchased_qty: number | null;
+          store_decided_by: string | null;
+          store_decided_at: string | null;
+          unit_head_approved_by: string | null;
+          unit_head_approved_at: string | null;
+          procured_by: string | null;
+          procured_at: string | null;
+          handover_confirmed_by: string | null;
           created_at: string;
         };
         // reserved_qty is maintained by the issue_store_item RPC and DB-defaulted.

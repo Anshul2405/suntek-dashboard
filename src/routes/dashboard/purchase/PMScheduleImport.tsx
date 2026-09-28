@@ -85,11 +85,16 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
   }, [rows]);
 
   function reset() { setStage('form'); setTemplates([]); setErr(null); setCloudUrl(null); setJustification(''); setCreatedCount(0); }
-  const totalToCreate = rows.length * Math.max(1, plantIds.length);
+  const totalToCreate = rows.length * Math.max(plantIds.length, 0);
+  const canCreate = rows.length > 0 && plantIds.length > 0 && (unmatched.length === 0 || justification.trim().length > 0);
   function close() { reset(); onClose(); }
   if (!open) return null;
 
   async function handleFile(file: File) {
+    if (!plantIds.length) {
+      setErr(t('far.pmErrSelectFactory', 'Select at least one factory this workbook belongs to.'));
+      return;
+    }
     setFileName(file.name); setErr(null); setStage('parsing');
     try {
       try { const up = await uploadWorkflowFile(file, { workflow: 'maintenance', subfolder: 'pm-schedules', kind: 'pm', creator: activeProfile.name }); setCloudUrl(up.secure_url); } catch { /* archive best-effort */ }
@@ -101,9 +106,57 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
     } catch (e) { setErr(errMsg(e)); setStage('error'); }
   }
 
+  function FactoryPicker({ compact }: { compact?: boolean }) {
+    if (plants.length === 0) {
+      return (
+        <div style={{ fontSize: 12, color: '#DC2626', marginBottom: compact ? 8 : 12 }}>
+          {t('far.pmNoFactories', 'No factories in your scope — ask an admin to assign a plant before importing PM.')}
+        </div>
+      );
+    }
+    if (plants.length === 1) {
+      return (
+        <div style={{ marginBottom: compact ? 8 : 12 }}>
+          <div style={label}>{t('far.pmFactoryLabel', 'Factory this workbook applies to')}</div>
+          <span className="chip active" style={{ cursor: 'default', marginTop: 2, display: 'inline-block' }}>{plants[0].name}</span>
+        </div>
+      );
+    }
+    return (
+      <div style={{ marginBottom: compact ? 8 : 12 }}>
+        <div style={label}>{t('far.pmFactoriesLabel', 'Factory / factories this workbook applies to *')}</div>
+        <div className="flex gap-2 flex-wrap" style={{ marginTop: 2 }}>
+          {plants.map(p => {
+            const on = plantIds.includes(p.id);
+            return <button key={p.id} type="button" onClick={() => setPlantIds(ids => on ? ids.filter(x => x !== p.id) : [...ids, p.id])} className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{p.name}</button>;
+          })}
+        </div>
+        {!plantIds.length && (
+          <div style={{ fontSize: 11, color: '#DC2626', marginTop: 5, fontWeight: 600 }}>
+            {t('far.pmPickFactoryRequired', 'Select at least one factory to continue.')}
+          </div>
+        )}
+        {plantIds.length > 0 && (
+          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 5 }}>
+            {plantIds.length > 1
+              ? t('far.pmMultiFactoryHint', { defaultValue: 'These schedules will be created for each of the {{count}} factories; each unit head is notified.', count: plantIds.length })
+              : t('far.pmPickFactoryHint', 'Pick one, or multiple if this workbook is shared across factories.')}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   async function confirm() {
-    if (!plantIds.length) { setErr(t('far.pmErrSelectFactory', 'Select at least one factory this workbook belongs to.')); return; }
-    if (unmatched.length && !justification.trim()) { setErr(t('far.pmErrNeedJustification', 'Some equipment is not in the FAR — add a justification to proceed.')); return; }
+    if (!plantIds.length) {
+      setErr(t('far.pmErrSelectFactory', 'Select at least one factory this workbook belongs to.'));
+      return;
+    }
+    if (unmatched.length && !justification.trim()) {
+      setErr(t('far.pmErrNeedJustification', 'Some equipment is not in the FAR — add a justification to proceed.'));
+      return;
+    }
+    setErr(null);
     setStage('saving');
     try {
       const nowStart = new Date(startDate).toISOString();
@@ -135,15 +188,16 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
         for (const { tpl } of rows) {
           if (existing.has(`${(tpl.mark || '').toLowerCase()}|${tpl.frequency}|${pid}`)) continue; // skip duplicate
           const match = matchAsset(tpl.equipmentLabel, plantAssets);
+          const realMark = tpl.mark && !/^(x{2,}|n\/?a|nil|none|tbd|todo|-)$/i.test(tpl.mark.trim()) ? tpl.mark.trim() : '';
           payload.push({
-            title: `${tpl.equipmentType}${tpl.mark ? ` (${tpl.mark})` : ''} — ${FREQ_LABEL[tpl.frequency] || tpl.frequency}`,
+            title: `${tpl.equipmentType}${realMark ? ` (${realMark})` : ''} — ${FREQ_LABEL[tpl.frequency] || tpl.frequency}`,
             equipment: tpl.equipmentLabel, plant_id: pid, frequency: tpl.frequency,
             description: null,
             // Only the unit head's own (single) plant gets a default technician; the
             // unit head can reassign later. Multi-plant admin import stays unassigned.
             assigned_to: (singlePlant && assigneeTech) ? assigneeTech : null,
             is_active: true, next_due_at: nowStart,
-            far_asset_id: match?.asset.id ?? null, equipment_mark: tpl.mark,
+            far_asset_id: match?.asset.id ?? null, equipment_mark: realMark || null,
             start_date: startDate, until_date: untilDate || null,
             checklist: tpl.checklist, requires_approval: tpl.frequency !== 'daily',
             unmatched_justification: match ? null : justification.trim(), source: 'pm_import',
@@ -193,28 +247,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
 
         {stage === 'form' && (
           <div>
-            {/* Factory selection — multi-select for an admin. A single-plant unit
-                head still sees WHICH factory this workbook will be written to,
-                as a read-only line: the destination is auto-scoped, but an import
-                form must never leave the user guessing where the data lands. */}
-            {plants.length === 1 && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={label}>{t('far.pmFactoryLabel', 'Factory this workbook applies to')}</div>
-                <span className="chip active" style={{ cursor: 'default', marginTop: 2, display: 'inline-block' }}>{plants[0].name}</span>
-              </div>
-            )}
-            {plants.length > 1 && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={label}>{t('far.pmFactoriesLabel', 'Factory / factories this workbook applies to *')}</div>
-                <div className="flex gap-2 flex-wrap" style={{ marginTop: 2 }}>
-                  {plants.map(p => {
-                    const on = plantIds.includes(p.id);
-                    return <button key={p.id} onClick={() => setPlantIds(ids => on ? ids.filter(x => x !== p.id) : [...ids, p.id])} className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{p.name}</button>;
-                  })}
-                </div>
-                <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 5 }}>{plantIds.length > 1 ? t('far.pmMultiFactoryHint', { defaultValue: 'These schedules will be created for each of the {{count}} factories; each unit head is notified.', count: plantIds.length }) : t('far.pmPickFactoryHint', 'Pick one, or multiple if this workbook is shared across factories.')}</div>
-              </div>
-            )}
+            <FactoryPicker />
             {/* Default technician — only for a single factory (the unit head can reassign later). */}
             {plantIds.length === 1 && technicians.some(tc => tc.plant_id === plantIds[0] || tc.plant_id === null) && (
               <div style={{ marginBottom: 12 }}>
@@ -229,9 +262,26 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
               <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmStartDate', 'Start date')}</div><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
               <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmContinueUntil', 'Continue until (optional)')}</div><input type="date" value={untilDate} onChange={e => setUntilDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
             </div>
-            <button onClick={() => fileRef.current?.click()} style={{ ...btnGhost, width: '100%', padding: '20px', borderStyle: 'dashed' }}>
+            {err && stage === 'form' && (
+              <div style={{ fontSize: 12, color: '#DC2626', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 8, marginBottom: 10 }}>{err}</div>
+            )}
+            <button
+              onClick={() => {
+                if (!plantIds.length) {
+                  setErr(t('far.pmErrSelectFactory', 'Select at least one factory this workbook belongs to.'));
+                  return;
+                }
+                setErr(null);
+                fileRef.current?.click();
+              }}
+              style={{ ...btnGhost, width: '100%', padding: '20px', borderStyle: 'dashed', opacity: plantIds.length ? 1 : 0.55 }}
+            >
               <div style={{ fontWeight: 700, fontSize: 13, color: '#334155' }}>{t('far.pmUploadWorkbook', '⬆ Upload PM workbook (.xlsx)')}</div>
-              <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>{t('far.pmSheetKinds', 'Daily · 7/15 Days · 1/2/3/6 Months · Yearly sheets')}</div>
+              <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}>
+                {plantIds.length
+                  ? t('far.pmSheetKinds', 'Daily · 7/15 Days · 1/2/3/6 Months · Yearly sheets')
+                  : t('far.pmPickFactoryFirst', 'Select a factory above first, then upload the workbook.')}
+              </div>
             </button>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
           </div>
@@ -241,10 +291,11 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
 
         {stage === 'review' && (
           <div>
+            <FactoryPicker compact />
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <div style={{ flex: 1, minWidth: 90, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10, padding: '8px 12px' }}><div style={{ fontSize: 10.5, color: '#16A34A', fontWeight: 700 }}>{t('far.pmInFar', 'IN FAR')}</div><div style={{ fontSize: 18, fontWeight: 800, color: '#16A34A' }}>{matched.length}</div></div>
               <div style={{ flex: 1, minWidth: 90, background: '#FFFBEB', border: '1px solid #FED7AA', borderRadius: 10, padding: '8px 12px' }}><div style={{ fontSize: 10.5, color: '#B45309', fontWeight: 700 }}>{t('far.pmNotInFar', 'NOT IN FAR')}</div><div style={{ fontSize: 18, fontWeight: 800, color: '#B45309' }}>{unmatched.length}</div></div>
-              <div style={{ flex: 1, minWidth: 90, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '8px 12px' }}><div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 700 }}>{t('far.pmSchedulesTile', 'SCHEDULES')}</div><div style={{ fontSize: 18, fontWeight: 800, color: '#334155' }}>{totalToCreate}</div>{plantIds.length > 1 && <div style={{ fontSize: 10, color: '#94A3B8' }}>{t('far.pmRowsTimesPlants', { defaultValue: '{{rows}} × {{plants}} plants', rows: rows.length, plants: plantIds.length })}</div>}</div>
+              <div style={{ flex: 1, minWidth: 90, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '8px 12px' }}><div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 700 }}>{t('far.pmSchedulesTile', 'SCHEDULES')}</div><div style={{ fontSize: 18, fontWeight: 800, color: '#334155' }}>{totalToCreate || rows.length}</div>{plantIds.length > 1 && <div style={{ fontSize: 10, color: '#94A3B8' }}>{t('far.pmRowsTimesPlants', { defaultValue: '{{rows}} × {{plants}} plants', rows: rows.length, plants: plantIds.length })}</div>}</div>
             </div>
             <div style={{ fontSize: 12, color: '#475569', marginBottom: 10 }}>{byFreq.map(([f, n]) => `${FREQ_LABEL[f] || f}: ${n}`).join(' · ')}{templates.length !== rows.length ? ` · ${t('far.pmAlreadyScheduled', { defaultValue: '{{count}} already scheduled (skipped)', count: templates.length - rows.length })}` : ''}</div>
 
@@ -270,9 +321,32 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
               </div>
             )}
 
+            {!canCreate && (
+              <div style={{ fontSize: 12, color: '#B45309', marginTop: 10, fontWeight: 600 }}>
+                {!plantIds.length
+                  ? t('far.pmCreateBlockedNoPlant', 'Select a factory above, then tap Create.')
+                  : unmatched.length && !justification.trim()
+                    ? t('far.pmCreateBlockedJustification', 'Add a justification for equipment not in FAR, then tap Create.')
+                    : !rows.length
+                      ? t('far.pmNothingNew', 'Nothing new to schedule.')
+                      : null}
+              </div>
+            )}
+            {err && (
+              <div style={{ fontSize: 12, color: '#DC2626', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 8, marginTop: 10 }}>{err}</div>
+            )}
+
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button onClick={reset} style={btnGhost}>{t('far.pmBack', 'Back')}</button>
-              <button onClick={confirm} disabled={!rows.length || !plantIds.length} style={{ ...btnPrimary, flex: 1, opacity: (rows.length && plantIds.length) ? 1 : 0.5 }}>{totalToCreate === 1 ? t('far.pmCreateScheduleOne', { defaultValue: 'Create {{count}} schedule', count: totalToCreate }) : t('far.pmCreateScheduleMany', { defaultValue: 'Create {{count}} schedules', count: totalToCreate })}</button>
+              <button
+                onClick={confirm}
+                disabled={!canCreate}
+                style={{ ...btnPrimary, flex: 1, opacity: canCreate ? 1 : 0.5 }}
+              >
+                {(totalToCreate || rows.length) === 1
+                  ? t('far.pmCreateScheduleOne', { defaultValue: 'Create {{count}} schedule', count: totalToCreate || rows.length })
+                  : t('far.pmCreateScheduleMany', { defaultValue: 'Create {{count}} schedules', count: totalToCreate || rows.length })}
+              </button>
             </div>
           </div>
         )}

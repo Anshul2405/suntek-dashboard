@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { insertRows, upsertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../contexts/RoleContext';
+import { canViewBatchFacet } from '../../lib/profiles';
 import type { Database } from '../../lib/database.types';
 import { BatchSheetUpload } from '../../components/BatchSheetUpload';
 import { useOcrJobs } from '../../contexts/OcrJobsContext';
@@ -39,6 +41,15 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   const navigate = useNavigate();
   const ocr = useOcrJobs();
   const { plantIds } = usePlantScope(); // the logged-in operator's plant(s)
+  const { activeProfile } = useRoleContext();
+  const showRaw = canViewBatchFacet(activeProfile, 'raw');
+  const showSheet = canViewBatchFacet(activeProfile, 'sheet');
+  const showMat = canViewBatchFacet(activeProfile, 'mat');
+  const allowedTabs = useMemo(() => (['reading', 'new-batch', 'upload', 'history', 'create-sheet'] as const).filter(tab =>
+    tab === 'reading' || tab === 'new-batch' ? showRaw
+      : tab === 'upload' || tab === 'create-sheet' ? showSheet
+      : showMat
+  ), [showRaw, showSheet, showMat]);
   const [batchId, setBatchId] = useState('');
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [temp, setTemp]           = useState('');
@@ -182,6 +193,10 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
       setActiveTab(tabParam as 'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet');
     }
   }, [searchParams, embedded]);
+  useEffect(() => {
+    if (allowedTabs.includes(activeTab)) return;
+    if (allowedTabs[0]) setActiveTab(allowedTabs[0]);
+  }, [activeTab, allowedTabs]);
   const [newBatchNo, setNewBatchNo] = useState('');
   const [newRecipe, setNewRecipe] = useState('1400');
   const [newTargetQty, setNewTargetQty] = useState('1400');
@@ -468,6 +483,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 sidebar dropdowns (Batch / Operations / Logs) drive navigation. */}
             {!embedded && (
             <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-xl border shrink-0">
+              {showRaw && (
               <button
                 type="button"
                 onClick={() => setActiveTab('reading')}
@@ -479,6 +495,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabLog')}
               </button>
+              )}
+              {showRaw && (
               <button
                 type="button"
                 onClick={() => setActiveTab('new-batch')}
@@ -490,6 +508,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabNewBatch')}
               </button>
+              )}
+              {showSheet && (
               <button
                 type="button"
                 onClick={() => setActiveTab('upload')}
@@ -501,6 +521,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabBatch')}
               </button>
+              )}
+              {showMat && (
               <button
                 type="button"
                 onClick={() => setActiveTab('history')}
@@ -512,6 +534,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabHistory')}
               </button>
+              )}
             </div>
             )}
 

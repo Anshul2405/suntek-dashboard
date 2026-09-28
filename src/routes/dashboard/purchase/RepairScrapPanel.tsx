@@ -72,9 +72,9 @@ export function RepairScrapPanel() {
   const load = useCallback(async () => {
     const { data } = await withEmbedFallback(
       scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' })
-        .not('defective_part_decision', 'is', null).order('closed_at', { ascending: false }).returns<TicketRow[]>(),
+        .in('defective_part_decision', ['repair', 'scrap', 'mixed']).order('closed_at', { ascending: false }).returns<TicketRow[]>(),
       () => scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' })
-        .not('defective_part_decision', 'is', null).order('closed_at', { ascending: false }).returns<TicketRow[]>(),
+        .in('defective_part_decision', ['repair', 'scrap', 'mixed']).order('closed_at', { ascending: false }).returns<TicketRow[]>(),
       'RepairScrap.tickets',
     );
     const ticketRows = data || [];
@@ -129,8 +129,8 @@ export function RepairScrapPanel() {
         id: `legacy:${r.id}`, ticket_id: r.id, store_request_id: null, plant_id: r.plant_id,
         part_name: cleanPartName(r.equipment) || cleanPartName(r.title) || 'Defective part',
         replaced_qty: Number(r.repair_qty ?? 1),
-        repair_qty: r.defective_part_decision === 'repair' ? Number(r.repair_qty ?? 1) : 0,
-        scrap_qty: r.defective_part_decision === 'scrap' ? 1 : 0,
+        repair_qty: r.defective_part_decision === 'scrap' ? 0 : Number(r.repair_qty ?? (r.defective_part_decision === 'repair' || r.defective_part_decision === 'mixed' ? 1 : 0)),
+        scrap_qty: r.defective_part_decision === 'repair' || r.defective_part_decision === 'consumed' ? 0 : 1,
         repair_returned_qty: Number(r.repair_returned_qty ?? 0),
         store_item_id: null, photo_url: r.defective_part_photo_url,
         actor: null, actor_name: null, created_at: r.closed_at || r.created_at,
