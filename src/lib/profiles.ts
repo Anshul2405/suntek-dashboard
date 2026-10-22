@@ -85,6 +85,13 @@ export const CAPABILITIES: { key: string; label: string; description: string }[]
   { key: 'batch_raw', label: 'Batch — Raw / readings', description: 'See New Batch and Log Reading on Batch Logger (raw production entry). If none of the three Batch toggles are set, the person keeps the old full access.' },
   { key: 'batch_sheet', label: 'Batch — Sheet', description: 'See Create Batch Sheet and photo upload on Batch Logger / Batch Sheet.' },
   { key: 'batch_mat', label: 'Batch — Material / history', description: 'See batch history and material-side batch tools. Use with Raw / Sheet to limit what Technical can open.' },
+  // Schedule Setup (Maintenance) — add / revise / delete PM schedules. Store
+  // managers do not see the tab until this is switched on for their role.
+  { key: 'manage_schedules', label: 'Add or delete schedule setup', description: 'See the Schedule Setup tab in Maintenance and add, revise, pause or delete PM schedules. Store managers stay hidden from it until this is on.' },
+  // Admin-only power: edit an already-raised or closed ticket and set a back
+  // date. Every change is written to the ticket trail as who / when / old → new.
+  // Raisers keep their own 1-hour edit window without it.
+  { key: 'backdate_tickets', label: 'Edit & backdate raised tickets', description: 'Edit a maintenance ticket after it was raised (even closed) and set a back date. Each change is logged on the ticket with who, when and old → new. Admin roles only.' },
   { key: 'batch_grade', label: 'Batch — Grade type select', description: 'See and set Grade (NP / HNP / IMP / Grade B) on Create Batch Sheet. Off = the field is hidden and not required; the sheet still saves. Owner/Admin always has this.' },
 ];
 
@@ -106,6 +113,51 @@ export function isAdminProfile(profile: Pick<MockProfile, 'id' | 'baseRoleId' | 
 export function profileHasCapability(profile: MockProfile, cap: string): boolean {
   if (profile.allowedDashboardRoutes.includes('*')) return true;
   return (profile.capabilities || []).includes(cap);
+}
+
+/** Store-manager role slugs (one store manager role + the warehouse keeper). */
+export const STORE_MANAGER_ROLE_IDS = ['store_manager_maint', 'warehouse_manager'];
+
+/**
+ * Does this profile see Maintenance → Schedule Setup?
+ *  • admin: always;
+ *  • anyone granted `manage_schedules`: yes (including store managers);
+ *  • store managers / technicians without it: no;
+ *  • everyone else (unit head, management…): yes, as before.
+ * `primaryRoleIsTechnician` is the Maintenance screen's own technician test.
+ */
+export function canSeeScheduleSetup(profile: MockProfile, primaryRoleIsTechnician = false): boolean {
+  if (isAdminProfile(profile)) return true;
+  if ((profile.capabilities || []).includes('manage_schedules')) return true;
+  const role = profile.baseRoleId ?? profile.id;
+  if (STORE_MANAGER_ROLE_IDS.includes(role) || STORE_MANAGER_ROLE_IDS.includes(profile.id)) return false;
+  return !primaryRoleIsTechnician;
+}
+
+/** Can add / revise / pause / delete schedules (Schedule Setup actions). */
+export function canManageSchedules(profile: MockProfile): boolean {
+  if (isAdminProfile(profile)) return true;
+  if ((profile.capabilities || []).includes('manage_schedules')) return true;
+  const role = profile.baseRoleId ?? profile.id;
+  return role === 'unit_head';
+}
+
+/**
+ * Effective access of someone holding several roles: routes and capabilities
+ * are the UNION across every role, display comes from the primary. Shared by
+ * the logged-in session and the "view as" directory so a previewed person sees
+ * exactly what they would see themselves.
+ */
+export function unionRoleAccess(primary: RoleRow, extra: RoleRow[]): { allowedDashboardRoutes: string[]; capabilities: string[] } {
+  const all = [primary, ...extra.filter(r => r.id !== primary.id)];
+  let routes = all.some(r => r.allowed_routes?.includes('*'))
+    ? ['*']
+    : [...new Set(all.flatMap(r => r.allowed_routes ?? []))];
+  const capabilities = [...new Set(all.flatMap(r => r.capabilities ?? []))];
+  if (!routes.includes('*') && all.some(r => r.id === 'factory_operator')) {
+    routes = [...new Set([...routes, ...BATCH_SHEET_ROUTES])];
+  }
+  return { allowedDashboardRoutes: routes, capabilities };
 }
 
 /** Admin, Management, Unit Head — roles that may view sensitive batch fields (e.g. oil ratio). */

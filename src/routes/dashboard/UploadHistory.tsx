@@ -23,6 +23,8 @@
  * import_batch_deletions), so a deletion cannot be un-recorded.
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { formatDate, formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
+import { DateRangeFilter } from '../../components/v2/DateRangeFilter';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { History, Trash2, AlertTriangle, FileSpreadsheet, ShieldAlert, Download } from 'lucide-react';
@@ -49,8 +51,8 @@ import type { Database } from '../../lib/database.types';
 
 type DeletionRow = Database['public']['Tables']['import_batch_deletions']['Row'];
 
-const fmtDT = (d: string | null | undefined) => (d ? new Date(d).toLocaleString('en-IN') : '—');
-const fmtD = (d: string | null | undefined) => (d ? new Date(d).toLocaleDateString('en-IN') : '—');
+const fmtDT = (d: string | null | undefined) => formatDateTime(d);
+const fmtD = (d: string | null | undefined) => formatDate(d);
 
 const AUDIT_COLUMNS: CsvColumn[] = [
   { header: 'Deleted at', key: 'deleted_at' },
@@ -68,16 +70,6 @@ const AUDIT_COLUMNS: CsvColumn[] = [
   { header: 'Deleted by', key: 'deleted_by_name' },
 ];
 
-/** Date filter presets. Kept as a fixed set rather than a date picker — "which
- *  files went in today / this week" is the actual question an admin asks when a
- *  wrong upload has just happened. */
-const RANGES = [
-  { value: 'all',   label: 'Any date',    days: 0   },
-  { value: '1',     label: 'Last 24 h',   days: 1   },
-  { value: '7',     label: 'Last 7 days', days: 7   },
-  { value: '30',    label: 'Last 30 days', days: 30 },
-] as const;
-
 export function UploadHistory() {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
@@ -94,12 +86,6 @@ export function UploadHistory() {
   const [deletions, setDeletions] = useState<DeletionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  /** When the list was fetched. The date filter measures from here rather than
-   *  from Date.now() at render time — reading the clock during render is impure
-   *  and would let rows silently drop out of a "Last 24 h" view between two
-   *  unrelated re-renders, which is exactly the wrong behaviour while someone is
-   *  ticking checkboxes. */
-  const [loadedAt, setLoadedAt] = useState(() => Date.now());
 
   // Filters (requirement §2: filter by plant, module, date, uploader).
   //
@@ -113,7 +99,8 @@ export function UploadHistory() {
   const [storeFilter, setStoreFilter] = useState(() => params.get('store') ?? 'all');
   const [moduleFilter, setModuleFilter] = useState(() => params.get('module') ?? 'all');
   const [uploaderFilter, setUploaderFilter] = useState('all');
-  const [rangeFilter, setRangeFilter] = useState<string>('all');
+  // Uploaded From / To — inclusive IST calendar days, empty = all.
+  const [range, setRange] = useState({ from: '', to: '' });
   const [showDeleted, setShowDeleted] = useState(false);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -128,7 +115,7 @@ export function UploadHistory() {
   const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true); setErr(null); setLoadedAt(Date.now());
+    setLoading(true); setErr(null);
     try {
       // A stock batch belongs to a STORE; FAR and PM batches carry no store and
       // stay factory-owned, which storeQuery's null-store clause handles. Before
@@ -176,21 +163,19 @@ export function UploadHistory() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const days = RANGES.find(r => r.value === rangeFilter)?.days ?? 0;
-    const cutoff = days ? loadedAt - days * 86_400_000 : 0;
     return batches.filter(b => {
       if (!showDeleted && b.status === 'deleted') return false;
       if (plantFilter !== 'all' && b.plant_id !== plantFilter) return false;
       if (storeFilter !== 'all' && b.store_id !== storeFilter) return false;
       if (moduleFilter !== 'all' && b.module !== moduleFilter) return false;
       if (uploaderFilter !== 'all' && b.uploaded_by_name !== uploaderFilter) return false;
-      if (cutoff && new Date(b.created_at).getTime() < cutoff) return false;
+      if (!inIstDayRange(b.created_at, range.from, range.to)) return false;
       if (q && !((b.file_name || '').toLowerCase().includes(q)
               || plantName(b.plant_id).toLowerCase().includes(q)
               || (b.uploaded_by_name || '').toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [batches, search, plantFilter, storeFilter, moduleFilter, uploaderFilter, rangeFilter, showDeleted, plantName, loadedAt]);
+  }, [batches, search, plantFilter, storeFilter, moduleFilter, uploaderFilter, range, showDeleted, plantName]);
 
   const sort = useSortable(filtered, {
     created_at: b => b.created_at,
@@ -201,7 +186,7 @@ export function UploadHistory() {
     uploaded_by_name: b => b.uploaded_by_name ?? '',
   }, { key: 'created_at', dir: 'desc' });
   const { pageRows, controls } = usePagination(sort.sorted, {
-    resetKey: `${search}|${plantFilter}|${storeFilter}|${moduleFilter}|${uploaderFilter}|${rangeFilter}|${showDeleted}`,
+    resetKey: `${search}|${plantFilter}|${storeFilter}|${moduleFilter}|${uploaderFilter}|${range.from}|${range.to}|${showDeleted}`,
   });
 
   const auditSort = useSortable(deletions, {
@@ -335,7 +320,7 @@ export function UploadHistory() {
             searchPlaceholder={t('uploads.searchPh', 'Search file name, factory or uploader…')}
             onReset={() => {
               setSearch(''); setPlantFilter('all'); setStoreFilter('all'); setModuleFilter('all');
-              setUploaderFilter('all'); setRangeFilter('all'); setShowDeleted(false);
+              setUploaderFilter('all'); setRange({ from: '', to: '' }); setShowDeleted(false);
             }}
           >
             <FilterSelect
@@ -362,10 +347,7 @@ export function UploadHistory() {
               options={[{ value: 'all', label: t('uploads.allUploaders', 'Anyone') },
                         ...uploaders.map(u => ({ value: u, label: u }))]}
             />
-            <FilterSelect
-              label={t('uploads.filterDate', 'Uploaded')} value={rangeFilter} onChange={setRangeFilter}
-              options={RANGES.map(r => ({ value: r.value, label: r.label }))}
-            />
+            <DateRangeFilter label={t('uploads.filterDate', 'Uploaded')} from={range.from} to={range.to} onChange={setRange} />
           </FilterBar>
 
           <SectionCard
@@ -517,7 +499,7 @@ export function UploadHistory() {
               onClick={() => exportToCsv('upload-deletion-audit',
                 AUDIT_COLUMNS,
                 deletions.map(d => ({ ...d, module: moduleLabel(d.module), forced: d.forced ? 'YES' : 'no' })) as unknown as Record<string, unknown>[],
-                [['Suntek — Upload deletion audit'], ['Generated at', new Date().toLocaleString('en-IN')]])}
+                [['Suntek — Upload deletion audit'], ['Generated at', formatDateTime(new Date())]])}
             >
               {t('common.export', 'Export')}
             </ButtonV2>

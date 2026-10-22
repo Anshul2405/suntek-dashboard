@@ -28,19 +28,90 @@ export function formatPct(value: number, decimals = 1): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(decimals)}%`;
 }
 
-/** Format a date string for display */
-export function formatDate(date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+// ── Dates (IST) ──────────────────────────────────────────────────────────────
+// The plants run on India time and every screen shows one format: "22 Oct 2026"
+// (and "22 Oct 2026, 3:05 pm" with a time). Pinning the zone means a browser
+// left on UTC — or a phone set abroad — still shows the plant's calendar day.
+
+export const IST_TZ = 'Asia/Kolkata';
+const IST_OFFSET_MS = 330 * 60_000; // IST has no DST
+
+function toDate(date: string | Date | null | undefined): Date | null {
+  if (date == null || date === '') return null;
+  // A bare 'YYYY-MM-DD' is a calendar day, not UTC midnight — read it as IST.
+  const d = typeof date === 'string'
+    ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T00:00:00+05:30` : date)
+    : date;
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Format datetime for logs */
-export function formatDateTime(date: string | Date): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleString('en-IN', {
-    day: '2-digit', month: 'short',
-    hour: '2-digit', minute: '2-digit', hour12: true,
-  });
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "22 Oct 2026" in IST. Empty / invalid input → '—'.
+ *  Built from the IST calendar day rather than toLocaleDateString: browsers
+ *  disagree on short months ("Sep" vs "Sept"), and one format is the point. */
+export function formatDate(date: string | Date | null | undefined): string {
+  const d = toDate(date);
+  if (!d) return '—';
+  const [y, m, day] = istDayKey(d).split('-');
+  return `${day} ${MONTHS[Number(m) - 1]} ${y}`;
+}
+
+/** "22 Oct 2026, 3:05 pm" in IST. Empty / invalid input → '—'. */
+export function formatDateTime(date: string | Date | null | undefined): string {
+  const d = toDate(date);
+  if (!d) return '—';
+  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: IST_TZ });
+  return `${formatDate(d)}, ${time.replace(/\s?(AM|PM)$/i, m => ` ${m.trim().toLowerCase()}`)}`;
+}
+
+/** The IST calendar day ('YYYY-MM-DD') an instant falls on. */
+export function istDayKey(date: string | Date | null | undefined): string {
+  const d = toDate(date);
+  if (!d) return '';
+  return new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** Today's IST calendar day ('YYYY-MM-DD'). */
+export function istToday(): string {
+  return istDayKey(new Date());
+}
+
+/**
+ * Normalise a From/To pair typed into two date inputs. Empty bound = open.
+ * A To before From is a typo, not an empty range — swap rather than silently
+ * emptying the table, and say so (`swapped`) so the UI can show it.
+ */
+export function normalizeDayRange(from: string, to: string): { from: string; to: string; swapped: boolean } {
+  const f = (from || '').trim();
+  const t = (to || '').trim();
+  if (f && t && t < f) return { from: t, to: f, swapped: true };
+  return { from: f, to: t, swapped: false };
+}
+
+/**
+ * Is `value` inside the inclusive IST calendar-day range [from, to]?
+ * Both bounds are 'YYYY-MM-DD'; either may be empty (= no limit). A row with no
+ * date only matches when no bound is set.
+ */
+export function inIstDayRange(value: string | Date | null | undefined, from: string, to: string): boolean {
+  const { from: f, to: t } = normalizeDayRange(from, to);
+  if (!f && !t) return true;
+  const day = istDayKey(value);
+  if (!day) return false;
+  if (f && day < f) return false;
+  if (t && day > t) return false;
+  return true;
+}
+
+/** ISO instants bounding an inclusive IST day range, for server-side filters
+ *  (.gte(col, start).lt(col, endExclusive)). Empty bound → undefined. */
+export function istRangeToIso(from: string, to: string): { start?: string; endExclusive?: string } {
+  const { from: f, to: t } = normalizeDayRange(from, to);
+  const out: { start?: string; endExclusive?: string } = {};
+  if (f) out.start = new Date(`${f}T00:00:00+05:30`).toISOString();
+  if (t) out.endExclusive = new Date(new Date(`${t}T00:00:00+05:30`).getTime() + 86_400_000).toISOString();
+  return out;
 }
 
 /** Get relative time (e.g. "2h ago") */

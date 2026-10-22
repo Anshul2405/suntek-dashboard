@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
 import { freeQty } from '../../../lib/store/registers';
@@ -12,7 +12,7 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { fetchAllRows } from '../../../lib/fetchAll';
-import { isAdminProfile, type RoleRow } from '../../../lib/profiles';
+import { isAdminProfile, canSeeScheduleSetup, canManageSchedules, profileHasCapability, type RoleRow } from '../../../lib/profiles';
 import { useBlacklist } from '../../../contexts/BlacklistContext';
 import { uploadMaintenancePhoto } from '../../../lib/cloudinary';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, PanelFooter } from '../../../components/SlidePanel';
@@ -26,7 +26,15 @@ import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { similarity } from '../../../lib/blacklist/similarity';
 import { PMScheduleImport } from './PMScheduleImport';
 import { suggestAssets } from '../../../lib/far/assets';
-import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
+import { jobNoFar, isPlaceholderMark, stripPlaceholderParen } from '../../../lib/jobNo';
+import { ticketNoLabel, ticketNoForId, primeTicketNos, ticketSearchTerms } from '../../../lib/ticketNo';
+import { ticketEditMode, raiserWindowRemainingMs, diffTicketEdit, backdatedCreatedAt, auditLineForEdit, type EditMode } from '../../../lib/ticketEditWindow';
+import { issueLineValue, issuePhotoRule, canConfirmIssue, ISSUE_PHOTO_THRESHOLD_INR } from '../../../lib/store/issuePhoto';
+import { fetchPurchaseFacts, type PurchaseFact } from '../../../lib/store/purchaseFacts';
+import { formatDateTime, inIstDayRange, istDayKey } from '../../../lib/utils/formatting';
+import { useNotifications } from '../../../contexts/NotificationsContext';
+import { DateRangeFilter } from '../../../components/v2/DateRangeFilter';
+import { IncidentsPanel } from './IncidentReports';
 import { pickReplacementChecklist } from '../../../lib/pm/parseMaintenanceFile';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import type { AppNotification } from '../../../contexts/NotificationsContext';
@@ -45,7 +53,7 @@ import {
 import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
+import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2, ShieldAlert, ShieldCheck } from 'lucide-react';
 
 type EntityNoteRow = Database['public']['Tables']['entity_notes']['Row'];
 
@@ -202,7 +210,7 @@ function PartNameField({ value, stock, onChange, onPick }: {
 
 // Full date+time for report cells (locale, IST).
 function fmtDT(d: string | null | undefined): string {
-  return d ? new Date(d).toLocaleString('en-IN') : '';
+  return d ? formatDateTime(d) : '';
 }
 // Map a stored role id (e.g. 'technician_shd') to its human label using the
 // role catalog (from RoleContext). Falls back to the raw id when unknown.
@@ -310,7 +318,12 @@ function rollupStatus(reqs: StoreReqRow[], current: TicketStatus): TicketStatus 
 // ── Domain write helpers (use Supabase; kept local) ────────────────────────────
 
 function notify(payload: NotificationInsert) {
-  insertRows('notifications', payload).then(() => {}, () => {});
+  // Every ticket notification carries the ticket's human number so the bell,
+  // To-Do and search all speak the same id (MT-0042), not a uuid.
+  const tid = payload.route ? new URLSearchParams(payload.route.split('?')[1] || '').get('ticket') : null;
+  const no = tid ? ticketNoForId(tid) : '';
+  const title = no && payload.title && !payload.title.includes(no) ? `${payload.title} · ${no}` : payload.title;
+  insertRows('notifications', { ...payload, title }).then(() => {}, () => {});
 }
 
 /** Deep-link a maintenance notification to the exact ticket so clicking the bell
@@ -499,7 +512,9 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
 
 export function Maintenance() {
   const { activeProfile, allProfiles, roles, can } = useRoleContext();
-  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor } = usePlantScope();
+  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor, isGlobal, inScope } = usePlantScope();
+  const navigate = useNavigate();
+  const { markTicketRead } = useNotifications();
   const { isPersonBlacklisted, notifyActivity, tableReady: blacklistReady } = useBlacklist();
   const toast = useToast();
   const { t } = useTranslation();
@@ -563,6 +578,14 @@ export function Maintenance() {
   const isTechnician = role === 'technician_shd' || (!isAdmin && can('perform_maintenance'));
   const isUnitHead = role === 'unit_head';
   const isStoreManager = ALL_STORE_MANAGER_IDS.includes(role);
+  // Schedule Setup: hidden from store managers / technicians UNTIL their role is
+  // granted manage_schedules (User Management). Never hard-hidden for a role.
+  const showScheduleSetup = canSeeScheduleSetup(activeProfile, isTechnician);
+  const canEditSchedules = canManageSchedules(activeProfile);
+  // Admin edit + back date is a real capability (admins hold it implicitly).
+  const canBackdate = profileHasCapability(activeProfile, 'backdate_tickets');
+  // Plant scope is law: may this person raise / move a ticket into this plant?
+  const plantAllowed = useCallback((id: string | null | undefined) => !!id && (isGlobal || inScope(id)), [isGlobal, inScope]);
   const isPurchaseManager = role === 'purchase_manager';
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.
@@ -593,7 +616,11 @@ export function Maintenance() {
   };
 
   // Data
-  const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule'>('periodic');
+  type MaintTab = 'periodic' | 'emergency' | 'schedule' | 'incidents';
+  const [tab, setTab] = useState<MaintTab>('periodic');
+  // Incident deep link (?tab=incidents&incident=<id>) and "report from ticket".
+  const [incidentFocus, setIncidentFocus] = useState<string | null>(null);
+  const [incidentPrefill, setIncidentPrefill] = useState<{ ticketId: string; plantId: string | null; equipment: string } | null>(null);
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
@@ -644,6 +671,8 @@ export function Maintenance() {
   const [showStoreForm, setShowStoreForm] = useState(false);
   // The ticket-plant's stock register — powers the part-name type-ahead.
   const [storeStock, setStoreStock] = useState<StoreStockItem[]>([]);
+  // Last purchase price per store item → values an own-store issue line (A4).
+  const [issuePrices, setIssuePrices] = useState<Map<string, PurchaseFact>>(() => new Map());
 
   // Store manager availability form. registerQty = what the stock file says (for
   // the default + override check); qtyJustification is required if they differ.
@@ -679,6 +708,11 @@ export function Maintenance() {
   // Seeded from the ticket's store-request lines (defaulting "replaced" to what
   // the store actually handed over) and editable before submit.
   const [defectiveLines, setDefectiveLines] = useState<DefectiveSplitLine[]>([]);
+  // Scrap is irreversible: a written reason is required before confirming any
+  // scrap quantity, and it goes onto the ticket's audit trail (A5).
+  const [scrapNotes, setScrapNotes] = useState('');
+  const scrapQtyTotal = defectiveLines.reduce((n, l) => n + (Number(l.scrapQty) || 0), 0);
+  const scrapNeedsNotes = scrapQtyTotal > 0 && !scrapNotes.trim();
 
   // Upload
   const [completionBlob, setCompletionBlob] = useState<Blob | null>(null);
@@ -702,7 +736,16 @@ export function Maintenance() {
 
   // Admin edit + report
   const [editingTicket, setEditingTicket] = useState(false);
-  const [editForm, setEditForm] = useState({ equipment: '', description: '', plant: '', status: '' });
+  const [editForm, setEditForm] = useState({ equipment: '', description: '', plant: '', status: '', backdate: '' });
+  const [editMode, setEditMode] = useState<EditMode>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  // Who / when / old → new lines for this ticket (from its notes trail).
+  const [editHistory, setEditHistory] = useState<{ body: string; author_name: string; created_at: string }[]>([]);
+  const [editHistoryNonce, setEditHistoryNonce] = useState(0);
+  // Re-render once a minute so the raiser's "editable for N more min" hint and
+  // the Edit chip disappear on their own when the hour runs out.
+  const [, setClockTick] = useState(0);
+  useEffect(() => { const id = window.setInterval(() => setClockTick(n => n + 1), 60_000); return () => window.clearInterval(id); }, []);
 
   // Request Changes (reviewer) + Revise & Resubmit (technician) — the same ticket
   // loops back for correction instead of forcing a new one.
@@ -749,6 +792,7 @@ export function Maintenance() {
       if (sRes.error) throw sRes.error;
       ticketsData = tRes.data;
       schedulesData = sRes.data;
+      primeTicketNos(ticketsData || []);
       setTickets(ticketsData || []);
       setSchedules(schedulesData || []);
       if (pRes.data?.length) setDbPlants(pRes.data);
@@ -802,7 +846,7 @@ export function Maintenance() {
           });
           // Reflect the new tickets without a full reload loop.
           const { data: refreshed } = await scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>();
-          if (refreshed) setTickets(refreshed);
+          if (refreshed) { primeTicketNos(refreshed); setTickets(refreshed); }
         }
       } catch (e) { console.error('[Maintenance] periodic generation failed', e); }
     }
@@ -867,6 +911,61 @@ export function Maintenance() {
     // toast/t intentionally omitted — ToastApi object is not referentially stable.
   }, [searchParams, tickets, setSearchParams]);
 
+  // ?tab= deep link (bell → Incidents, Store Req → Emergency, refresh).
+  useEffect(() => {
+    const want = searchParams.get('tab');
+    if (want === 'periodic' || want === 'emergency' || want === 'incidents' || (want === 'schedule' && showScheduleSetup)) {
+      setTab(want as MaintTab);
+    }
+    const inc = searchParams.get('incident');
+    if (inc) {
+      setTab('incidents');
+      setIncidentFocus(inc);
+      const next = new URLSearchParams(searchParams);
+      next.delete('incident');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, showScheduleSetup, setSearchParams]);
+
+  // Schedule Setup taken away (role changed / view-as) → don't strand the tab.
+  useEffect(() => { if (tab === 'schedule' && !showScheduleSetup) setTab('periodic'); }, [tab, showScheduleSetup]);
+
+  /** Open a ticket by id from inside the page (Incidents, queues). Reuses the
+   *  ?ticket= deep link so out-of-page tickets are fetched the same way. */
+  const openTicketById = useCallback((id: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('ticket', id);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  /**
+   * Leaving a ticket. Honour ?from= (Activity Log / Store Req / Overview set it)
+   * and go back there; with no ?from= stay exactly where we are — same tab,
+   * same page, same filters. Never send anyone to the Activity Log unless that
+   * is where they came from.
+   */
+  const returnToOrigin = useCallback(() => {
+    const raw = searchParams.get('from');
+    if (!raw) return;
+    // Short aliases ("?from=activity") and full in-app paths are both accepted;
+    // anything else (external URL, protocol-relative) is ignored.
+    const ALIASES: Record<string, string> = {
+      activity: '/dashboard/purchase/activity', storereq: '/dashboard/purchase/storereq',
+      overview: '/dashboard', todo: '/dashboard/todo', stock: '/dashboard/purchase/storereq?tab=stock',
+    };
+    const from = ALIASES[raw] ?? raw;
+    const next = new URLSearchParams(searchParams);
+    next.delete('from');
+    setSearchParams(next, { replace: true });
+    if ((from === '/dashboard' || from.startsWith('/dashboard/')) && !from.startsWith('//')) navigate(from);
+  }, [searchParams, setSearchParams, navigate]);
+
+  // Opening a ticket reads its bell items (closing it never does).
+  useEffect(() => {
+    if (selectedTicket?.id) markTicketRead(selectedTicket.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicket?.id]);
+
   // FAR register → raise ticket for that asset only.
   useEffect(() => {
     if (searchParams.get('raise') !== '1') return;
@@ -874,7 +973,8 @@ export function Maintenance() {
     if (!farId) return;
     const asset = farAssets.find(a => a.id === farId);
     const equip = searchParams.get('equip') || (asset ? `${asset.name}${asset.identification_mark ? ` (${asset.identification_mark})` : ''}` : '');
-    const plant = searchParams.get('plant') || asset?.plant_id || '';
+    const wanted = searchParams.get('plant') || asset?.plant_id || '';
+    const plant = wanted && plantAllowed(wanted) ? wanted : '';
     if (!asset && !equip) return;
     setTab('emergency');
     setShowRaisePanel(true);
@@ -888,7 +988,22 @@ export function Maintenance() {
     const next = new URLSearchParams(searchParams);
     next.delete('raise'); next.delete('far'); next.delete('equip'); next.delete('plant');
     setSearchParams(next, { replace: true });
-  }, [searchParams, farAssets, setSearchParams]);
+  }, [searchParams, farAssets, setSearchParams, plantAllowed]);
+
+  // Price the lines this ticket may issue from stock (photo rule > ₹1000).
+  useEffect(() => {
+    const ids = [...new Set(storeReqs.map(r => r.store_item_id).filter(Boolean) as string[])];
+    if (!ids.length) { setIssuePrices(new Map()); return; }
+    let alive = true;
+    fetchPurchaseFacts(ids).then(m => { if (alive) setIssuePrices(m); });
+    return () => { alive = false; };
+  }, [storeReqs]);
+  /** ₹ value of issuing this request line from stock, or null if unknown. */
+  const issueValueOf = (req: StoreReqRow): number | null => {
+    const price = (req.store_item_id ? issuePrices.get(req.store_item_id)?.lastUnitPrice : null)
+      ?? (req.unit_price != null ? Number(req.unit_price) : null);
+    return issueLineValue(req.quantity, price);
+  };
 
   const loadStoreReqs = useCallback(async (ticketId: string) => {
     const { data } = await supabase.from('maintenance_store_requests')
@@ -896,6 +1011,16 @@ export function Maintenance() {
       .returns<StoreReqRow[]>();
     setStoreReqs(data || []);
   }, []);
+
+  useEffect(() => {
+    if (!selectedTicket) { setEditHistory([]); return; }
+    let alive = true;
+    getNotes('maintenance_ticket', selectedTicket.id).then(notes => {
+      if (!alive) return;
+      setEditHistory(notes.filter(n => (n.body || '').startsWith('✎')).map(n => ({ body: n.body, author_name: n.author_name, created_at: n.created_at })));
+    });
+    return () => { alive = false; };
+  }, [selectedTicket?.id, editHistoryNonce]);
 
   useEffect(() => {
     if (!selectedTicket) { setStoreReqs([]); setTicketStepNotifs([]); return; }
@@ -916,7 +1041,7 @@ export function Maintenance() {
   // many old parts as you were given new ones) and start the whole quantity as
   // Repair — the technician adjusts before submitting. An in-house job with no
   // store request still gets one line so the ticket can be closed.
-  useEffect(() => { setPartOutcome(''); }, [selectedTicket?.id]);
+  useEffect(() => { setPartOutcome(''); setScrapNotes(''); }, [selectedTicket?.id]);
 
   useEffect(() => {
     if (!selectedTicket) { setDefectiveLines([]); return; }
@@ -1012,10 +1137,13 @@ export function Maintenance() {
   // the display name. Names are not stable — factories are renamed — and at
   // Rehla three factories sit at one site, so matching on a label is both
   // fragile and ambiguous. The ID is the only thing that is neither.
+  // Plant scope is law: a scoped user (Madan) is offered ONLY their plants — an
+  // empty scope means no options, never "fall back to every plant". Only a
+  // global user may fall back to the plant master while scope loads.
   const plantOptions = useMemo(() => {
-    const src = allowedPlants.length > 0 ? allowedPlants : dbPlants;
+    const src = isGlobal ? (allowedPlants.length > 0 ? allowedPlants : dbPlants) : allowedPlants;
     return [...src].sort((a, b) => a.name.localeCompare(b.name));
-  }, [allowedPlants, dbPlants]);
+  }, [allowedPlants, dbPlants, isGlobal]);
 
   const plantNameById = useMemo(
     () => new Map(dbPlants.map(p => [p.id, p.name] as const)),
@@ -1070,8 +1198,10 @@ export function Maintenance() {
   const [fltQ, setFltQ] = useState('');
   const [fltPlant, setFltPlant] = useState('all');
   const [fltStatus, setFltStatus] = useState('all');
-  useEffect(() => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); }, [tab]);
-  const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); };
+  // Raised-on range for the Emergency list (inclusive IST days; empty = all).
+  const [fltRange, setFltRange] = useState({ from: '', to: '' });
+  useEffect(() => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); setFltRange({ from: '', to: '' }); }, [tab]);
+  const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); setFltRange({ from: '', to: '' }); };
 
   /** Derived schedule state — same classification the periodic rows render. */
   const schedStatusOf = (s: ScheduleRow): string => {
@@ -1085,14 +1215,14 @@ export function Maintenance() {
   };
   const matchQ = (...txt: (string | null | undefined)[]) => {
     const q = fltQ.trim().toLowerCase();
-    return !q || txt.some(x => (x || '').toLowerCase().includes(q));
+    const qc = q.replace(/\s+/g, '');
+    return !q || txt.some(x => { const v = (x || '').toLowerCase(); return v.includes(q) || (!!qc && v.includes(qc)); });
   };
-  /** Ticket # is shown as the first 8 chars of the UUID — search must match that too. */
+  /** Ticket # is MT-0042 everywhere — search matches "MT-0042", "0042", "42" (and old raw ids). */
   const ticketSearchHaystack = (t: TicketRow) => {
-    const id = t.id.toLowerCase();
     const linked = t.far_asset_id ? farAssets.find(a => a.id === t.far_asset_id) : undefined;
     const job = t.far_asset_id ? jobNoFar(t.far_asset_id, linked?.identification_mark, linked?.job_no) : '';
-    return [t.equipment, t.title, t.description, t.plants?.name, t.raised_by, t.assigned_to, id, id.slice(0, 8), id.replace(/-/g, ''), job];
+    return [t.equipment, t.title, t.description, t.plants?.name, t.raised_by, t.assigned_to, ...ticketSearchTerms(t), t.id.replace(/-/g, ''), job];
   };
   const fltPeriodic = schedules.filter(s =>
     matchQ(s.title, s.equipment, s.plants?.name, s.equipment_mark, s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : '')
@@ -1118,10 +1248,12 @@ export function Maintenance() {
   const fltEmergency = emergencyTickets.filter(t =>
     matchQ(...ticketSearchHaystack(t))
     && (fltPlant === 'all' || t.plant_id === fltPlant)
-    && (fltStatus === 'all' || t.status === fltStatus));
+    && (fltStatus === 'all' || t.status === fltStatus)
+    && inIstDayRange(t.created_at, fltRange.from, fltRange.to));
+  // Filter offers only plants this person can see (scope), not the master list.
   const plantFilterOptions = [
     { value: 'all', label: t('common.allPlants') },
-    ...dbPlants.map(p => ({ value: p.id, label: p.name })),
+    ...plantOptions.map(p => ({ value: p.id, label: p.name })),
   ];
   const statusFilterOptions = tab === 'periodic'
     ? [
@@ -1150,7 +1282,7 @@ export function Maintenance() {
   const weeklyListSort = useSortable(weeklyListSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
   const upcomingSort = useSortable(upcomingSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
   const emergencySort = useSortable(fltEmergency, {
-    ticket: t => t.id,
+    ticket: t => (t.ticket_no ?? (t.created_at ? new Date(t.created_at).getTime() : 0)),
     equipment: t => t.equipment,
     plant: t => t.plants?.name,
     issue: t => t.description || t.title,
@@ -1169,15 +1301,64 @@ export function Maintenance() {
   }, { key: 'due', dir: 'asc' });
 
   // Pagination for the three long maintenance tables (default 10/page).
-  const fltKey = `${fltQ}|${fltPlant}|${fltStatus}`;
+  // Reset to page 1 ONLY on the user's own search / filter / sort / page-size
+  // change. Never key on list length: a background refetch (or a ticket moving
+  // stage) used to throw the user from page 2 back to page 1.
+  const fltKey = `${fltQ}|${fltPlant}|${fltStatus}|${fltRange.from}|${fltRange.to}`;
   const dueTodayPg = usePagination(dueTodaySort.sorted, { resetKey: `${fltKey}|today|${dueTodaySort.sort.key}|${dueTodaySort.sort.dir}` });
   const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}` });
   const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}` });
   const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
-  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencyTickets.length}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
+  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
   const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${schedPlantFilter.join(',')}|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  // ── Verification queue (B4) ────────────────────────────────────────────────
+  // Finished work waiting for the unit head: periodic submissions and in-house
+  // emergency repairs. (A store-path ticket at pending_unit_head is a PART
+  // approval, handled per item inside the ticket — not this queue.) Verifying
+  // closes the ticket, so it leaves this list; nothing is auto-verified.
+  const awaitingVerification = useMemo(() => tickets
+    .filter(t => t.status === 'pending_unit_head'
+      && (t.type === 'periodic' || ticketDecision(t.title, false) !== 'store'))
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '')), [tickets]);
+  const canVerifyWork = isUnitHead || isAdmin;
+  const verifyQueue = (type: 'periodic' | 'emergency') => {
+    const rows = awaitingVerification.filter(t => t.type === type);
+    if (!rows.length) return null;
+    return (
+      <SectionCard flush className="mb-4" title={t('maint.awaitingVerificationQueue', { defaultValue: 'Awaiting verification ({{n}})', n: rows.length })}
+        subtitle={canVerifyWork ? t('maint.awaitingVerificationSub', 'Work is done and photo uploaded — verify to close, or send back.') : t('maint.awaitingVerificationSubRO', 'Waiting on the unit head to verify.')}>
+        <div className="overflow-x-auto scroll-x">
+          <table className="dt2" data-testid={`verify-queue-${type}`}>
+            <thead><tr>
+              <th>{t('maint.colTicketNo')}</th><th>{t('maint.colEquipment')}</th><th>{t('common.plant')}</th>
+              <th>{t('maint.colDoneBy', 'Done by')}</th><th>{t('maint.colCreated')}</th>{canVerifyWork && <th>{t('maint.colAction')}</th>}
+            </tr></thead>
+            <tbody>
+              {rows.map(tk => (
+                <tr key={tk.id}>
+                  <td className="font-mono text-xs text-slate-500">{ticketNoLabel(tk)}</td>
+                  <td className="font-semibold">{stripPlaceholderParen(tk.equipment || tk.title)}</td>
+                  <td>{tk.plants?.name || '—'}</td>
+                  <td className="text-xs text-slate-500">{tk.assigned_to || tk.raised_by || '—'}</td>
+                  <td className="text-xs text-slate-500">{formatDate(tk.created_at)}</td>
+                  {canVerifyWork && (
+                    <td>
+                      <ButtonV2 size="sm" onClick={() => (tk.type === 'periodic' ? setVerifyingTicket(tk) : setSelectedTicket(tk))} className="bg-[#0A1628] text-white border-none hover:bg-[#152338]">
+                        <ShieldCheck className="w-3.5 h-3.5" /> {t('maint.verify', 'Verify')}
+                      </ButtonV2>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
+    );
+  };
 
   const openEmergency = emergencyTickets.filter(t => t.status !== 'closed').length;
   const pendingStore = emergencyTickets.filter(t => ['pending_store', 'pending_unit_head'].includes(t.status)).length;
@@ -1193,6 +1374,12 @@ export function Maintenance() {
 
   async function handleRaiseTicket() {
     if (!raiseForm.equipment.trim() || raising) return;
+    // Plant scope at write time too — the picker only offers allowed plants,
+    // but a deep link or a stale form must not slip another plant through.
+    if (!plantAllowed(raiseForm.plant)) {
+      toast.error(t('maint.plantOutOfScope', 'Pick one of your plants — you can only raise tickets for plants you belong to.'));
+      return;
+    }
     setRaising(true);
     try {
     const plant = dbPlants.find(p => p.id === raiseForm.plant);
@@ -1218,6 +1405,9 @@ export function Maintenance() {
       assigned_to: (isTechnician || role === 'factory_operator') ? activeProfile.name : null,
     }).select('*, plants(name)').single();
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
+    // The DB assigned ticket_no on insert — cache it so the notification below
+    // carries MT-0042 rather than the pre-number fallback.
+    if (newTicket) primeTicketNos([newTicket]);
 
     // Optional: photo of the broken/defective item(s) attached at raise time.
     if (newTicket && raisePhotoBlob) {
@@ -1284,29 +1474,75 @@ export function Maintenance() {
     } finally { setRaising(false); }
   }
 
-  // ── Admin: edit / delete a ticket ───────────────────────────────────────────
-  function startEdit(t: TicketRow) {
-    setEditForm({ equipment: t.equipment || '', description: t.description || '', plant: t.plant_id || '', status: t.status });
+  // ── Edit an already-raised ticket ───────────────────────────────────────────
+  //  • raiser: within 1 hour of created_at, equipment / plant / description only,
+  //    never status (status moves only through the workflow buttons);
+  //  • admin (backdate_tickets): any time, closed too, may set a back date.
+  // Every change is written to the ticket's trail as who / when / old → new.
+  const editActor = { name: activeProfile.name, isAdmin, canBackdate };
+  const editModeFor = (tk: TicketRow | null) => (tk ? ticketEditMode(tk, editActor) : null);
+
+  function startEdit(tk: TicketRow) {
+    const mode = editModeFor(tk);
+    if (!mode) { toast.error(t('maint.editWindowClosed', 'The 1-hour edit window for this ticket has passed.')); return; }
+    setEditMode(mode);
+    setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status, backdate: '' });
     setEditingTicket(true);
   }
 
   async function saveEdit() {
-    if (!selectedTicket) return;
+    if (!selectedTicket || savingEdit) return;
+    // Re-check at save time — the panel may have been open past the hour.
+    const mode = editModeFor(selectedTicket);
+    if (!mode) {
+      toast.error(t('maint.editWindowClosed', 'The 1-hour edit window for this ticket has passed.'));
+      setEditingTicket(false); setEditMode(null);
+      return;
+    }
+    if (editForm.plant && !plantAllowed(editForm.plant)) {
+      toast.error(t('maint.plantOutOfScope', 'Pick one of your plants — you can only raise tickets for plants you belong to.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === editForm.plant);
-    await updateRows('maintenance_tickets', {
-      equipment: editForm.equipment,
-      description: editForm.description || null,
-      plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
-      status: editForm.status as TicketStatus,
-    }).eq('id', selectedTicket.id);
-    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, status: editForm.status as TicketStatus, plants: plant ? { name: plant.name } : t.plants } : t);
-    await notifyMentions(editForm.description, {
-      entityType: 'maintenance_ticket', entityId: selectedTicket.id,
-      entityLabel: editForm.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
-    });
-    setEditingTicket(false);
-    toast.success(t('maint.ticketUpdated', 'Ticket updated'));
-    await loadData();
+    const plantName = (id: string | null) => (id ? plantNameById.get(id) || id : '—');
+    const changes = diffTicketEdit(
+      { equipment: selectedTicket.equipment, description: selectedTicket.description, plant_id: selectedTicket.plant_id, created_at: selectedTicket.created_at },
+      { equipment: editForm.equipment, description: editForm.description, plant_id: plant?.id ?? selectedTicket.plant_id ?? null, backdate: mode === 'admin' ? editForm.backdate : '' },
+      plantName,
+    );
+    // Admin may still correct the status; the raiser never can.
+    const statusChanged = mode === 'admin' && editForm.status && editForm.status !== selectedTicket.status;
+    if (statusChanged) changes.push({ field: 'status', from: statusLabel(selectedTicket.status), to: statusLabel(editForm.status) });
+    if (!changes.length) { setEditingTicket(false); setEditMode(null); return; }
+    setSavingEdit(true);
+    try {
+      const patch: TicketUpdate = {
+        equipment: editForm.equipment,
+        description: editForm.description || null,
+        plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
+      };
+      if (statusChanged) patch.status = editForm.status as TicketStatus;
+      if (mode === 'admin' && editForm.backdate) {
+        (patch as Record<string, unknown>).created_at = backdatedCreatedAt(selectedTicket.created_at, editForm.backdate);
+      }
+      const { error } = await updateRows('maintenance_tickets', patch).eq('id', selectedTicket.id);
+      if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
+      await auditNote(selectedTicket, auditLineForEdit(activeProfile.name, mode, changes));
+      setSelectedTicket((tk) => tk ? {
+        ...tk, ...patch,
+        plants: plant ? { name: plant.name } : tk.plants,
+      } as TicketRow : tk);
+      await notifyMentions(editForm.description, {
+        entityType: 'maintenance_ticket', entityId: selectedTicket.id,
+        entityLabel: editForm.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
+      });
+      setEditingTicket(false); setEditMode(null);
+      setEditHistoryNonce(n => n + 1);
+      toast.success(t('maint.ticketUpdated', 'Ticket updated'));
+      await loadData();
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   async function handleDeleteTicket(tk: TicketRow) {
@@ -1428,6 +1664,7 @@ export function Maintenance() {
   async function submitResubmit() {
     if (!selectedTicket || savingRevision) return;
     if (!resubmitForm.equipment.trim()) { toast.error(t('maint.equipmentRequired', 'Equipment is required')); return; }
+    if (resubmitForm.plant && !plantAllowed(resubmitForm.plant)) { toast.error(t('maint.plantOutOfScope', 'Pick one of your plants — you can only raise tickets for plants you belong to.')); return; }
     const needsPart = resubmitForm.assessment === 'needs_part';
     const partItems = needsPart
       ? storeItems.map(it => ({ ...it, partName: it.partName.trim() })).filter(it => it.partName)
@@ -1468,7 +1705,7 @@ export function Maintenance() {
             part_name: r.part_name,
             busy_transaction_ref: r.busy_transaction_ref,
           })),
-          { actorName: activeProfile.name, ticketRef: `ticket ${selectedTicket.id.slice(0, 8)}` },
+          { actorName: activeProfile.name, ticketRef: `ticket ${ticketNoLabel(selectedTicket)}` },
         );
         if (unwind.errors.length) console.warn('[Maintenance] stock unwind on resubmit:', unwind.errors);
       } else {
@@ -1618,7 +1855,7 @@ export function Maintenance() {
           : (sr ? 'Awaiting part / approval' : 'In progress');
         return {
           id: t.id,
-          shortId: t.id.slice(0, 8),
+          shortId: ticketNoLabel(t),
           type: t.type,
           equipment: t.equipment || '',
           plant: t.plants?.name || '',
@@ -1656,7 +1893,7 @@ export function Maintenance() {
       const preamble: (string | number)[][] = [
         ['Suntek — Maintenance Report'],
         ['Generated by', `${activeProfile.name} (${activeProfile.roleLabel})`],
-        ['Generated at', new Date().toLocaleString('en-IN')],
+        ['Generated at', formatDateTime(new Date())],
         ['Scope', `${typeSel} · ${statusSel} · ${dateSel}`],
         ['Total tickets', rows.length],
       ];
@@ -1668,7 +1905,7 @@ export function Maintenance() {
         const eqById = new Map(rows.map((t) => [t.id, t.equipment || '']));
         const noteRows = notes.map((n) => ({
           id: n.entity_id,
-          shortId: n.entity_id.slice(0, 8),
+          shortId: ticketNoForId(n.entity_id),
           equipment: eqById.get(n.entity_id) || '',
           note: n.body,
           author: n.author_name,
@@ -1778,21 +2015,30 @@ export function Maintenance() {
 
   // Unit-head verification of a submitted (≥weekly) periodic ticket.
   async function verifyPeriodicTicket(ticket: TicketRow, approve: boolean) {
+    if (actionBusyRef.current) return;
+    actionBusyRef.current = true;
     const sched = schedules.find(s => s.id === ticket.schedule_id);
     try {
       if (approve) {
-        await updateRows('maintenance_tickets', { status: 'closed', closed_at: new Date().toISOString() }).eq('id', ticket.id);
+        const { error } = await updateRows('maintenance_tickets', { status: 'closed', closed_at: new Date().toISOString(), verified_by: activeProfile.name, closed_by: activeProfile.name }).eq('id', ticket.id);
+        if (error) throw new Error(error.message);
+        await auditNote(ticket, `✅ Verified & closed by ${activeProfile.name}`);
         if (sched) await advanceSchedule(sched);
         notify({ target_roles: [...maintenanceRoleIds, 'admin'], title: `Maintenance verified: ${ticket.title}`, body: `${ticket.equipment} · verified by ${activeProfile.name}`, type: 'info', route: maintRoute(ticket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: ticket.plant_id ?? null, unit_id: null });
         toast.success(t('maint.verifiedClosed', 'Verified & closed'));
       } else {
-        await updateRows('maintenance_tickets', { status: 'open' }).eq('id', ticket.id);
+        const { error } = await updateRows('maintenance_tickets', { status: 'open' }).eq('id', ticket.id);
+        if (error) throw new Error(error.message);
         notify({ target_roles: [...maintenanceRoleIds, 'admin'], title: `Maintenance sent back: ${ticket.title}`, body: `${ticket.equipment} · ${activeProfile.name} asked for rework`, type: 'warning', route: maintRoute(ticket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: ticket.plant_id ?? null, unit_id: null });
         toast.success(t('maint.sentBackForRework', 'Sent back for rework'));
       }
       setVerifyingTicket(null);
+      // Leave the pile at once — don't wait for the refetch.
+      setTickets(prev => prev.map(x => (x.id === ticket.id ? { ...x, status: approve ? 'closed' : 'open' } as TicketRow : x)));
+      if (selectedTicket?.id === ticket.id) { setSelectedTicket(null); returnToOrigin(); }
       await loadData();
     } catch (e) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: e instanceof Error ? e.message : String(e) })); }
+    finally { actionBusyRef.current = false; }
   }
 
   async function handleRaiseStoreReq() {
@@ -2002,7 +2248,7 @@ export function Maintenance() {
           store_id: storeIdFor(selectedTicket.plant_id),
           requesting_plant_id: selectedTicket.plant_id,
           qty_delta: (enteredQty as number) - (regQty as number), on_hand_after: null,
-          ref: `store-check · ticket ${selectedTicket.id.slice(0, 8)}`,
+          ref: `store-check · ticket ${ticketNoLabel(selectedTicket)}`,
           justification: `Register ${regQty} → counted ${enteredQty}. ${storeDecisionForm.qtyJustification.trim()}`,
           actor_name: activeProfile.name,
         });
@@ -2058,7 +2304,7 @@ export function Maintenance() {
             store_request_id: req.id,
             qty,
             requesting_plant_id: selectedTicket.plant_id,
-            ref: `ticket ${selectedTicket.id.slice(0, 8)}`,
+            ref: `ticket ${ticketNoLabel(selectedTicket)}`,
             actor_name: activeProfile.name,
           },
         });
@@ -2190,6 +2436,11 @@ export function Maintenance() {
     if (!selectedTicket) return;
     const fromOwnStore = req.store_decision === 'available';
     if (fromOwnStore) {
+      // Photo rule: > ₹1000 (or value unknown) → photo mandatory.
+      if (!canConfirmIssue(issueValueOf(req), !!handoverPhotoBlob)) {
+        toast.error(t('maint.issuePhotoRequired', { defaultValue: 'A part photo is required for an issue worth more than ₹{{n}} (or when the value is unknown).', n: ISSUE_PHOTO_THRESHOLD_INR }));
+        return;
+      }
       if (!handoverNotes.trim() && !handoverPhotoBlob) { toast.error(t('maint.handoverNeedDescription', "Please add a short description (why you're providing this part) or a part photo before confirming handover.")); return; }
     } else if (!handoverInvoiceBlob && !handoverPhotoBlob) {
       toast.error(t('maint.handoverNeedInvoice', 'Please upload at least the invoice or part photo before confirming handover.')); return;
@@ -2243,7 +2494,7 @@ export function Maintenance() {
               store_request_id: req.id,
               qty,
               requesting_plant_id: selectedTicket.plant_id,
-              ref: `ticket ${selectedTicket.id.slice(0, 8)}`,
+              ref: `ticket ${ticketNoLabel(selectedTicket)}`,
               justification: `Handed over to technician · ${req.part_name}`,
               actor_name: activeProfile.name,
             },
@@ -2278,7 +2529,7 @@ export function Maintenance() {
               // AND a per-factory consumption/cost report.
               store_id: storeIdFor(selectedTicket.plant_id),
               requesting_plant_id: selectedTicket.plant_id,
-              qty_delta: bought, on_hand_after: newOnHand, ref: req.busy_transaction_ref || `ticket ${selectedTicket.id.slice(0, 8)}`,
+              qty_delta: bought, on_hand_after: newOnHand, ref: req.busy_transaction_ref || `ticket ${ticketNoLabel(selectedTicket)}`,
               justification: `Procured ${bought} · ${qty} handed to technician${excess > 0 ? `, ${excess} added to stock` : ''} · ${req.part_name}`,
               actor_name: activeProfile.name,
             });
@@ -2305,6 +2556,10 @@ export function Maintenance() {
 
   async function submitDefectiveReturn() {
     if (!selectedTicket || !defectiveBlob) return;
+    if (scrapNeedsNotes) {
+      toast.error(t('maint.scrapNotesRequired', 'Write why these parts are being scrapped before confirming.'));
+      return;
+    }
     // Client-side mirror of the DB rule: every removed part must be accounted
     // for as either repair or scrap before the ticket can close.
     const splitErrors = validateSplit(defectiveLines);
@@ -2349,6 +2604,10 @@ export function Maintenance() {
         defective_decided_by: activeProfile.name,
         closed_by: activeProfile.name,
       }).eq('id', selectedTicket.id);
+      if (totals.scrap > 0) {
+        const parts = defectiveLines.filter(l => Number(l.scrapQty) > 0).map(l => `${l.partName.trim()} ×${Number(l.scrapQty)}`).join(', ');
+        await auditNote(selectedTicket, `🗑 Scrapped by ${activeProfile.name}: ${parts} — ${scrapNotes.trim()}`);
+      }
       const summary = `${totals.repair} ${t('maint.toRepair', 'to repair')} · ${totals.scrap} ${t('maint.scrapped', 'scrapped')}`;
       notify({
         target_roles: ['admin', 'unit_head', 'store_manager_maint'],
@@ -2359,7 +2618,8 @@ export function Maintenance() {
         plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id,
       });
       await notifyTicketWatchers(selectedTicket, `Ticket closed: ${selectedTicket.equipment}`, `Defective parts → ${summary} · closed by ${activeProfile.name}.`);
-      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setUploadPct(0);
+      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setUploadPct(0); setScrapNotes('');
+      returnToOrigin();
       await loadData();
     } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
     finally { setUploading(false); }
@@ -2404,6 +2664,7 @@ export function Maintenance() {
       await notifyTicketWatchers(selectedTicket, `Ticket closed: ${selectedTicket.equipment}`, `Issued parts consumed · closed by ${activeProfile.name}.`);
       toast.success(t('maint.consumedClosed', 'Marked consumed and ticket closed'));
       setSelectedTicket(null); setPartOutcome(''); setUploadPct(0);
+      returnToOrigin();
       await loadData();
     } catch (err) {
       toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: err instanceof Error ? err.message : String(err) }));
@@ -2486,7 +2747,7 @@ export function Maintenance() {
   // schedules stop auto-generating tickets. Useful when an owner leaves and the
   // task needs a temporary hold until it's reassigned.
   async function toggleScheduleActive(s: ScheduleRow) {
-    if (!isAdmin) return;
+    if (!canEditSchedules) return;
     const next = !s.is_active;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { error } = await updateRows('maintenance_schedules', { is_active: next }).eq('id', s.id);
@@ -2502,7 +2763,7 @@ export function Maintenance() {
   //  • Tickets that were actually worked on (in_progress … closed) are KEPT but
   //    unlinked (schedule_id → null) so the maintenance history stays intact.
   async function handleDeleteSchedule(s: ScheduleRow) {
-    if (!isAdmin || deletingScheduleId) return;
+    if (!canEditSchedules || deletingScheduleId) return;
     if (!window.confirm(t('maint.confirmDeleteSchedule', { defaultValue: 'Delete schedule "{{name}}"? This stops auto-ticket generation and removes any pending tickets it created (started/completed ones are kept for history). This cannot be undone.', name: s.title }))) return;
     setDeletingScheduleId(s.id);
     try {
@@ -2536,6 +2797,7 @@ export function Maintenance() {
 
   async function handleSaveSchedule() {
     if (!scheduleForm.title.trim() || !scheduleForm.equipment.trim() || savingSchedule) return;
+    if (!canEditSchedules) return;
     setSavingSchedule(true);
     try {
     // A linked FAR asset dictates the plant — never let a mismatched selection through.
@@ -2853,7 +3115,7 @@ export function Maintenance() {
               <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} style={{ flex: 1, padding: '11px', borderRadius: 12, border: '1px solid #FCA5A5', background: '#FEF2F2', color: '#DC2626', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
                 {t('maint.sendBack', '↩ Send back')}
               </button>
-              <button onClick={verifyInHouse} style={{ flex: 2, padding: '11px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+              <button data-testid="verify-close" onClick={() => (tk.type === 'periodic' ? verifyPeriodicTicket(tk, true) : verifyInHouse())} style={{ flex: 2, padding: '11px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
                 {t('maint.verifyAndClose', '✓ Verify & close')}
               </button>
             </div>
@@ -2898,8 +3160,10 @@ export function Maintenance() {
           const badge = STAGE_BADGE[s];
           // Available-from-store items skip procurement → no bill; procured items carry one.
           const fromOwnStore = req.store_decision === 'available';
+          const issueValue = fromOwnStore ? issueValueOf(req) : null;
+          const photoRule = fromOwnStore ? issuePhotoRule(issueValue) : 'optional';
           const canConfirmHandover = fromOwnStore
-            ? (!!handoverNotes.trim() || !!handoverPhotoBlob)
+            ? ((!!handoverNotes.trim() || !!handoverPhotoBlob) && canConfirmIssue(issueValue, !!handoverPhotoBlob))
             : (!!handoverInvoiceBlob || !!handoverPhotoBlob);
           // Map the request to the plant's stock so the store manager confirms
           // rather than re-counts: exact link if the tech picked it, else fuzzy.
@@ -3039,7 +3303,16 @@ export function Maintenance() {
                   ) : (
                     <PhotoUploader onBlobReady={setHandoverInvoiceBlob} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
                   )}
-                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={t('maint.partPhotoHint', 'Photo of the part being handed over')} />
+                  {fromOwnStore && (
+                    <div data-testid="issue-photo-rule" style={{ fontSize: 11.5, borderRadius: 8, padding: '6px 10px', marginBottom: 8, background: photoRule === 'required' ? '#FEF2F2' : '#F0FDF4', color: photoRule === 'required' ? '#B91C1C' : '#15803D', border: `1px solid ${photoRule === 'required' ? '#FECACA' : '#BBF7D0'}` }}>
+                      {issueValue == null
+                        ? t('maint.issueValueUnknown', 'Value unknown (no purchase price on record) — part photo required.')
+                        : photoRule === 'required'
+                          ? t('maint.issueValueOver', { defaultValue: 'Issue worth ₹{{v}} (> ₹{{n}}) — part photo required.', v: issueValue.toLocaleString('en-IN'), n: ISSUE_PHOTO_THRESHOLD_INR })
+                          : t('maint.issueValueUnder', { defaultValue: 'Issue worth ₹{{v}} (≤ ₹{{n}}) — photo optional.', v: issueValue.toLocaleString('en-IN'), n: ISSUE_PHOTO_THRESHOLD_INR })}
+                    </div>
+                  )}
+                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={photoRule === 'required' ? t('maint.partPhotoRequired', 'Part photo *') : t('maint.partPhoto', 'Part photo')} hint={t('maint.partPhotoHint', 'Photo of the part being handed over')} />
                   {uploading && <UploadBar pct={uploadPct} color="#9333EA" />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button onClick={() => { setActingReqId(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
@@ -3234,8 +3507,17 @@ export function Maintenance() {
                   })}
                 </div>
 
+                {scrapQtyTotal > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#B91C1C', marginBottom: 4 }}>{t('maint.scrapNotesLabel', { defaultValue: 'Why scrap {{n}} unit(s)? *', n: scrapQtyTotal })}</div>
+                    <textarea data-testid="scrap-notes" value={scrapNotes} onChange={e => setScrapNotes(e.target.value)} rows={2}
+                      placeholder={t('maint.scrapNotesPh', 'e.g. Bearing seized, shaft scored — not repairable.')}
+                      style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${scrapNeedsNotes ? '#FCA5A5' : '#E2E8F0'}`, borderRadius: 10, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none' }} />
+                    {scrapNeedsNotes && <div style={{ fontSize: 11, color: '#B91C1C', marginTop: 3 }}>{t('maint.scrapNotesRequired', 'Write why these parts are being scrapped before confirming.')}</div>}
+                  </div>
+                )}
                 {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
-                <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
+                <button data-testid="confirm-defective" onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || scrapNeedsNotes || uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || scrapNeedsNotes || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
               </>
             )}
           </div>
@@ -3337,7 +3619,7 @@ export function Maintenance() {
     blacklistNotifiedRef.current = key;
     notifyActivity(
       blacklistHit.entry,
-      `${blacklistHit.who} maintenance ticket "${selectedTicket.equipment}" (#${selectedTicket.id.slice(0, 8)})`,
+      `${blacklistHit.who} maintenance ticket "${selectedTicket.equipment}" (${ticketNoLabel(selectedTicket)})`,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blacklistHit?.entry.id, selectedTicket?.id]);
@@ -3352,11 +3634,19 @@ export function Maintenance() {
         items={[
           { key: 'periodic', label: t('maint.periodic'), icon: <Calendar /> },
           { key: 'emergency', label: t('maint.emergency'), icon: <AlertTriangle /> },
-          // Role gate identical to the old strip: hidden for technicians + store managers.
-          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: isTechnician || isStoreManager },
+          // Hidden for technicians / store managers until their role holds
+          // manage_schedules ("Add or delete schedule setup").
+          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: !showScheduleSetup },
+          { key: 'incidents', label: t('maint.incidentsTab', 'Incidents'), icon: <ShieldAlert /> },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={(k) => {
+          setTab(k);
+          // Keep ?tab= in the URL so a refresh / back lands on the same tab.
+          const next = new URLSearchParams(searchParams);
+          if (k === 'periodic') next.delete('tab'); else next.set('tab', k);
+          setSearchParams(next, { replace: true });
+        }}
       />
 
       {loadError ? (
@@ -3402,6 +3692,8 @@ export function Maintenance() {
             <FilterSelect icon={<Building2 />} value={fltPlant} onChange={setFltPlant} options={plantFilterOptions} />
             <FilterSelect icon={<Activity />} value={fltStatus} onChange={setFltStatus} options={statusFilterOptions} />
           </FilterBar>
+
+          {verifyQueue('periodic')}
 
           <div ref={dueTodayRef}>
           <SectionCard
@@ -3544,7 +3836,10 @@ export function Maintenance() {
           >
             <FilterSelect icon={<Building2 />} value={fltPlant} onChange={setFltPlant} options={plantFilterOptions} />
             <FilterSelect icon={<Activity />} value={fltStatus} onChange={setFltStatus} options={statusFilterOptions} />
+            <DateRangeFilter from={fltRange.from} to={fltRange.to} onChange={setFltRange} label={t('maint.raisedBetween', 'Raised (from – to)')} />
           </FilterBar>
+
+          {verifyQueue('emergency')}
 
           <SectionCard
             flush
@@ -3583,7 +3878,7 @@ export function Maintenance() {
                   )}
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
-                      <td className="font-mono text-xs text-slate-400">{tk.id.slice(0, 8)}</td>
+                      <td className="font-mono text-xs text-slate-500" data-testid="ticket-no">{ticketNoLabel(tk)}</td>
                       <td className="font-semibold">{tk.equipment}</td>
                       <td>{tk.plants?.name || '—'}</td>
                       <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
@@ -3610,12 +3905,12 @@ export function Maintenance() {
       )}
 
       {/* ── SCHEDULE SETUP TAB ─────────────────────────────────────────────── */}
-      {tab === 'schedule' && !isTechnician && !isStoreManager && (
+      {tab === 'schedule' && showScheduleSetup && (
         <SectionCard
           flush
           title={t('maint.schedulesTitle')}
           subtitle={t('maint.schedulesSub')}
-          actions={(isAdmin || isUnitHead) && (
+          actions={canEditSchedules && (
             <>
               <ButtonV2 variant="outline" icon={<Upload />} onClick={() => setShowPMImport(true)}>{t('maint.importPmWorkbook', 'Import PM workbook')}</ButtonV2>
               <ButtonV2 variant="accent" icon={<Plus />} onClick={openAddSchedule}>
@@ -3660,12 +3955,12 @@ export function Maintenance() {
                 <tr>
                   <Th sortKey="task" s={scheduleSort}>{t('maint.colTaskTitle')}</Th><Th sortKey="equipment" s={scheduleSort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={scheduleSort}>{t('common.plant')}</Th><Th sortKey="frequency" s={scheduleSort}>{t('maint.colFrequency')}</Th>
                   <Th sortKey="assignedTo" s={scheduleSort}>{t('maint.colAssignedTo')}</Th><Th sortKey="due" s={scheduleSort} firstDir="desc">{t('maint.colNextDue')}</Th><Th sortKey="status" s={scheduleSort}>{t('maint.colStatus')}</Th>
-                  {(isAdmin || isUnitHead) && <th>{t('maint.colActions')}</th>}
+                  {canEditSchedules && <th>{t('maint.colActions')}</th>}
                 </tr>
               </thead>
               <tbody>
                 {shownSchedules.length === 0 && (
-                  <tr><td colSpan={(isAdmin || isUnitHead) ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noSchedulesDefined')}</td></tr>
+                  <tr><td colSpan={canEditSchedules ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noSchedulesDefined')}</td></tr>
                 )}
                 {schedulePg.pageRows.map(s => {
                   const due = dueDateLabel(daysFromNow(s.next_due_at), t);
@@ -3679,7 +3974,7 @@ export function Maintenance() {
                       <td>{s.assigned_to || <span className="text-slate-400">{t('maint.unassigned')}</span>}</td>
                       <td style={{ color: paused ? '#94A3B8' : due.color, fontWeight: 600 }}>{paused ? t('maint.paused') : due.text}</td>
                       <td><span className="badge" style={{ background: s.is_active ? '#DCFCE7' : '#F1F5F9', color: s.is_active ? '#16A34A' : '#94A3B8' }}>{s.is_active ? t('maint.active') : t('maint.paused')}</span></td>
-                      {(isAdmin || isUnitHead) && (
+                      {canEditSchedules && (
                         <td>
                           <ScheduleRowMenu
                             isActive={s.is_active}
@@ -3699,6 +3994,18 @@ export function Maintenance() {
           </div>
           <TablePaginationV2 controls={schedulePg.controls} label={t('maint.tasksNoun')} />
         </SectionCard>
+      )}
+
+      {/* ── INCIDENTS TAB ──────────────────────────────────────────────────── */}
+      {tab === 'incidents' && (
+        <IncidentsPanel
+          focusId={incidentFocus}
+          onFocusConsumed={() => setIncidentFocus(null)}
+          prefill={incidentPrefill}
+          onPrefillConsumed={() => setIncidentPrefill(null)}
+          onOpenTicket={(id) => openTicketById(id)}
+          onDetailClosed={returnToOrigin}
+        />
       )}
 
       </>
@@ -3741,7 +4048,7 @@ export function Maintenance() {
         <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
         {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
-        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || raising} requiredHint={t('maint.raiseRequiredHint')} />
+        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || !plantAllowed(raiseForm.plant) || raising} requiredHint={t('maint.raiseRequiredHint')} />
       </SlidePanel>
 
       {/* ── PANEL: Complete periodic ─────────────────────────────────────── */}
@@ -3846,7 +4153,7 @@ export function Maintenance() {
       {/* ── PANEL: Ticket detail ─────────────────────────────────────────── */}
       <SlidePanel
         open={!!selectedTicket}
-        onClose={() => { setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
+        onClose={() => { returnToOrigin(); setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
         title={selectedTicket?.equipment || t('maint.ticketDetail', 'Ticket detail')}
         subtitle={`${t('maint.emergency')} · ${selectedTicket?.plants?.name || t('nav.maintenance')}`}
         locked={uploading}
@@ -3877,7 +4184,7 @@ export function Maintenance() {
             )}
             <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               <div style={{ fontSize: 12, color: '#64748B', marginBottom: 2 }}>
-                #{selectedTicket.id.slice(0, 8)} · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
+                <strong data-testid="panel-ticket-no">{ticketNoLabel(selectedTicket)}</strong> · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
                 {selectedTicket.assigned_to && <> · {t('maint.colAssignedTo', 'Assigned to')} {selectedTicket.assigned_to}</>} · {formatDate(selectedTicket.created_at)}
                 {/* Historical only — tickets raised before the units were retired
                     still record which one they were routed to. Shown so the old
@@ -3920,22 +4227,52 @@ export function Maintenance() {
               })()}
             </div>
 
+            {editHistory.length > 0 && (
+              <div data-testid="edit-history" style={{ border: '1px solid #E2E8F0', borderRadius: 12, padding: '10px 12px', marginBottom: 14, background: '#FCFCFD' }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{t('maint.editHistory', 'Edit history')}</div>
+                {editHistory.map((h, i) => (
+                  <div key={i} style={{ fontSize: 12, color: '#334155', padding: '3px 0' }}>
+                    <span style={{ color: '#94A3B8' }}>{formatDateTime(h.created_at)} · </span>{h.body}
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Notes are visible to everyone on the ticket; edit/delete are admin-only.
                 Request Changes lets a reviewer send the ticket back for correction. */}
             {!editingTicket && !requestingChanges && !resubmitting && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} />
+                {/* A closed ticket's thread is the requester's feedback, not working notes. */}
+                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
                 {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
                   <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} className="chip" style={{ color: '#DC2626' }}>{t('maint.requestChangesChip', '↩ Request Changes')}</button>
                 )}
-                {isAdmin && <button onClick={() => startEdit(selectedTicket)} className="chip">{t('maint.editChip', '✎ Edit')}</button>}
+                {(() => {
+                  const mode = editModeFor(selectedTicket);
+                  if (!mode) return null;
+                  const minsLeft = Math.ceil(raiserWindowRemainingMs(selectedTicket) / 60_000);
+                  return (
+                    <button onClick={() => startEdit(selectedTicket)} className="chip" data-testid="edit-ticket-chip"
+                      title={mode === 'raiser' ? t('maint.editWindowHint', { defaultValue: 'You can edit this for {{n}} more min', n: minsLeft }) : t('maint.adminEditHint', 'Admin edit — every change is logged on the ticket')}>
+                      {t('maint.editChip', '✎ Edit')}{mode === 'raiser' ? ` · ${t('maint.minsLeft', { defaultValue: '{{n}} min left', n: minsLeft })}` : ''}
+                    </button>
+                  );
+                })()}
+                {selectedTicket.type === 'emergency' && (
+                  <button onClick={() => { const tk = selectedTicket; setIncidentPrefill({ ticketId: tk.id, plantId: tk.plant_id, equipment: tk.equipment || '' }); setSelectedTicket(null); setTab('incidents'); }} className="chip">{t('maint.reportIncidentChip', '⚠ Report incident')}</button>
+                )}
                 {isAdmin && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
               </div>
             )}
 
             {editingTicket ? (
               <div style={{ border: '1px solid #E2E8F0', borderRadius: 14, padding: 16 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>{t('maint.editTicketAdmin', 'Edit ticket (admin)')}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{editMode === 'admin' ? t('maint.editTicketAdmin', 'Edit ticket (admin)') : t('maint.editTicketRaiser', 'Edit your ticket')}</div>
+                <div style={{ fontSize: 11.5, color: '#64748B', marginBottom: 12 }}>
+                  {editMode === 'admin'
+                    ? t('maint.adminEditSub', 'Every change is logged on this ticket as who, when and old → new.')
+                    : t('maint.raiserEditSub', { defaultValue: 'You can correct this for {{n}} more min. Status cannot be changed here.', n: Math.ceil(raiserWindowRemainingMs(selectedTicket) / 60_000) })}
+                </div>
                 <PanelField label={t('maint.equipmentAssetPlain', 'Equipment / asset')}>
                   <PanelInput value={editForm.equipment} onChange={e => setEditForm(f => ({ ...f, equipment: e.target.value }))} />
                 </PanelField>
@@ -3946,18 +4283,25 @@ export function Maintenance() {
                       {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </PanelSelect>
                   </PanelField>
-                  <PanelField label={t('maint.colStatus')}>
-                    <PanelSelect value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
-                      {Object.keys(STATUS_CFG).map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                    </PanelSelect>
-                  </PanelField>
+                  {editMode === 'admin' && (
+                    <PanelField label={t('maint.colStatus')}>
+                      <PanelSelect value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
+                        {Object.keys(STATUS_CFG).map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+                      </PanelSelect>
+                    </PanelField>
+                  )}
                 </PanelRow>
+                {editMode === 'admin' && (
+                  <PanelField label={t('maint.backdateLabel', { defaultValue: 'Raised on (back date) · now {{date}}', date: formatDate(selectedTicket.created_at) })}>
+                    <PanelInput type="date" data-testid="backdate-input" value={editForm.backdate} max={istDayKey(new Date())} onChange={e => setEditForm(f => ({ ...f, backdate: e.target.value }))} />
+                  </PanelField>
+                )}
                 <PanelField label={t('maint.issueDescription')}>
                   <PanelTextarea value={editForm.description} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} placeholder={t('maint.editDescPlaceholder', 'What broke? Type @ to tag someone.')} />
                 </PanelField>
                 <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                  <button onClick={() => setEditingTicket(false)} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
-                  <button onClick={saveEdit} disabled={!editForm.equipment.trim()} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !editForm.equipment.trim() ? 0.5 : 1 }}>{t('maint.saveChanges', 'Save changes')}</button>
+                  <button onClick={() => { setEditingTicket(false); setEditMode(null); }} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
+                  <button onClick={saveEdit} data-testid="save-edit" disabled={!editForm.equipment.trim() || savingEdit} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: !editForm.equipment.trim() ? 0.5 : 1 }}>{t('maint.saveChanges', 'Save changes')}</button>
                 </div>
               </div>
             ) : requestingChanges ? (

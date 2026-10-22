@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
@@ -22,13 +23,27 @@ import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import type { Database } from '../../../lib/database.types';
+import { ticketNoLabel, primeTicketNos, ticketSearchTerms, incidentNoLabel } from '../../../lib/ticketNo';
+import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
+import { DateRangeFilter } from '../../../components/v2';
+import { INCIDENT_ROUTE } from './IncidentReports';
 
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
 type ActivityRow = Tables['activity_logs']['Row'] & PlantRel;
 type TicketRow = Tables['maintenance_tickets']['Row'] & PlantRel;
 type StoreReqRow = Tables['maintenance_store_requests']['Row'];
+type IncidentRow = Tables['incident_reports']['Row'] & PlantRel;
 
+/** Where a row stands on sign-off. Only real sign-off events count:
+ *  'verified' — a person verified it (closed ticket / manual entry with a verifier);
+ *  'pending'  — waiting on a verifier right now (ticket at pending_unit_head,
+ *               manual entry with no verifier yet);
+ *  'none'     — a milestone that is never verified (raised, handed over…).
+ *  A verified or closed ticket therefore leaves the pending pile. */
+type VerifyState = 'verified' | 'pending' | 'none';
+type KpiFilter = 'all' | 'verified' | 'pending' | 'photo';
+const ACTIVITY_PATH = '/dashboard/purchase/activity';
 // One normalized row for the unified timeline — whether it came from the
 // activity_logs table (manual) or was derived from the maintenance workflow.
 type UnifiedRow = {
@@ -41,17 +56,18 @@ type UnifiedRow = {
   plant: string | null;
   hasPhoto: boolean;
   photos: LightboxImage[];    // actual evidence images for this row (opens the lightbox)
-  ticketRef: string | null;   // short maintenance ticket id, e.g. "f855d730"
-  source: 'manual' | 'maintenance';
+  ticketRef: string | null;   // human ticket number, e.g. "MT-0042"
+  ticketId: string | null;    // opens the ticket on row click
+  incidentId?: string | null; // opens the incident on row click
+  search: string[];           // extra search terms (ticket number variants)
+  verify: VerifyState;
+  source: 'manual' | 'maintenance' | 'incident';
 };
-
-const ticketRef = (id: string) => id.slice(0, 8);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
 const photoList = (pairs: [string | null | undefined, string][]): LightboxImage[] =>
   pairs.filter(([u]) => !!u).map(([u, label]) => ({ url: u as string, label }));
 const toMs = (ts: string | null | undefined) => (ts ? new Date(ts).getTime() : 0);
-const fmtDate = (d: string | null | undefined) =>
-  d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const fmtDate = (d: string | null | undefined) => formatDate(d);
 
 const CameraSvg = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -97,7 +113,8 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
 
   const out: UnifiedRow[] = [];
   for (const tk of tickets) {
-    const ref = ticketRef(tk.id);
+    const ref = ticketNoLabel(tk);
+    const base = { ticketRef: ref, ticketId: tk.id, search: ticketSearchTerms(tk), verify: 'none' as VerifyState };
     const plant = tk.plants?.name ?? null;
 
     // 1) Raised
@@ -106,7 +123,7 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
       key: `${tk.id}:raised`, equipment: tk.equipment,
       type: tk.type === 'emergency' ? t('activity.evtEmergencyRaised', 'Emergency raised') : t('activity.evtPeriodicRaised', 'Periodic raised'),
       date: tk.created_at, doneBy: tk.raised_by || tk.assigned_to || null,
-      verifiedBy: null, plant, hasPhoto: raisePhotos.length > 0, photos: raisePhotos, ticketRef: ref, source: 'maintenance',
+      verifiedBy: null, plant, hasPhoto: raisePhotos.length > 0, photos: raisePhotos, ...base, source: 'maintenance',
     });
 
     // 1b) Review cycle — reviewer sent it back for correction at least once.
@@ -117,7 +134,7 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
         key: `${tk.id}:revision`, equipment: tk.equipment,
         type: `${t('activity.evtChangesRequested', 'Changes requested')}${(tk.revision_count ?? 0) > 1 ? ` ·×${tk.revision_count}` : ''}${tk.revision_reason ? ` · ${tk.revision_reason}` : ''}`,
         date: tk.revision_requested_at, doneBy: tk.revision_requested_by || null,
-        verifiedBy: null, plant, hasPhoto: false, photos: [], ticketRef: ref, source: 'maintenance',
+        verifiedBy: null, plant, hasPhoto: false, photos: [], ...base, source: 'maintenance',
       });
     }
 
@@ -129,7 +146,7 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
           key: `${sr.id}:procured`, equipment: tk.equipment,
           type: `${t('activity.evtPartProcured', 'Part procured')} · ${sr.part_name}`, date: tk.closed_at || sr.created_at,
           doneBy: sr.supplier_name || t('activity.byProcurement', 'Procurement'), verifiedBy: null, plant,
-          hasPhoto: procPhotos.length > 0, photos: procPhotos, ticketRef: ref, source: 'maintenance',
+          hasPhoto: procPhotos.length > 0, photos: procPhotos, ...base, source: 'maintenance',
         });
       }
       if (sr.handover_confirmed_at) {
@@ -138,7 +155,7 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
           key: `${sr.id}:handover`, equipment: tk.equipment,
           type: `${t('activity.evtPartHandedOver', 'Part handed over')} · ${sr.part_name}`, date: sr.handover_confirmed_at,
           doneBy: t('activity.byStore', 'Store'), verifiedBy: null, plant,
-          hasPhoto: hoPhotos.length > 0, photos: hoPhotos, ticketRef: ref, source: 'maintenance',
+          hasPhoto: hoPhotos.length > 0, photos: hoPhotos, ...base, source: 'maintenance',
         });
       }
     }
@@ -157,20 +174,34 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
               ? t('activity.evtDefectiveMixed', 'Defective parts sent for repair and scrap')
               : t('activity.evtDefectiveSentRepair', 'Defective part sent for repair'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null, verifiedBy: null, plant,
-        hasPhoto: defPhotos.length > 0, photos: defPhotos, ticketRef: ref, source: 'maintenance',
+        hasPhoto: defPhotos.length > 0, photos: defPhotos, ...base, source: 'maintenance',
       });
     }
 
-    // 3) Completed / closed
+    // 3a) Work finished, waiting for the unit head — the real verification pile.
+    const isWorkVerify = tk.status === 'pending_unit_head'
+      && (tk.type === 'periodic' || !/Needs part\s*$/i.test(tk.title || ''));
+    if (isWorkVerify) {
+      const subPhotos = photoList([[tk.completion_photo_url, t('activity.photoCompletion', 'Completion photo')]]);
+      out.push({
+        key: `${tk.id}:awaiting`, equipment: tk.equipment,
+        type: t('activity.evtAwaitingVerification', 'Awaiting verification'),
+        date: tk.created_at, doneBy: tk.assigned_to || tk.raised_by || null,
+        verifiedBy: null, plant, hasPhoto: subPhotos.length > 0, photos: subPhotos,
+        ...base, verify: 'pending', source: 'maintenance',
+      });
+    }
+
+    // 3) Completed / closed — verified by a PERSON (not the raiser's role id).
     if (tk.status === 'closed') {
       const donePhotos = photoList([[tk.completion_photo_url, t('activity.photoCompletion', 'Completion photo')], [tk.defective_part_photo_url, t('activity.photoDefectivePart', 'Defective part')]]);
       out.push({
         key: `${tk.id}:done`, equipment: tk.equipment,
         type: tk.type === 'emergency' ? t('activity.evtRepairCompleted', 'Repair completed') : t('activity.evtPeriodicCheckCompleted', 'Periodic check completed'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null,
-        verifiedBy: tk.raised_role || null,
+        verifiedBy: tk.verified_by || tk.closed_by || null,
         plant, hasPhoto: donePhotos.length > 0, photos: donePhotos,
-        ticketRef: ref, source: 'maintenance',
+        ...base, verify: 'verified', source: 'maintenance',
       });
     }
   }
@@ -305,7 +336,7 @@ export function ActivityLog() {
   const toast = useToast();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
-  const { scopeQuery } = usePlantScope();
+  const { scopeQuery, allowedPlants, isGlobal, inScope } = usePlantScope();
   const { addNotification } = useNotifications();
   const screenBlacklist = useBlacklistGuard();
   const [open, setOpen] = useState(false);
@@ -313,6 +344,11 @@ export function ActivityLog() {
   const [logs, setLogs] = useState<ActivityRow[]>([]);
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [storeReqs, setStoreReqs] = useState<StoreReqRow[]>([]);
+  const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  const navigate = useNavigate();
+  // KPI tile click → filter the table to that slice; click again / "All" clears.
+  const [kpiFilter, setKpiFilter] = useState<KpiFilter>('all');
+  const [range, setRange] = useState({ from: '', to: '' });
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -344,7 +380,15 @@ export function ActivityLog() {
       setLogs(logsRes.data || []);
 
       const tks = ticketsRes.data || [];
+      primeTicketNos(tks);
       setTickets(tks);
+      // Incident reports (migration 0040) — best-effort, plant-scoped.
+      const incRes = await withEmbedFallback(
+        scopeQuery(supabase.from('incident_reports').select('*, plants(name)')).order('created_at', { ascending: false }).returns<IncidentRow[]>(),
+        () => scopeQuery(supabase.from('incident_reports').select('*')).order('created_at', { ascending: false }).returns<IncidentRow[]>(),
+        'ActivityLog.incidents',
+      );
+      setIncidents(incRes.error ? [] : (incRes.data || []));
       const ids = tks.map(x => x.id);
       if (ids.length) {
         const { data: srData } = await supabase.from('maintenance_store_requests').select('*').in('ticket_id', ids).returns<StoreReqRow[]>();
@@ -376,32 +420,71 @@ export function ActivityLog() {
       hasPhoto: !!a.photo_url,
       photos: a.photo_url ? [{ url: a.photo_url, label: t('activity.photoActivity', 'Activity photo') }] : [],
       ticketRef: null,
+      ticketId: null,
+      search: [],
+      verify: a.verified_by ? 'verified' : 'pending',
       source: 'manual',
     }));
+    const incidentRows: UnifiedRow[] = incidents.map(inc => ({
+      key: `incident:${inc.id}`,
+      equipment: inc.title,
+      type: `${t('activity.evtIncident', 'Incident reported')} · ${incidentNoLabel(inc)}`,
+      date: inc.occurred_at || inc.created_at,
+      doneBy: inc.raised_by,
+      verifiedBy: inc.status === 'closed' ? inc.closed_by : null,
+      plant: inc.plants?.name ?? null,
+      hasPhoto: !!inc.photo_url,
+      photos: inc.photo_url ? [{ url: inc.photo_url, label: t('activity.photoIncident', 'Incident photo') }] : [],
+      ticketRef: inc.ticket_id ? ticketNoLabel({ id: inc.ticket_id }) : null,
+      ticketId: inc.ticket_id,
+      incidentId: inc.id,
+      search: [incidentNoLabel(inc).toLowerCase(), ...(inc.tagged_names || [])],
+      verify: 'none',
+      source: 'incident',
+    }));
     const derived = deriveMaintenanceEvents(tickets, storeReqs, t);
-    const all = showManualOnly ? manual : [...manual, ...derived];
+    const all = showManualOnly ? manual : [...manual, ...derived, ...incidentRows];
     return all.sort((a, b) => toMs(b.date) - toMs(a.date));
-  }, [logs, tickets, storeReqs, showManualOnly, t]);
+  }, [logs, tickets, storeReqs, incidents, showManualOnly, t]);
 
   const fromMaintenance = rows.filter(r => r.source === 'maintenance').length;
-  const verified = rows.filter(r => r.verifiedBy).length;
+  const verified = rows.filter(r => r.verify === 'verified').length;
+  const pendingVerify = rows.filter(r => r.verify === 'pending').length;
   const withPhoto = rows.length ? Math.round((rows.filter(r => r.hasPhoto).length / rows.length) * 100) : 0;
+  const toggleKpi = (k: KpiFilter) => setKpiFilter(cur => (cur === k || k === 'all' ? 'all' : k));
+
+  /** Open what the row is about. Remember where we came from (?from=) so
+   *  closing the ticket / incident lands back here — and only here. */
+  function openRow(r: UnifiedRow) {
+    const from = `from=${encodeURIComponent(ACTIVITY_PATH)}`;
+    if (r.incidentId) { navigate(`${INCIDENT_ROUTE(r.incidentId)}&${from}`); return; }
+    if (r.ticketId) { navigate(`/dashboard/purchase/maint?ticket=${r.ticketId}&${from}`); return; }
+    if (r.photos.length) setLightbox(r.photos);
+  }
 
   // Factory names come from the DB only — a hard-coded fallback would keep
   // offering names that no longer exist after a rename. The filter compares
   // display names on both sides (rows carry the same live join), so it stays
   // consistent; the entry form below keys off the plant ID.
-  const plantNames = dbPlants.map(p => p.name);
-  const plantOptions = [...dbPlants].sort((a, b) => a.name.localeCompare(b.name));
+  // Pickers follow the plant scope: a scoped user sees / logs only their plants.
+  const scopedPlants = isGlobal ? (allowedPlants.length ? allowedPlants : dbPlants) : allowedPlants;
+  const plantNames = scopedPlants.map(p => p.name);
+  const plantOptions = [...scopedPlants].sort((a, b) => a.name.localeCompare(b.name));
 
   // Search + plant filter, then paginate — Activity Log grows unbounded over time.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const qc = q.replace(/\s+/g, '');
     return rows.filter(r =>
       (!plantFilter || r.plant === plantFilter) &&
-      (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef].some(f => (f || '').toLowerCase().includes(q))),
+      inIstDayRange(r.date, range.from, range.to) &&
+      (kpiFilter === 'all'
+        || (kpiFilter === 'verified' && r.verify === 'verified')
+        || (kpiFilter === 'pending' && r.verify === 'pending')
+        || (kpiFilter === 'photo' && r.hasPhoto)) &&
+      (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef, ...r.search].some(f => { const v = (f || '').toLowerCase(); return v.includes(q) || (!!qc && v.includes(qc)); })),
     );
-  }, [rows, search, plantFilter]);
+  }, [rows, search, plantFilter, range, kpiFilter]);
   const actSort = useSortable(filtered, {
     equipment: r => r.equipment,
     activity: r => r.type,
@@ -411,12 +494,16 @@ export function ActivityLog() {
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${actSort.sort.key}|${actSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${kpiFilter}|${range.from}|${range.to}|${actSort.sort.key}|${actSort.sort.dir}` });
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
     if (!form.equipment.trim() || !form.doneBy.trim()) return;
+    if (!form.plant || !(isGlobal || inScope(form.plant))) {
+      toast.error(t('maint.plantOutOfScope', 'Pick one of your plants — you can only raise tickets for plants you belong to.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === form.plant);
     const { data, error } = await insertRows('activity_logs', {
       equipment: form.equipment,
@@ -467,28 +554,43 @@ export function ActivityLog() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
+  /** KPI tile = filter button for the table below (B3). */
+  const kpiProps = (k: KpiFilter) => ({
+    className: 'col-span-12 lg:col-span-3 card p-5',
+    role: 'button' as const,
+    tabIndex: 0,
+    'aria-pressed': kpiFilter === k && k !== 'all',
+    title: k === 'all' ? t('activity.kpiShowAll', 'Show all rows') : t('activity.kpiFilterHint', 'Click to filter the table · click again to clear'),
+    onClick: () => toggleKpi(k),
+    onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleKpi(k); } },
+    style: {
+      position: 'relative' as const, cursor: 'pointer',
+      boxShadow: kpiFilter === k && k !== 'all' ? '0 0 0 2px #EA580C inset' : undefined,
+    },
+  });
+
   return (
     <>
       <ActivityRoleAccessCard />
       {/* KPI row */}
       <div className="grid grid-cols-12 gap-5 mb-5">
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+        <div {...kpiProps('all')} data-testid="kpiTotal">
           <KpiInfoButton info={{ title: 'All activity events', what: 'Every activity across all plants — manual log entries PLUS milestones auto-fed from the maintenance workflow (raised, procured, handed over, completed, defective decided). The single overall record.', source: 'Derived', note: 'Manual activity_logs + maintenance_tickets / maintenance_store_requests milestones.' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiTotal')}</div>
           <div className="text-[28px] font-extrabold mt-1 num">{rows.length}</div>
           <div className="text-[11px] text-slate-500 mt-1">{t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Verified', what: 'Activity events that carry a verifier (supervisor / unit head sign-off, or the raising role on a completed maintenance ticket).', source: 'Derived' }} />
+        <div {...kpiProps('verified')} data-testid="kpiVerified">
+          <KpiInfoButton info={{ title: 'Verified', what: 'Activity events signed off by a person — a closed maintenance ticket (verified / closed by) or a manual entry with a verifier. Click to show only these.', source: 'Derived' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiVerified')}</div>
           <div className="text-[28px] font-extrabold mt-1 num text-green-600">{verified}</div>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Pending verification', what: 'Events with no verifier yet. These need supervisor sign-off.', source: 'Derived' }} />
+        <div {...kpiProps('pending')} data-testid="kpiPending">
+          <KpiInfoButton info={{ title: 'Pending verification', what: 'Finished work waiting for the unit head right now (ticket at "Awaiting verification") plus manual entries with no verifier. Verifying or closing removes it from this count. Click to show only these.', source: 'Derived' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPending')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{rows.length - verified}</div>
+          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{pendingVerify}</div>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+        <div {...kpiProps('photo')} data-testid="kpiPhotoProof">
           <KpiInfoButton info={{ title: 'Photo proof coverage', what: 'Percentage of activity events that carry photo proof — manual uploads plus the completion / handover / defective-part photos captured through the maintenance workflow.', source: 'Derived' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPhotoProof')}</div>
           <div className="text-[28px] font-extrabold mt-1 num">{withPhoto}%</div>
@@ -525,6 +627,13 @@ export function ActivityLog() {
             <option value="">{t('activity.allPlants', 'All plants')}</option>
             {plantNames.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
+          <DateRangeFilter from={range.from} to={range.to} onChange={setRange} />
+          {kpiFilter !== 'all' && (
+            <button type="button" className="chip active" data-testid="kpi-filter-chip" onClick={() => setKpiFilter('all')}
+              title={t('activity.kpiShowAll', 'Show all rows')}>
+              {t('activity.kpiFilterOn', { defaultValue: 'Showing: {{what}}', what: kpiFilter === 'verified' ? t('activity.kpiVerified') : kpiFilter === 'pending' ? t('activity.kpiPending') : t('activity.kpiPhotoProof') })} · {t('activity.kpiAll', 'All')} ✕
+            </button>
+          )}
         </div>
         {loadError ? (
           <ErrorState title={t('activity.errorTitle')} message={t('activity.errorMessage')}
@@ -544,7 +653,8 @@ export function ActivityLog() {
             </thead>
             <tbody>
               {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: a.photos.length ? 'pointer' : 'default' }} onClick={() => a.photos.length && setLightbox(a.photos)} title={a.photos.length ? t('activity.viewPhotos', 'View photo(s)') : undefined}>
+                <tr key={a.key} data-testid="activity-row" style={{ cursor: (a.ticketId || a.incidentId || a.photos.length) ? 'pointer' : 'default' }} onClick={() => openRow(a)}
+                  title={a.incidentId ? t('activity.openIncident', 'Open incident') : a.ticketId ? t('activity.openTicket', 'Open ticket') : a.photos.length ? t('activity.viewPhotos', 'View photo(s)') : undefined}>
                   <td className="font-semibold">{a.equipment || '—'}</td>
                   <td className="text-slate-600">
                     {a.type}
@@ -552,12 +662,12 @@ export function ActivityLog() {
                       <span className="badge" style={{ marginLeft: 6, background: '#E0F2FE', color: '#0369A1', fontWeight: 700, fontSize: 10 }}>{t('activity.autoBadge')}</span>
                     )}
                   </td>
-                  <td>{a.ticketRef ? <span className="num text-xs text-slate-500">#{a.ticketRef}</span> : <span className="text-slate-300">—</span>}</td>
+                  <td>{a.ticketRef ? <span className="num text-xs text-slate-500">{a.ticketRef}</span> : <span className="text-slate-300">—</span>}</td>
                   <td className="text-slate-500 text-xs">{fmtDate(a.date)}</td>
                   <td>{a.doneBy || '—'}</td>
                   <td className="text-slate-500">{a.verifiedBy || '—'}</td>
                   <td>{a.plant || '—'}</td>
-                  <td><PicBadge photos={a.photos} onOpen={() => setLightbox(a.photos)} /></td>
+                  <td onClick={e => e.stopPropagation()}><PicBadge photos={a.photos} onOpen={() => setLightbox(a.photos)} /></td>
                 </tr>
               ))}
             </tbody>

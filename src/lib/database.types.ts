@@ -1035,6 +1035,8 @@ export interface Database {
       store_requisitions: {
         Row: {
           id: string;
+          /** Sequential human number (SR-0007) — migration 0040; DB default. */
+          req_no?: number | null;
           item: string;
           plant_id: string | null;
           unit_id: string | null; // FK to units — scoping key (27_plant_unit_scoping.sql)
@@ -1049,6 +1051,36 @@ export interface Database {
         };
         Insert: OptionalNulls<Omit<Database['public']['Tables']['store_requisitions']['Row'], 'id' | 'created_at'>>;
         Update: Partial<Database['public']['Tables']['store_requisitions']['Insert']>;
+      };
+
+      // ── Incident reports (migration 0040) ──
+      incident_reports: {
+        Row: {
+          id: string;
+          incident_no: number;
+          plant_id: string;
+          unit_id: string | null;
+          ticket_id: string | null;
+          title: string;
+          description: string | null;
+          severity: 'low' | 'medium' | 'high' | 'critical';
+          occurred_at: string;
+          location: string | null;
+          photo_url: string | null;
+          status: 'open' | 'closed';
+          tagged_ids: string[];
+          tagged_names: string[];
+          raised_by: string | null;
+          raised_by_id: string | null;
+          closed_by: string | null;
+          closed_at: string | null;
+          created_at: string;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['incident_reports']['Row'], 'id' | 'incident_no' | 'created_at' | 'status' | 'tagged_ids' | 'tagged_names' | 'occurred_at' | 'severity'>> & {
+          status?: 'open' | 'closed'; tagged_ids?: string[]; tagged_names?: string[]; occurred_at?: string;
+          severity?: 'low' | 'medium' | 'high' | 'critical';
+        };
+        Update: Partial<Database['public']['Tables']['incident_reports']['Insert']>;
       };
 
       fixed_assets: {
@@ -1138,6 +1170,8 @@ export interface Database {
       maintenance_tickets: {
         Row: {
           id: string;
+          /** Sequential human number (MT-0042) — migration 0040; DB default. */
+          ticket_no?: number | string | null;
           type: 'periodic' | 'emergency';
           status:
             | 'open'

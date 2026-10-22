@@ -36,6 +36,8 @@ interface Props {
   triggerClassName?: string;
   /** Render just an icon (for dense rows). */
   iconOnly?: boolean;
+  /** Trigger + panel wording. A closed maintenance ticket says "Feedback". */
+  variant?: 'notes' | 'feedback';
 }
 
 type ReceiptMap = Record<string, NoteReceipt[]>;
@@ -54,7 +56,7 @@ function mergeReceipt(map: ReceiptMap, r: NoteReceipt): ReceiptMap {
   return { ...map, [r.note_id]: next };
 }
 
-export function NotesButton({ entityType, entityId, entityLabel, route, triggerClassName = 'chip', iconOnly }: Props) {
+export function NotesButton({ entityType, entityId, entityLabel, route, triggerClassName = 'chip', iconOnly, variant = 'notes' }: Props) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<EntityNote[]>([]);
   const [receipts, setReceipts] = useState<ReceiptMap>({});
@@ -207,10 +209,10 @@ export function NotesButton({ entityType, entityId, entityLabel, route, triggerC
     <>
       <button type="button" onClick={() => { setLoading(true); setOpen(true); }} className={triggerClassName} style={iconOnly ? undefined : { display: 'inline-flex', alignItems: 'center', gap: 5 }}>
         <MessageSquare size={13} />
-        {!iconOnly && <span>{t('common.notes', 'Notes')}{(notes.length || count) ? ` · ${notes.length || count}` : ''}</span>}
+        {!iconOnly && <span>{variant === 'feedback' ? t('common.feedback', 'Feedback') : t('common.notes', 'Notes')}{(notes.length || count) ? ` · ${notes.length || count}` : ''}</span>}
       </button>
 
-      <SlidePanel open={open} onClose={() => setOpen(false)} title={t('common.notesAndTags', 'Notes & tags')} subtitle={entityLabel}>
+      <SlidePanel open={open} onClose={() => setOpen(false)} title={variant === 'feedback' ? t('common.feedback', 'Feedback') : t('common.notesAndTags', 'Notes & tags')} subtitle={entityLabel}>
         {/* Existing thread */}
         {loading ? (
           <div style={{ fontSize: 13, color: '#94A3B8', padding: '8px 0' }}>{t('common.loading', 'Loading…')}</div>

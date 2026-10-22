@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import { callRpc } from './db';
+import { ticketNoForId } from './ticketNo';
 
 const PLACEHOLDER = /^(x{2,}|n\/?a|nil|none|tbd|todo|-|—|–)$/i;
 const SEQ = /^(FAR|STK)-(\d+)$/i;
@@ -96,19 +97,18 @@ export async function persistMissingJobNos(
   const missing = rows.filter(r => !map.has(r.id));
   if (!missing.length) return map;
 
-  const allocated = await allocateNextJobNos(prefix, missing.length);
-  if (allocated.length !== missing.length) {
-    // RPC not installed yet — scoped sequence so the register still shows codes.
-    return assignSequentialJobNos(rows, prefix);
-  }
-
-  for (let i = 0; i < missing.length; i += 40) {
-    await Promise.all(missing.slice(i, i + 40).map((r, idx) => {
-      const job = allocated[i + idx];
-      if (!job) return Promise.resolve();
-      map.set(r.id, job);
-      return supabase.from(table).update({ job_no: job } as never).eq('id', r.id);
-    }));
+  // Allocate AND write one at a time. next_job_no reads max(job_no) from the
+  // table, so allocating a batch before writing any of it returned the same
+  // code for every row (all "STK-001") and the unique index rejected the rest.
+  for (const r of missing) {
+    const [job] = await allocateNextJobNos(prefix, 1);
+    if (!job) {
+      // RPC not installed yet — scoped sequence so the register still shows codes.
+      return assignSequentialJobNos(rows, prefix);
+    }
+    const { error } = await supabase.from(table).update({ job_no: job } as never).eq('id', r.id);
+    if (error) return assignSequentialJobNos(rows, prefix);
+    map.set(r.id, job);
   }
   return map;
 }
@@ -129,6 +129,7 @@ export function jobNoStock(id: string, assigned?: string | null): string {
   return `STK-${id.replace(/-/g, '').slice(0, 3).toUpperCase()}`;
 }
 
+/** Human ticket number (MT-0042) for a ticket id — never the raw uuid slice. */
 export function ticketShort(id: string | null | undefined): string {
-  return id ? id.slice(0, 8) : '';
+  return ticketNoForId(id);
 }
