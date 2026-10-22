@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { formatDate, formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
+import { DateRangeFilter } from '../../components/v2/DateRangeFilter';
 import { useTranslation } from 'react-i18next';
 import { Plus, X, Download, Building2, Activity } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -276,10 +278,9 @@ export function NightDutyScheduler() {
       (!q || r.name.toLowerCase().includes(q) || r.role.toLowerCase().includes(q) || r.plant.toLowerCase().includes(q))
       && (schedPlant === 'all' || r.plant === schedPlant)
       && (schedStatus === 'all' || r.d.status === schedStatus)
-      && (!schedFrom || r.d.duty_date >= schedFrom)
-      && (!schedTo || r.d.duty_date <= schedTo));
+      && inIstDayRange(r.d.duty_date, schedFrom, schedTo));
   }, [duties, acctById, acctName, roleLabel, plantName, schedQ, schedPlant, schedStatus, schedFrom, schedTo, t]);
-  const schedPg = usePagination(scheduleRows, { resetKey: `${schedQ}|${schedPlant}|${schedStatus}|${schedFrom}|${schedTo}|${duties.length}` });
+  const schedPg = usePagination(scheduleRows, { resetKey: `${schedQ}|${schedPlant}|${schedStatus}|${schedFrom}|${schedTo}` });
 
   const PILL_TONE: Record<string, 'blue' | 'green' | 'slate' | 'red'> = {
     scheduled: 'blue', checked_in: 'green', completed: 'slate', missed: 'red',
@@ -303,7 +304,7 @@ export function NightDutyScheduler() {
     ], scheduleRows.map(r => ({
       name: r.name, role: r.role, plant: r.plant, date: r.d.duty_date, shift: SHIFT_LABEL,
       status: STATUS_CFG[r.d.status]?.label ?? r.d.status,
-      checkin: r.d.checked_in_at ? new Date(r.d.checked_in_at).toLocaleString('en-IN') : '',
+      checkin: r.d.checked_in_at ? formatDateTime(r.d.checked_in_at) : '',
     })));
   }
 
@@ -497,13 +498,7 @@ export function NightDutyScheduler() {
         >
           <FilterSelect icon={<Building2 />} value={schedPlant} onChange={setSchedPlant}
             options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plants.map(p => ({ value: p.name, label: p.name }))]} />
-          <div className="flex items-center gap-1.5">
-            <input type="date" value={schedFrom} onChange={e => setSchedFrom(e.target.value)}
-              className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />
-            <span className="text-slate-400 text-[12px]">–</span>
-            <input type="date" value={schedTo} onChange={e => setSchedTo(e.target.value)}
-              className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />
-          </div>
+          <DateRangeFilter from={schedFrom} to={schedTo} onChange={({ from, to }) => { setSchedFrom(from); setSchedTo(to); }} />
           <FilterSelect icon={<Activity />} value={schedStatus} onChange={setSchedStatus}
             options={[
               { value: 'all', label: t('common.allStatus', 'All Status') },
@@ -536,7 +531,7 @@ export function NightDutyScheduler() {
                 <td className="text-slate-500">{r.role || '—'}</td>
                 <td className="text-slate-500">{r.plant || '—'}</td>
                 <td>
-                  <div className="text-slate-700 font-medium">{new Date(r.d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                  <div className="text-slate-700 font-medium">{formatDate(r.d.duty_date)}</div>
                   <div className="text-[11px] text-slate-400">{new Date(r.d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' })}</div>
                 </td>
                 <td className="text-slate-500">{SHIFT_LABEL}</td>
@@ -545,7 +540,7 @@ export function NightDutyScheduler() {
                   {r.d.checked_in_at ? (
                     <>
                       <div className="text-slate-700">{new Date(r.d.checked_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
-                      <div className="text-[11px] text-slate-400">{new Date(r.d.checked_in_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</div>
+                      <div className="text-[11px] text-slate-400">{formatDate(r.d.checked_in_at)}</div>
                     </>
                   ) : <span className="text-slate-300">—</span>}
                 </td>

@@ -115,7 +115,6 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
     return t('time.daysAgo', { count: Math.floor(h / 24) });
   }
 
-  const roleId = activeProfile?.id ?? 'admin';
   const unread = unreadCount;
 
   return (

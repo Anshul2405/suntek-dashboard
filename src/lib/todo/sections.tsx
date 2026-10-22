@@ -17,6 +17,7 @@
  * the notifications feed). To add a workflow, append one descriptor here.
  */
 import { supabase } from '../supabase';
+import { ticketNoLabel, ticketSearchTerms } from '../ticketNo';
 import { STATUS_CFG, daysFromNow, dueDateLabel, formatDate } from '../../routes/dashboard/purchase/maintenance/shared';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 
@@ -88,8 +89,6 @@ export interface TodoSectionResult {
 
 const MAINT = '/dashboard/purchase/maint';
 const ticketRoute = (id: string) => `${MAINT}?ticket=${id}`;
-/** Human ticket reference from a uuid (the Maintenance modal shows the same). */
-const shortId = (id: string) => `#${id.slice(0, 8)}`;
 
 function hasRole(ctx: TodoCtx, ...slugs: string[]): boolean {
   if (ctx.roleSlugs.has('*')) return true;
@@ -151,7 +150,7 @@ function ticketItem(
     title: name,
     sortDate: opts.sortDate ?? t.created_at ?? undefined,
     cells: {
-      ticket: shortId(t.id),
+      ticket: ticketNoLabel(t),
       asset: name,
       raised: dateCell(t.created_at),
       age: ageCell(t.created_at),
@@ -159,7 +158,7 @@ function ticketItem(
       ...opts.extraCells,
     },
     search: [
-      shortId(t.id), t.equipment, t.title, t.description, t.assigned_to, t.raised_by,
+      ...ticketSearchTerms(t), t.equipment, t.title, t.description, t.assigned_to, t.raised_by,
       statusLabel(t.status), opts.badge.text, plant,
     ].filter(Boolean).join(' ').toLowerCase(),
   };

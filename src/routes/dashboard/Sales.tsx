@@ -12,6 +12,9 @@ import {
   PieChart, Factory, ArrowLeftRight, Scale, Repeat, Download, Plus,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
+import { SlidePanel } from '../../components/SlidePanel';
+import type { SalesContract } from '../../hooks/useBusyData';
 import { supabase } from '../../lib/supabase';
 import { insertRows } from '../../lib/db';
 import { useSalesMTD, useSalesContracts, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
@@ -19,6 +22,7 @@ import { DeltaBadge, BulletCompare } from '../../components/charts/AnalyticsViz'
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { exportToXlsx } from '../../lib/utils/exportXlsx';
 import { useRoleContext } from '../../contexts/RoleContext';
+import { profileCanAccess } from '../../lib/profiles';
 import { useToast } from '../../components/ui/toast';
 import { OcrUploadCard } from '../../components/OcrUploadCard';
 
@@ -42,6 +46,9 @@ export function Sales() {
   const { data: salesKPIs } = useSalesMTD();
   const { data: liveContracts } = useSalesContracts();
   const [salesSearch, setSalesSearch] = useState('');
+  // Row click opens a real detail (B6) — the row used to look clickable and do nothing.
+  const [detail, setDetail] = useState<SalesContract | null>(null);
+  const navigate = useNavigate();
   const contractRows = liveContracts || [];
   const filteredContracts = useTextFilter(contractRows, salesSearch, c => [c.customer, c.status]);
   const salesSort = useSortable(filteredContracts, {
@@ -365,7 +372,8 @@ export function Sales() {
                   </thead>
                   <tbody>
                     {salesPg.pageRows.map(c => (
-                      <tr key={c.customer} style={{ cursor: 'pointer' }}>
+                      <tr key={c.customer} style={{ cursor: 'pointer' }} onClick={() => setDetail(c)} data-testid="sales-row"
+                        title={t('sales.openDetail', 'View customer details')}>
                         <td className="font-semibold">{c.customer}</td>
                         <td className="num">{fmtINR(c.totalSales)}</td>
                         <td className="num">{fmtINR(c.mtdSales)}</td>
@@ -389,6 +397,30 @@ export function Sales() {
           )}
         </SectionCard>
       </div>
+
+      {/* ── Customer detail (row click) ── */}
+      <SlidePanel open={!!detail} onClose={() => setDetail(null)} title={detail?.customer || ''} subtitle={t('sales.detailSub', 'Sales · BUSY')}>
+        {detail && (
+          <div data-testid="sales-detail">
+            {([
+              [t('sales.colFySales'), fmtINR(detail.totalSales)],
+              [t('sales.colMtdSales'), fmtINR(detail.mtdSales)],
+              [t('sales.colInvoices'), String(detail.invoiceCount)],
+              [t('sales.avgInvoice', 'Avg. invoice (FY)'), detail.invoiceCount ? fmtINR(Math.round(detail.totalSales / detail.invoiceCount)) : '—'],
+              [t('sales.colOutstanding'), detail.outstanding > 0 ? fmtINR(detail.outstanding) : '—'],
+              [t('sales.colStatus'), detail.status === 'on track' ? t('sales.statusOnTrack') : detail.status === 'cleared' ? t('sales.statusCleared') : t('sales.statusOverdue')],
+            ] as [string, string][]).map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderBottom: '1px solid #F1F5F9' }}>
+                <span style={{ fontSize: 12, color: '#94A3B8' }}>{k}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{v}</span>
+              </div>
+            ))}
+            {profileCanAccess(activeProfile, '/dashboard/customers') && <ButtonV2 variant="primary" className="mt-4" onClick={() => navigate(`/dashboard/customers?q=${encodeURIComponent(detail.customer)}`)}>
+              {t('sales.openHistory', 'Open customer history')}
+            </ButtonV2>}
+          </div>
+        )}
+      </SlidePanel>
 
       {/* ── New Contract Modal ── */}
       {showModal && (

@@ -8,6 +8,10 @@ import {
   CheckSquare, ShoppingCart, Truck, FlaskConical, Boxes, ArrowRight, Package,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE } from '../../lib/store/requisitionQueue';
+import { reqNoLabel } from '../../lib/ticketNo';
+import { formatDateTime } from '../../lib/utils/formatting';
 import type { Database } from '../../lib/database.types';
 
 type AlertRow = Database['public']['Tables']['alerts']['Row'];
@@ -98,9 +102,7 @@ const AGE = (ts: string | null, t: TFunction) => {
   return t('time.daysAgo', { count: Math.floor(h / 24), defaultValue: '{{count}}d ago' });
 };
 
-const fmtDT = (d: string | null) => d
-  ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-  : '—';
+const fmtDT = (d: string | null) => formatDateTime(d);
 
 export function Overview() {
   const navigate = useNavigate();
@@ -126,21 +128,39 @@ export function Overview() {
   const [activeBatchCount, setActiveBatchCount] = useState<number | null>(null);
   const [avgBatchHours, setAvgBatchHours] = useState<number | null>(null);
 
+  // Pending approvals: SAME waiting set + SAME plant scope as Store Req's
+  // ?queue=pending view, and a real count (the old count was the length of an
+  // 8-row page of 'pending' only — capped at 8 and blind to the other stages).
+  const { scopeQuery, ready: scopeReady } = usePlantScope();
+  useEffect(() => {
+    if (!scopeReady) return;
+    let alive = true;
+    (async () => {
+      const [listRes, countRes] = await Promise.all([
+        scopeQuery(supabase.from('store_requisitions').select('*, plants(name)'), STORE_REQ_SCOPE)
+          .in('status', [...STORE_REQ_WAITING]).order('created_at', { ascending: false }).limit(8).returns<ReqRow[]>(),
+        scopeQuery(supabase.from('store_requisitions').select('id', { count: 'exact', head: true }), STORE_REQ_SCOPE)
+          .in('status', [...STORE_REQ_WAITING]),
+      ]);
+      if (!alive) return;
+      setPendingReqs(listRes.data || []);
+      setPendingStoreReq(countRes.error ? (listRes.error ? null : (listRes.data?.length ?? 0)) : (countRes.count ?? 0));
+    })();
+    return () => { alive = false; };
+  }, [scopeQuery, scopeReady]);
+
   useEffect(() => {
     (async () => {
-      const [alertsRes, tanksRes, drumsRes, reqRes, maintRes, batchesRes] = await Promise.all([
+      const [alertsRes, tanksRes, drumsRes, maintRes, batchesRes] = await Promise.all([
         supabase.from('alerts').select('*').eq('is_resolved', false).order('created_at', { ascending: false }).returns<AlertRow[]>(),
         supabase.from('tanks').select('*').order('sort_order', { ascending: true }).returns<TankRow[]>(),
         supabase.from('cpm_drum_stock').select('*').returns<DrumRow[]>(),
-        supabase.from('store_requisitions').select('*, plants(name)').eq('status', 'pending').order('created_at', { ascending: false }).limit(8).returns<ReqRow[]>(),
         supabase.from('maintenance_tickets').select('*', { count: 'exact', head: true }).eq('type', 'emergency').neq('status', 'closed'),
         supabase.from('active_batches').select('started_at').eq('status', 'active').returns<{ started_at: string }[]>(),
       ]);
       setAlerts(alertsRes.data || []);
       setTanks(tanksRes.data || []);
       setDrumRows(drumsRes.data || []);
-      setPendingReqs(reqRes.data || []);
-      setPendingStoreReq(reqRes.error ? null : (reqRes.data?.length ?? 0));
       setOpenMaint(maintRes.error ? null : (maintRes.count ?? 0));
 
       const batches = batchesRes.data || [];
@@ -196,7 +216,7 @@ export function Overview() {
             type="button"
             className="ops-shift-tile"
             data-tone={toneForCount(pendingStoreReq)}
-            onClick={() => navigate('/dashboard/purchase/storereq')}
+            onClick={() => navigate(STORE_REQ_QUEUE_ROUTE)}
           >
             <div className="ops-shift-label">{t('overview.pendingApprovals', 'Pending Approvals')}</div>
             <div className="ops-shift-val">{pendingStoreReq ?? '…'}</div>
@@ -374,7 +394,8 @@ export function Overview() {
               <button
                 type="button"
                 className="ops-link"
-                onClick={() => navigate('/dashboard/purchase/storereq')}
+                onClick={() => navigate(STORE_REQ_QUEUE_ROUTE)}
+                data-testid="overview-pending-viewall"
               >
                 {t('common.viewAll', 'View all')}
               </button>
@@ -406,13 +427,13 @@ export function Overview() {
                 </tr>
               )}
               {pendingReqs.map(r => (
-                <tr key={r.id} onClick={() => navigate('/dashboard/purchase/storereq')} style={{ cursor: 'pointer' }}>
+                <tr key={r.id} onClick={() => navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`)} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
                       <Package size={13} className="text-slate-400" /> {t('overview.storeReq', 'Store Requisition')}
                     </span>
                   </td>
-                  <td className="font-mono text-xs text-slate-400">#{r.id.slice(0, 8)}</td>
+                  <td className="font-mono text-xs text-slate-500">{reqNoLabel(r)}</td>
                   <td className="font-semibold text-slate-700">{r.item}</td>
                   <td>{r.plants?.name || '—'}</td>
                   <td className="num">{r.qty}</td>
@@ -424,7 +445,7 @@ export function Overview() {
                         <ButtonV2
                           size="sm" variant="outline"
                           className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
-                          onClick={(e) => { e.stopPropagation(); navigate('/dashboard/purchase/storereq'); }}
+                          onClick={(e) => { e.stopPropagation(); navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`); }}
                         >
                           {t('overview.review', 'Review')}
                         </ButtonV2>
@@ -437,7 +458,7 @@ export function Overview() {
         </div>
         {pendingReqs.length > 0 && (
           <div className="px-5 py-3 text-[12px] text-slate-400 border-t border-slate-100">
-            {t('overview.showingOf', { n: pendingReqs.length, defaultValue: 'Showing {{n}} of {{n}}' })}
+            {t('overview.showingOfTotal', { n: pendingReqs.length, total: pendingStoreReq ?? pendingReqs.length, defaultValue: 'Showing {{n}} of {{total}}' })}
           </div>
         )}
       </SectionCard>

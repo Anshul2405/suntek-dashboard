@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ticketNoForId } from '../../../lib/ticketNo';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
@@ -241,7 +242,7 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
                     <span style={{ fontSize: 12.5 }}>
                       <strong style={{ color: '#334155' }}>{a.part.part_name}</strong>
                       <span style={{ color: '#64748B' }}> · {a.ticket?.equipment ?? ''}</span>
-                      <span style={{ color: '#2563EB', fontWeight: 600 }}> #{a.part.ticket_id.slice(0, 8)}</span>
+                      <span style={{ color: '#2563EB', fontWeight: 600 }}> {ticketNoForId(a.part.ticket_id)}</span>
                       <span style={{ color: '#64748B' }}> · {t('repairReturn.sent', 'sent')} {Number(a.part.repair_qty)} · {t('repairReturn.returned', 'returned')} {Number(a.part.repair_returned_qty)} · <strong>{pending} {t('repairReturn.pending', 'pending')}</strong></span>
                     </span>
                   </label>

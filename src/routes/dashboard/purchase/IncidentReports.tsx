@@ -42,12 +42,14 @@ export interface IncidentPrefill { ticketId: string; plantId: string | null; equ
  *    ticket's trail).
  *  • Rows also appear in the Activity Log (source = incident) and open here.
  */
-export function IncidentsPanel({ focusId, onFocusConsumed, prefill, onPrefillConsumed, onOpenTicket }: {
+export function IncidentsPanel({ focusId, onFocusConsumed, prefill, onPrefillConsumed, onOpenTicket, onDetailClosed }: {
   focusId?: string | null;
   onFocusConsumed?: () => void;
   prefill?: IncidentPrefill | null;
   onPrefillConsumed?: () => void;
   onOpenTicket: (ticketId: string) => void;
+  /** Detail panel closed — the host honours ?from= (e.g. back to Activity Log). */
+  onDetailClosed?: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -323,7 +325,7 @@ export function IncidentsPanel({ focusId, onFocusConsumed, prefill, onPrefillCon
       </SlidePanel>
 
       {/* Detail */}
-      <SlidePanel open={!!selected} onClose={() => { setSelected(null); setEditTags(null); }} title={selected ? `${incidentNoLabel(selected)} · ${selected.title}` : ''} subtitle={selected?.plants?.name || ''}>
+      <SlidePanel open={!!selected} onClose={() => { setSelected(null); setEditTags(null); onDetailClosed?.(); }} title={selected ? `${incidentNoLabel(selected)} · ${selected.title}` : ''} subtitle={selected?.plants?.name || ''}>
         {selected && (
           <div data-testid="incident-detail">
             {([

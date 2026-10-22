@@ -1103,6 +1103,10 @@ const en = {
     tabPurchaseOrders: 'Purchase orders',
   },
   sales: {
+    openHistory: "Open customer history",
+    avgInvoice: "Avg. invoice (FY)",
+    detailSub: "Sales · BUSY",
+    openDetail: "View customer details",
     cancel: "Cancel",
     contractSaved: "Contract saved",
     contractValue: "Contract value",
@@ -1177,6 +1181,15 @@ const en = {
     statusOverdue: 'OVERDUE',
   },
   "activity": {
+    openTicket: "Open ticket",
+    openIncident: "Open incident",
+    kpiAll: "All",
+    kpiFilterOn: "Showing: {{what}}",
+    kpiFilterHint: "Click to filter the table · click again to clear",
+    kpiShowAll: "Show all rows",
+    photoIncident: "Incident photo",
+    evtIncident: "Incident reported",
+    evtAwaitingVerification: "Awaiting verification",
     allPlants: "All plants",
     byProcurement: "Procurement",
     byStore: "Store",
@@ -2397,6 +2410,7 @@ const en = {
     "toSeeDiffs": "to see coefficient differences for d{{d}}.",
   },
   "overview": {
+    showingOfTotal: "Showing {{n}} of {{total}}",
     cpmMatrixTitle: "CPM Stock · density × location",
     cpmMatrixSub: "Drums on hand, live · cell shading shows relative volume",
     openStock: "Open Stock",
@@ -2620,6 +2634,7 @@ const en = {
     "vsTarget": "vs target {{grade}}",
   },
   "storereq": {
+    queuePendingChip: "Waiting for approval",
     stockNoDate: "No date",
     col_date: "Date",
     stockHeading: "Stock register",

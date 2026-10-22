@@ -23,6 +23,10 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
+import { STORE_REQ_SCOPE, isWaitingReq } from '../../../lib/store/requisitionQueue';
+import { reqNoLabel, useTicketNos, ticketNoForId } from '../../../lib/ticketNo';
+import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
+import { DateRangeFilter } from '../../../components/v2';
 
 // ticket_id is added by migration NN_requisition_ticket_link.sql; typed here until
 // database.types.ts is regenerated so requisitions raised from a maintenance ticket
@@ -84,7 +88,7 @@ export function StoreRequisitions() {
   };
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
-  const { scopeQuery, allowedPlants } = usePlantScope();
+  const { scopeQuery, allowedPlants, isGlobal, inScope } = usePlantScope();
   const canDecideReq =
     isAdminProfile(activeProfile) ||
     activeProfile.id === 'unit_head' ||
@@ -106,20 +110,39 @@ export function StoreRequisitions() {
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
-    if (r.ticket_id) navigate(`/dashboard/purchase/maint?ticket=${r.ticket_id}`);
+    if (r.ticket_id) navigate(`/dashboard/purchase/maint?ticket=${r.ticket_id}&from=storereq`);
     else setDetailReq(r);
   }
 
-  const filtered = useTextFilter(items, search, r => [r.item, r.plants?.name, r.id.slice(0, 8), r.status, r.ticket_id ? r.ticket_id.slice(0, 8) : '']);
+  // ?queue=pending → only requests still waiting on a decision. Same waiting
+  // set + same plant scope as the Overview "Pending Approvals" count (B5).
+  const queuePending = searchParams.get('queue') === 'pending';
+  const clearQueue = () => setSearchParams(prev => { const p = new URLSearchParams(prev); p.delete('queue'); p.delete('req'); return p; }, { replace: true });
+  const [range, setRange] = useState({ from: '', to: '' });
+  const ticketLabel = useTicketNos(items.map(r => r.ticket_id));
+  const scoped = useMemo(
+    () => items.filter(r => (!queuePending || isWaitingReq(r.status)) && inIstDayRange(r.created_at, range.from, range.to)),
+    [items, queuePending, range],
+  );
+  const filtered = useTextFilter(scoped, search, r => [r.item, r.plants?.name, reqNoLabel(r), reqNoLabel(r).replace('-', ''), String(r.req_no ?? ''), r.id.slice(0, 8), r.status, r.ticket_id ? ticketLabel(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
-    reqno: r => r.id,
+    reqno: r => (r.req_no ?? (r.created_at ? new Date(r.created_at).getTime() : 0)),
     ticket: r => r.ticket_id ?? null,
     item: r => r.item,
     plant: r => r.plants?.name,
     qty: r => r.qty,
     stage: r => r.status,
   });
-  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${search}|${reqSort.sort.key}|${reqSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${search}|${queuePending}|${range.from}|${range.to}|${reqSort.sort.key}|${reqSort.sort.dir}` });
+
+  // Overview row → open that requisition once it is loaded.
+  useEffect(() => {
+    const id = searchParams.get('req');
+    if (!id || !items.length) return;
+    const hit = items.find(r => r.id === id);
+    if (hit) setDetailReq(hit);
+    setSearchParams(prev => { const p = new URLSearchParams(prev); p.delete('req'); return p; }, { replace: true });
+  }, [searchParams, items, setSearchParams]);
 
   async function load() {
     try {
@@ -127,8 +150,8 @@ export function StoreRequisitions() {
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
 
       const { data, error } = await withEmbedFallback(
-        scopeQuery(supabase.from('store_requisitions').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<ReqRow[]>(),
-        () => scopeQuery(supabase.from('store_requisitions').select('*'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<ReqRow[]>(),
+        scopeQuery(supabase.from('store_requisitions').select('*, plants(name)'), STORE_REQ_SCOPE).order('created_at', { ascending: false }).returns<ReqRow[]>(),
+        () => scopeQuery(supabase.from('store_requisitions').select('*'), STORE_REQ_SCOPE).order('created_at', { ascending: false }).returns<ReqRow[]>(),
         'StoreRequisitions.list',
       );
       if (error) throw error;
@@ -148,15 +171,21 @@ export function StoreRequisitions() {
   // Factory options from the DB, restricted to the user's own. No hard-coded
   // fallback: after a rename it would offer names that no longer exist. The
   // form stores the plant ID, so a rename cannot orphan an in-flight request.
+  // Scoped users get only their plants — never a fall-back to every plant.
   const plantOptions = useMemo(
-    () => [...(allowedPlants.length > 0 ? allowedPlants : dbPlants)].sort((a, b) => a.name.localeCompare(b.name)),
-    [allowedPlants, dbPlants],
+    () => [...(isGlobal ? (allowedPlants.length > 0 ? allowedPlants : dbPlants) : allowedPlants)].sort((a, b) => a.name.localeCompare(b.name)),
+    [allowedPlants, dbPlants, isGlobal],
   );
+  const plantAllowed = (id: string) => !!id && (isGlobal || inScope(id));
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
     if (!form.item.trim() || !form.qty) return;
+    if (!plantAllowed(form.plant)) {
+      toast.error(t('maint.plantOutOfScope', 'Pick one of your plants — you can only raise tickets for plants you belong to.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === form.plant);
     const { data, error } = await insertRows('store_requisitions', {
       item: form.item,
@@ -230,7 +259,7 @@ export function StoreRequisitions() {
           status,
           item: row.item,
         }),
-        body: `#${row.id.slice(0, 8)} · ${row.plants?.name ?? ''}`,
+        body: `${reqNoLabel(row)} · ${row.plants?.name ?? ''}`,
         type: status === 'rejected' ? 'urgent' : 'info',
         route: '/dashboard/purchase/storereq',
         actor_name: activeProfile.name || '',
@@ -244,7 +273,7 @@ export function StoreRequisitions() {
   }
 
   // Summary tiles for the Requirements tab (computed from the loaded rows).
-  const pendingCount   = items.filter(r => r.status === 'pending').length;
+  const pendingCount   = items.filter(r => isWaitingReq(r.status)).length;
   const readyCount     = items.filter(r => ['approved', 'dispatched'].includes(r.status)).length;
   const urgentCount    = items.filter(r => ['high', 'plant_stopper'].includes(r.urgency ?? '')).length;
 
@@ -282,7 +311,7 @@ export function StoreRequisitions() {
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={String(pendingCount).padStart(2, '0')}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
-          onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => { setSearch(''); setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('queue', 'pending'); return p; }, { replace: true }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={String(readyCount).padStart(2, '0')}
@@ -318,7 +347,15 @@ export function StoreRequisitions() {
           <div className="px-5 pb-5"><SkeletonRows rows={6} /></div>
         ) : (
         <>
-          <div className="px-5 pb-4"><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} /></div>
+          <div className="px-5 pb-4 flex items-end gap-3 flex-wrap">
+            <div style={{ flex: 1, minWidth: 220 }}><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} style={{ marginBottom: 0 }} /></div>
+            <DateRangeFilter from={range.from} to={range.to} onChange={setRange} />
+            {queuePending && (
+              <button type="button" className="chip active" data-testid="queue-pending-chip" onClick={clearQueue}>
+                {t('storereq.queuePendingChip', 'Waiting for approval')} ✕
+              </button>
+            )}
+          </div>
           {filtered.length === 0 ? (
             <div className="px-5 pb-5"><EmptyState title={t('storereq.open_req_empty')} message={search ? t('common.noMatches', 'No rows match your search.') : undefined} /></div>
           ) : (
@@ -341,10 +378,10 @@ export function StoreRequisitions() {
                         style={{ cursor: 'pointer' }}
                         title={r.ticket_id ? t('storereq.open_ticket', 'Open maintenance ticket') : t('storereq.open_detail', 'View request details')}
                       >
-                        <td className="font-bold text-xs text-slate-400">{r.id.slice(0, 8)}</td>
+                        <td className="font-bold text-xs text-slate-500">{reqNoLabel(r)}</td>
                         <td>
                           {r.ticket_id
-                            ? <span className="num text-xs text-blue-600 font-semibold">#{r.ticket_id.slice(0, 8)}</span>
+                            ? <span className="num text-xs text-blue-600 font-semibold">{ticketLabel(r.ticket_id)}</span>
                             : <span className="text-slate-300">—</span>}
                         </td>
                         <td>{r.item}</td>
@@ -353,7 +390,7 @@ export function StoreRequisitions() {
                         <td>
                           <span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>
                         </td>
-                        <td className="text-slate-500">{r.status === 'pending' ? t('storereq.awaiting_unit_head') : '—'}</td>
+                        <td className="text-slate-500">{isWaitingReq(r.status) ? t('storereq.awaiting_unit_head') : '—'}</td>
                         <td className="font-semibold">{t('storereq.decision_' + stageKey, r.status)}</td>
                         <td onClick={e => e.stopPropagation()}><PicBadge url={r.photo_url} onOpen={() => r.photo_url && setLightbox([{ url: r.photo_url, label: r.item }])} /></td>
                       </tr>
@@ -435,7 +472,7 @@ export function StoreRequisitions() {
           saveLabel={t('storereq.save_label')}
           successLabel={t('storereq.success_label')}
           successSub={t('storereq.success_sub')}
-          disabled={!form.item.trim() || !form.qty}
+          disabled={!form.item.trim() || !form.qty || !plantAllowed(form.plant)}
           requiredHint={t('storereq.required_hint')}
         />
       </SlidePanel>
@@ -445,7 +482,7 @@ export function StoreRequisitions() {
         open={!!detailReq}
         onClose={() => setDetailReq(null)}
         title={detailReq?.item || t('storereq.detail_title', 'Requisition')}
-        subtitle={detailReq ? `#${detailReq.id.slice(0, 8)} · ${detailReq.plants?.name || '—'}` : ''}
+        subtitle={detailReq ? `${reqNoLabel(detailReq)} · ${detailReq.plants?.name || '—'}` : ''}
       >
         {detailReq && (() => {
           const s = STATUS_STAGE[detailReq.status] || STATUS_STAGE.pending;
@@ -458,7 +495,8 @@ export function StoreRequisitions() {
           );
           return (
             <div>
-              <Row k={t('storereq.col_req_no')} v={`#${detailReq.id.slice(0, 8)}`} />
+              <Row k={t('storereq.col_req_no')} v={reqNoLabel(detailReq)} />
+              {detailReq.ticket_id && <Row k={t('storereq.col_ticket', 'Ticket #')} v={ticketNoForId(detailReq.ticket_id)} />}
               <Row k={t('storereq.col_item')} v={detailReq.item} />
               <Row k={t('storereq.col_plant')} v={detailReq.plants?.name || '—'} />
               <Row k={t('storereq.col_qty')} v={String(detailReq.qty)} />
@@ -466,7 +504,7 @@ export function StoreRequisitions() {
               <Row k={t('storereq.col_stage')} v={<span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>} />
               <Row k={t('storereq.col_decision')} v={t('storereq.decision_' + stageKey, detailReq.status)} />
               {detailReq.remarks && <Row k={t('storereq.field_reason')} v={detailReq.remarks} />}
-              <Row k={t('storereq.detail_requested', 'Requested on')} v={detailReq.created_at ? new Date(detailReq.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'} />
+              <Row k={t('storereq.detail_requested', 'Requested on')} v={formatDateTime(detailReq.created_at)} />
               {detailReq.photo_url && (
                 <button
                   type="button"
@@ -477,7 +515,7 @@ export function StoreRequisitions() {
                   <img src={detailReq.photo_url} alt={detailReq.item} style={{ width: '100%', maxHeight: 220, objectFit: 'cover', display: 'block' }} />
                 </button>
               )}
-              {canDecideReq && detailReq.status === 'pending' && (
+              {canDecideReq && isWaitingReq(detailReq.status) && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                   <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
                     {t('storereq.approve_btn', 'Approve')}
