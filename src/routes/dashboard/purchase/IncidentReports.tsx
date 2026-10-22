@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
+import { formatDateTime, istDayKey, normalizeDayRange } from '../../../lib/utils/formatting';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary';
 import { useDirectory } from '../../../lib/mentions';
@@ -17,6 +19,7 @@ function TagPeople({
   query: string;
   setQuery: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const picked = selected.map(id => people.find(p => p.id === id)).filter(Boolean) as { id: string; name: string }[];
   const q = query.trim().toLowerCase();
   const hits = q
@@ -28,15 +31,15 @@ function TagPeople({
         {picked.map(p => (
           <span key={p.id} style={{ ...chip, background: '#0F172A', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             {p.name}
-            <button type="button" onClick={() => onChange(selected.filter(id => id !== p.id))} style={{ border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', fontWeight: 700, padding: 0 }} aria-label={`Remove ${p.name}`}>×</button>
+            <button type="button" onClick={() => onChange(selected.filter(id => id !== p.id))} style={{ border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', fontWeight: 700, padding: 0 }} aria-label={t('incidents.removeTag', { name: p.name })}>×</button>
           </span>
         ))}
-        {picked.length === 0 && <span style={{ fontSize: 12, color: '#94A3B8' }}>No one tagged yet</span>}
+        {picked.length === 0 && <span style={{ fontSize: 12, color: '#94A3B8' }}>{t('incidents.noTags')}</span>}
       </div>
-      <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search a person to add" style={inputStyle} />
+      <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('incidents.searchPerson')} style={inputStyle} />
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {hits.map(p => (
-          <button key={p.id} type="button" onClick={() => { onChange([...selected, p.id]); setQuery(''); }} style={chip}>{p.name}</button>
+          <button key={p.id} type="button" onClick={() => { onChange([...selected, p.id]); setQuery(''); }} style={chip} title={p.roleLabel}>{p.name}</button>
         ))}
       </div>
     </div>
@@ -77,14 +80,6 @@ const blank = {
   solution: '',
 };
 
-function dayKey(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
 export function IncidentReports({
   plants,
   reporter,
@@ -96,9 +91,10 @@ export function IncidentReports({
   reporterRole: string;
   focusId?: string | null;
 }) {
+  const { t } = useTranslation();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
-  const { scopeQuery } = usePlantScope();
+  const { scopeQuery, isGlobal, ready: scopeReady } = usePlantScope();
   const { addNotification } = useNotifications();
   const [rows, setRows] = useState<IncidentRow[]>([]);
   const [q, setQ] = useState('');
@@ -114,18 +110,51 @@ export function IncidentReports({
   const [docs, setDocs] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The incidents table arrives with the Mac SQL (0034/0035). Until it is on a
+  // database, say so plainly instead of showing PostgREST's schema-cache text.
+  const [missing, setMissing] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<IncidentRow | null>(null);
+  const defaultPlant = plants.length === 1 ? plants[0].id : '';
 
   const nameOf = (id: string | null | undefined) => people.find(p => p.id === id)?.name || id || '';
 
+  // Someone is "on" an incident if they reported, took, or were tagged on it.
+  const involves = (r: IncidentRow) =>
+    r.reported_by === reporter || r.claimed_by === reporter || (r.tagged_people || []).includes(activeProfile.id);
+
   async function load() {
+    if (!scopeReady) return;
     const { data, error } = await scopeQuery(incidents().select('*, plants(name)'))
       .order('occurred_at', { ascending: false });
-    if (error) setErr(error.message);
-    else { setErr(null); setRows(data || []); }
+    if (error) {
+      const msg = String(error.message || '');
+      const absent = error.code === 'PGRST205' || error.code === '42P01' || /incident_reports/.test(msg);
+      setMissing(absent);
+      setErr(absent ? null : msg);
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    let list: IncidentRow[] = data || [];
+    // Plant-less incidents (saved before Plant was required) fall outside every
+    // plant grant, so scoped users lost them. Show them to the people on them.
+    if (!isGlobal) {
+      const { data: loose } = await incidents().select('*, plants(name)').is('plant_id', null);
+      const mine = ((loose || []) as IncidentRow[]).filter(involves);
+      if (mine.length) {
+        const seen = new Set(list.map(r => r.id));
+        list = [...list, ...mine.filter(r => !seen.has(r.id))]
+          .sort((a, b) => (b.occurred_at || '').localeCompare(a.occurred_at || ''));
+      }
+    }
+    setMissing(false);
+    setErr(null);
+    setRows(list);
+    setLoading(false);
   }
 
-  useEffect(() => { void load(); }, [scopeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [scopeQuery, scopeReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!focusId || rows.length === 0) return;
@@ -138,7 +167,7 @@ export function IncidentReports({
     if (!mine.length) return;
     await addNotification({
       target_roles: mine,
-      title: `${reporter} tagged you on an incident`,
+      title: t('incidents.taggedYou', { name: reporter }),
       body: what,
       type: 'info',
       route: `/dashboard/purchase/maint?tab=incidents&incident=${id}`,
@@ -168,11 +197,12 @@ export function IncidentReports({
   }
 
   async function save() {
-    if (!form.what.trim()) return;
+    const plantId = form.plant || defaultPlant;
+    if (!form.what.trim() || (plants.length > 0 && !plantId)) return;
     setSaving(true);
     setErr(null);
     const { data, error } = await incidents().insert({
-      plant_id: form.plant || null,
+      plant_id: plantId || null,
       occurred_at: form.when ? new Date(form.when).toISOString() : new Date().toISOString(),
       where_text: form.where.trim() || null,
       what_text: form.what.trim(),
@@ -183,7 +213,7 @@ export function IncidentReports({
     }).select('id').single();
     if (error || !data?.id) {
       setSaving(false);
-      setErr(error?.message || 'Could not save the incident.');
+      setErr(error?.message || t('incidents.saveFailed'));
       return;
     }
     const id = data.id as string;
@@ -196,12 +226,12 @@ export function IncidentReports({
       };
       const { error: extraErr } = await incidents().update(extra).eq('id', id);
       if (extraErr) {
-        setErr('The incident is saved. Photos, documents, tags, and claim need the incident database update before they can be stored.');
+        setErr(t('incidents.extrasNeedUpdate'));
       } else if (tagIds.length) {
-        await notifyTagged(tagIds, form.what.trim(), id, form.plant || null);
+        await notifyTagged(tagIds, form.what.trim(), id, plantId || null);
       }
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'The incident is saved, but a file did not upload.');
+      setErr(e instanceof Error ? e.message : t('incidents.fileFailed'));
     }
     setSaving(false);
     setForm(blank);
@@ -219,7 +249,7 @@ export function IncidentReports({
       claimed_at: new Date().toISOString(),
     }).eq('id', row.id);
     if (error) {
-      setErr('Could not claim this incident. The incident database update has to be applied first.');
+      setErr(t('incidents.claimFailed'));
       return;
     }
     setSelected(s => s && s.id === row.id ? { ...s, claimed_by: reporter, claimed_at: new Date().toISOString() } : s);
@@ -236,21 +266,21 @@ export function IncidentReports({
       const nextDocs = [...(row.doc_urls || []), ...docLinks];
       const { error } = await incidents().update({ photo_urls: nextPhotos, doc_urls: nextDocs }).eq('id', row.id);
       if (error) {
-        setErr('The file uploaded, but it could not be saved on the incident. Apply the incident database update first.');
+        setErr(t('incidents.fileNotLinked'));
         return;
       }
       const next = { ...row, photo_urls: nextPhotos, doc_urls: nextDocs };
       setSelected(next);
       await load();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Upload failed.');
+      setErr(e instanceof Error ? e.message : t('incidents.uploadFailed'));
     }
   }
 
   async function setTags(row: IncidentRow, ids: string[]) {
     const { error } = await incidents().update({ tagged_people: ids }).eq('id', row.id);
     if (error) {
-      setErr('Could not save the tagged people. Apply the incident database update first.');
+      setErr(t('incidents.tagFailed'));
       return;
     }
     const added = ids.filter(id => !(row.tagged_people || []).includes(id));
@@ -260,17 +290,28 @@ export function IncidentReports({
     setRows(prev => prev.map(r => r.id === row.id ? next : r));
   }
 
+  async function assignPlant(row: IncidentRow, plantId: string) {
+    if (!plantId) return;
+    const { error } = await incidents().update({ plant_id: plantId }).eq('id', row.id);
+    if (error) { setErr(error.message); return; }
+    const name = plants.find(p => p.id === plantId)?.name ?? null;
+    const next = { ...row, plant_id: plantId, plants: name ? { name } : null };
+    setSelected(next);
+    setRows(prev => prev.map(r => r.id === row.id ? next : r));
+  }
+
   const needle = q.trim().toLowerCase();
+  const range = normalizeDayRange(fromDate, toDate);
   const shown = useMemo(() => rows.filter((r) => {
     if (plantFilter && r.plant_id !== plantFilter) return false;
-    const day = dayKey(r.occurred_at);
-    if (fromDate && day && day < fromDate) return false;
-    if (toDate && day && day > toDate) return false;
+    const day = istDayKey(r.occurred_at);
+    if (range.from && day && day < range.from) return false;
+    if (range.to && day && day > range.to) return false;
     if (!needle) return true;
     const tags = (r.tagged_people || []).map(nameOf).join(' ');
     return [r.what_text, r.who_text, r.where_text, r.how_text, r.solution_text, displayLocationName(r.plants?.name), r.plants?.name, r.reported_by, r.claimed_by, nameOf(r.claimed_by), tags]
       .some((v) => (v || '').toLowerCase().includes(needle));
-  }), [rows, plantFilter, fromDate, toDate, needle, people]);
+  }), [rows, plantFilter, range.from, range.to, needle, people]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const field = (label: string, key: keyof typeof blank, area = false) => (
     <label style={{ display: 'block', marginBottom: 10 }}>
@@ -289,42 +330,57 @@ export function IncidentReports({
     <div className="card2 p-5">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <div>
-          <div style={{ fontWeight: 800 }}>Incident reports</div>
-          <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>In-house work: who, what, when, where, how, the solution, photos, documents, and who has taken it.</div>
+          <div style={{ fontWeight: 800 }}>{t('incidents.title')}</div>
+          <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('incidents.subtitle')}</div>
         </div>
-        <button type="button" onClick={() => setOpen(true)} style={btn}>New incident</button>
+        {!missing && (
+          <button
+            type="button"
+            onClick={() => { setForm(f => ({ ...f, plant: f.plant || defaultPlant })); setOpen(true); }}
+            disabled={scopeReady && plants.length === 0}
+            title={scopeReady && plants.length === 0 ? t('incidents.noPlantAccess') : undefined}
+            style={{ ...btn, ...(scopeReady && plants.length === 0 ? { opacity: 0.5, cursor: 'not-allowed' } : null) }}
+          >{t('incidents.new')}</button>
+        )}
       </div>
+      {missing && (
+        <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '12px 14px', fontSize: 13, color: '#334155', marginBottom: 12 }}>
+          {t('incidents.notSwitchedOn')}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search incidents" style={{ ...inputStyle, flex: 1, minWidth: 180, marginBottom: 0 }} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('incidents.search')} style={{ ...inputStyle, flex: 1, minWidth: 180, marginBottom: 0 }} />
         <select value={plantFilter} onChange={(e) => setPlantFilter(e.target.value)} style={{ ...inputStyle, width: 'auto', minWidth: 160, marginBottom: 0 }}>
-          <option value="">All plants</option>
+          <option value="">{t('common.allPlants')}</option>
           {plants.map((p) => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
         </select>
         <label style={{ fontSize: 12, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
-          From
+          {t('incidents.from')}
           <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={{ ...inputStyle, width: 'auto', marginBottom: 0 }} />
         </label>
         <label style={{ fontSize: 12, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
-          To
+          {t('incidents.to')}
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={{ ...inputStyle, width: 'auto', marginBottom: 0 }} />
         </label>
       </div>
+      {range.swapped && <div style={{ fontSize: 12, color: '#B45309', marginBottom: 8 }}>{t('incidents.datesSwapped')}</div>}
       {err && <div style={{ color: '#B91C1C', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       <div className="overflow-x-auto">
         <table className="dt2">
           <thead>
             <tr>
-              <th>When</th><th>Plant</th><th>What</th><th>Claimed</th><th>Tagged</th><th>Files</th>
+              <th>{t('incidents.colWhen')}</th><th>{t('incidents.colPlant')}</th><th>{t('incidents.colWhat')}</th><th>{t('incidents.colClaimed')}</th><th>{t('incidents.colTagged')}</th><th>{t('incidents.colFiles')}</th>
             </tr>
           </thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">No incidents match.</td></tr>}
+            {loading && !missing && <tr><td colSpan={6} className="text-center text-slate-400 py-6">…</td></tr>}
+            {!loading && shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">{rows.length ? t('incidents.noneMatch') : t('incidents.none')}</td></tr>}
             {shown.map((r) => (
               <tr key={r.id} onClick={() => setSelected(r)} style={{ cursor: 'pointer' }}>
-                <td>{new Date(r.occurred_at).toLocaleString('en-IN')}</td>
-                <td>{displayLocationName(r.plants?.name) || '—'}</td>
+                <td className="whitespace-nowrap">{formatDateTime(r.occurred_at)}</td>
+                <td>{displayLocationName(r.plants?.name) || t('incidents.noPlant')}</td>
                 <td>{r.what_text}</td>
-                <td>{r.claimed_by ? nameOf(r.claimed_by) : 'Open'}</td>
+                <td>{r.claimed_by ? nameOf(r.claimed_by) : t('incidents.open')}</td>
                 <td>{(r.tagged_people || []).map(nameOf).filter(Boolean).join(', ') || '—'}</td>
                 <td>{(r.photo_urls || []).length + (r.doc_urls || []).length || '—'}</td>
               </tr>
@@ -335,33 +391,33 @@ export function IncidentReports({
       {open && (
         <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
           <label style={{ display: 'block', marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Plant</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{t('incidents.plant')} *</div>
             <select value={form.plant} onChange={(e) => setForm((f) => ({ ...f, plant: e.target.value }))} style={inputStyle}>
-              <option value="">Select plant</option>
+              <option value="">{t('incidents.selectPlant')}</option>
               {plants.map((p) => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </select>
           </label>
-          {field('When', 'when')}
-          {field('Who', 'who')}
-          {field('What broke / what happened', 'what', true)}
-          {field('Where', 'where')}
-          {field('How it happened', 'how', true)}
-          {field('Solution', 'solution', true)}
+          {field(t('incidents.when'), 'when')}
+          {field(t('incidents.who'), 'who')}
+          {field(`${t('incidents.what')} *`, 'what', true)}
+          {field(t('incidents.where'), 'where')}
+          {field(t('incidents.how'), 'how', true)}
+          {field(t('incidents.solution'), 'solution', true)}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Tag people</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{t('incidents.tagPeople')}</div>
             <TagPeople people={people} selected={tagIds} onChange={setTagIds} query={tagQ} setQuery={setTagQ} />
           </div>
           <label style={{ display: 'block', marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Photos</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{t('incidents.photos')}</div>
             <input type="file" accept="image/*" multiple onChange={(e) => setPhotos(e.target.files ? [...e.target.files] : [])} />
           </label>
           <label style={{ display: 'block', marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Documents</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{t('incidents.documents')}</div>
             <input type="file" multiple onChange={(e) => setDocs(e.target.files ? [...e.target.files] : [])} />
           </label>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" onClick={() => void save()} disabled={saving || !form.what.trim()} style={btn}>{saving ? 'Saving…' : 'Save incident'}</button>
-            <button type="button" onClick={() => setOpen(false)} style={{ ...btn, background: '#fff', color: '#0F172A', border: '1px solid #E2E8F0' }}>Cancel</button>
+            <button type="button" onClick={() => void save()} disabled={saving || !form.what.trim() || (plants.length > 0 && !(form.plant || defaultPlant))} style={{ ...btn, ...((saving || !form.what.trim() || (plants.length > 0 && !(form.plant || defaultPlant))) ? { opacity: 0.5, cursor: 'not-allowed' } : null) }}>{saving ? t('incidents.saving') : t('incidents.save')}</button>
+            <button type="button" onClick={() => setOpen(false)} style={{ ...btn, background: '#fff', color: '#0F172A', border: '1px solid #E2E8F0' }}>{t('incidents.cancel')}</button>
           </div>
         </div>
       )}
@@ -369,26 +425,35 @@ export function IncidentReports({
         <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ fontWeight: 800 }}>{selected.what_text}</div>
-            <button type="button" onClick={() => setSelected(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B' }}>Close</button>
+            <button type="button" onClick={() => setSelected(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B' }}>{t('incidents.close')}</button>
           </div>
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
-            {new Date(selected.occurred_at).toLocaleString('en-IN')}
-            {' · '}{displayLocationName(selected.plants?.name) || 'No plant'}
+            {formatDateTime(selected.occurred_at)}
+            {' · '}{displayLocationName(selected.plants?.name) || t('incidents.noPlant')}
             {selected.who_text ? ` · ${selected.who_text}` : ''}
-            {selected.reported_by ? ` · reported by ${selected.reported_by}` : ''}
+            {selected.reported_by ? ` · ${t('incidents.reportedBy', { name: selected.reported_by })}` : ''}
           </div>
-          {selected.where_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>Where. </strong>{selected.where_text}</p>}
-          {selected.how_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>How. </strong>{selected.how_text}</p>}
-          {selected.solution_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>Solution. </strong>{selected.solution_text}</p>}
+          {!selected.plant_id && plants.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: '#B45309' }}>
+              {t('incidents.assignPlant')}
+              <select value="" onChange={(e) => void assignPlant(selected, e.target.value)} style={{ ...inputStyle, width: 'auto' }}>
+                <option value="">{t('incidents.selectPlant')}</option>
+                {plants.map((p) => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
+              </select>
+            </label>
+          )}
+          {selected.where_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>{t('incidents.where')}. </strong>{selected.where_text}</p>}
+          {selected.how_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>{t('incidents.how')}. </strong>{selected.how_text}</p>}
+          {selected.solution_text && <p style={{ fontSize: 13, margin: '8px 0 0' }}><strong>{t('incidents.solution')}. </strong>{selected.solution_text}</p>}
           <div style={{ marginTop: 12 }}>
             {selected.claimed_by ? (
-              <div style={{ fontSize: 13, fontWeight: 700 }}>Taken by {nameOf(selected.claimed_by)}</div>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{t('incidents.takenBy', { name: nameOf(selected.claimed_by) })}</div>
             ) : (
-              <button type="button" onClick={() => void claim(selected)} style={btn}>Take this incident</button>
+              <button type="button" onClick={() => void claim(selected)} style={btn}>{t('incidents.take')}</button>
             )}
           </div>
           <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Tagged people</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{t('incidents.taggedPeople')}</div>
             <TagPeople people={people} selected={selected.tagged_people || []} onChange={(ids) => void setTags(selected, ids)} query={detailTagQ} setQuery={setDetailTagQ} />
           </div>
           <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -400,16 +465,16 @@ export function IncidentReports({
           </div>
           <div style={{ marginTop: 8 }}>
             {(selected.doc_urls || []).map(d => (
-              <a key={d.url} href={d.url} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: 12, color: '#2563EB', marginTop: 4 }}>{d.name || 'Document'}</a>
+              <a key={d.url} href={d.url} target="_blank" rel="noreferrer" style={{ display: 'block', fontSize: 12, color: '#2563EB', marginTop: 4 }}>{d.name || t('incidents.document')}</a>
             ))}
           </div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12 }}>
             <label style={{ fontSize: 12 }}>
-              Add photos
+              {t('incidents.addPhotos')}
               <input type="file" accept="image/*" multiple onChange={(e) => { void addToRow(selected, 'photo', e.target.files); e.target.value = ''; }} />
             </label>
             <label style={{ fontSize: 12 }}>
-              Add documents
+              {t('incidents.addDocuments')}
               <input type="file" multiple onChange={(e) => { void addToRow(selected, 'doc', e.target.files); e.target.value = ''; }} />
             </label>
           </div>
