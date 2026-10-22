@@ -572,7 +572,9 @@ export function Maintenance() {
   const isTechnician = role === 'technician_shd' || (!isAdmin && can('perform_maintenance'));
   const isUnitHead = role === 'unit_head';
   const isStoreManager = [role, activeProfile.baseRoleId].some(id => !!id && ALL_STORE_MANAGER_IDS.includes(id));
-  const showScheduleSetup = canSeeScheduleSetup(activeProfile);
+  // Technicians never had Schedule Setup on live; the manage_schedules
+  // allowance is the only way in for them, same as for store managers.
+  const showScheduleSetup = canSeeScheduleSetup(activeProfile) && (!isTechnician || can('manage_schedules'));
   const isPurchaseManager = role === 'purchase_manager';
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.
@@ -842,7 +844,8 @@ export function Maintenance() {
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
     const rawTab = searchParams.get('tab');
-    if (rawTab === 'periodic' || rawTab === 'emergency' || rawTab === 'schedule' || rawTab === 'incidents') setTab(rawTab);
+    if (rawTab === 'schedule' && !showScheduleSetup) setTab('periodic');
+    else if (rawTab === 'periodic' || rawTab === 'emergency' || rawTab === 'schedule' || rawTab === 'incidents') setTab(rawTab);
     const tid = searchParams.get('ticket');
     if (!tid) return;
     const clearTicketParam = () => {
@@ -888,7 +891,7 @@ export function Maintenance() {
     setTab(matched.type === 'periodic' ? 'periodic' : 'emergency');
     clearTicketParam();
     // toast/t intentionally omitted — ToastApi object is not referentially stable.
-  }, [searchParams, tickets, setSearchParams]);
+  }, [searchParams, tickets, setSearchParams, showScheduleSetup]);
 
   // FAR register → raise ticket for that asset only.
   useEffect(() => {
@@ -1129,7 +1132,7 @@ export function Maintenance() {
   const weeklyListSchedules = fltPeriodic.filter(s => s.frequency === 'weekly' && (() => { const d = daysFromNow(s.next_due_at); return d !== null && d >= 0 && d <= 7; })());
   const upcomingSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d > 7 && d <= 30; });
   const dueScopeLabel = (() => {
-    if (fltPlant !== 'all') return dbPlants.find(p => p.id === fltPlant)?.name || t('common.allPlants');
+    if (fltPlant !== 'all') return displayLocationName(dbPlants.find(p => p.id === fltPlant)?.name) || t('common.allPlants');
     const names = [...new Set(fltPeriodic.map(s => s.plants?.name).filter(Boolean))];
     if (names.length === 1) return names[0];
     if (names.length > 1) return t('maint.nPlantsScope', { defaultValue: '{{n}} plants', n: names.length });
@@ -1146,7 +1149,7 @@ export function Maintenance() {
     && (fltStatus === 'all' || t.status === fltStatus));
   const plantFilterOptions = [
     { value: 'all', label: t('common.allPlants') },
-    ...dbPlants.map(p => ({ value: p.id, label: p.name })),
+    ...plantOptions.map(p => ({ value: p.id, label: displayLocationName(p.name) })),
   ];
   const statusFilterOptions = tab === 'periodic'
     ? [
@@ -3453,7 +3456,7 @@ export function Maintenance() {
 
       {tab === 'incidents' && (
         <IncidentReports
-          plants={dbPlants}
+          plants={plantOptions}
           reporter={activeProfile.name}
           reporterRole={role}
           focusId={searchParams.get('incident')}
