@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import { callRpc } from './db';
+import { ticketNoForId } from './ticketNo';
 
 const PLACEHOLDER = /^(x{2,}|n\/?a|nil|none|tbd|todo|-|—|–)$/i;
 const SEQ = /^(FAR|STK)-(\d+)$/i;
@@ -129,6 +130,7 @@ export function jobNoStock(id: string, assigned?: string | null): string {
   return `STK-${id.replace(/-/g, '').slice(0, 3).toUpperCase()}`;
 }
 
+/** Human ticket number (MT-0042) for a ticket id — never the raw uuid slice. */
 export function ticketShort(id: string | null | undefined): string {
-  return id ? id.slice(0, 8) : '';
+  return ticketNoForId(id);
 }

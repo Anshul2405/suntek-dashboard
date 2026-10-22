@@ -66,7 +66,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const { t } = useTranslation();
   const { openPalette } = useSearchPalette();
   const { activeProfile } = useRoleContext();
-  const { notifications, unreadCount, markRead, markAllRead, clearAll, tableReady, isNotificationCompleted } = useNotifications();
+  const { notifications, unreadCount, markRead, markAllRead, clearAll, tableReady, isNotificationCompleted, isReadByMe } = useNotifications();
   const { totalCount: todoCount } = useTodo();
   const canSeeTodo = profileCanAccess(activeProfile, '/dashboard/todo');
   const [open, setOpen] = useState(false);
@@ -98,6 +98,8 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
     return () => window.removeEventListener('scroll', onScroll);
   }, [open]);
 
+  // The ONLY place a bell item is marked read: the person opened it. Not on
+  // scroll, not on panel open, not on profile switch, not because its ticket closed.
   function handleNotifClick(n: AppNotification) {
     markRead(n.id);
     if (n.route) { navigate(n.route); setOpen(false); }
@@ -258,7 +260,9 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
                 </div>
               ) : (
                 notifications.map(n => {
-                  const isRead = n.read_by?.includes(roleId);
+                  // Personal id, same key markRead writes (the role id never matched
+                  // for provisioned users, so their items never looked read).
+                  const isRead = isReadByMe(n);
                   const nType = (n.type as NType) || 'info';
                   // Belongs to a finished workflow (ticket closed) → render muted +
                   // struck-through with a ✓, so it's clearly part of the audit trail
@@ -289,7 +293,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
                         {done ? <CheckIcon /> : <TypeIcon type={nType} />}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: done ? 500 : (isRead ? 500 : 700), color: done ? '#94A3B8' : (isRead ? '#475569' : '#0F172A'), lineHeight: 1.35, textDecoration: done ? 'line-through' : 'none' }}>
+                        <div style={{ fontSize: 13, fontWeight: isRead ? 500 : 700, color: done ? (isRead ? '#94A3B8' : '#475569') : (isRead ? '#475569' : '#0F172A'), lineHeight: 1.35, textDecoration: done ? 'line-through' : 'none' }}>
                           {n.title}
                         </div>
                         {n.body && (
@@ -314,7 +318,8 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
                           📷
                         </button>
                       )}
-                      {!isRead && !done && (
+                      {/* Unread stays unread even when the ticket is closed. */}
+                      {!isRead && (
                         <div style={{ width: 7, height: 7, borderRadius: '50%', background: DOT[nType], flexShrink: 0, marginTop: 6 }} />
                       )}
                     </div>

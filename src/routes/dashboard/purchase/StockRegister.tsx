@@ -21,6 +21,8 @@ import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type Review
 import { registerIdOf } from '../../../lib/store/registers';
 import { assignSequentialJobNos, jobNoStock, persistMissingJobNos, ticketShort } from '../../../lib/jobNo';
 import { fetchAllRows } from '../../../lib/fetchAll';
+import { fetchPurchaseFacts, stockEntryDate, type PurchaseFact } from '../../../lib/store/purchaseFacts';
+import { formatDate, istDayKey } from '../../../lib/utils/formatting';
 import { createImportBatch, setImportBatchRowCount, buildItemOwnerMap, resolveItemOwner } from '../../../lib/imports/batches';
 import { AddPurchaseModal } from './AddPurchaseModal';
 import { AnomalyReviewModal } from './AnomalyReviewModal';
@@ -36,6 +38,8 @@ interface MergedRow {
   key: string; itemName: string; equipment: string; model: string | null; unit: string;
   opening: number; onHand: number; issued: number; procured: number; repaired: number; stores: StoreBreakdown[];
   jobNo: string; ticketNos: string[];
+  /** Newest bill / entry date across the merged stores — drives the date-wise view. */
+  date: string | null;
 }
 
 const CHUNK = 500;
@@ -196,6 +200,8 @@ export function StockRegister() {
   const [deleting, setDeleting] = useState(false);
   /** store_item_id → emergency ticket ids that issued this part */
   const [issueTickets, setIssueTickets] = useState<Record<string, string[]>>({});
+  /** store_item_id → newest bill date + last price (purchase book). */
+  const [purchaseFacts, setPurchaseFacts] = useState<Map<string, PurchaseFact>>(() => new Map());
 
   const canUploadExcel =
     isAdminProfile(activeProfile);
@@ -226,6 +232,7 @@ export function StockRegister() {
       if (siRes.error) throw siRes.error;
       const loaded = siRes.data || [];
       setItems(loaded);
+      fetchPurchaseFacts().then(setPurchaseFacts);
       persistMissingJobNos('store_items', loaded, 'STK').then(map => {
         setItems(prev => prev.map(it => ({ ...it, job_no: map.get(it.id) ?? it.job_no })));
       }).catch(() => { /* column may not exist until 0019 is applied */ });
@@ -461,16 +468,18 @@ export function StockRegister() {
       const hay = normSearch([it.item_name, it.equipment || '', it.model || '', job, ...tickets.map(ticketShort)].join(' '));
       if (q && !hay.includes(q)) continue;
       const key = it.item_name.toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
+      const entryAt = stockEntryDate(it.created_at, purchaseFacts.get(it.id));
       const store = { id: it.id, plantId: it.plant_id, plant: (it.store_id ? stores.find(s => s.id === it.store_id)?.name : null) || it.plants?.name || plantName(it.plant_id), opening: Number(it.baseline_qty), onHand: Number(it.on_hand), issued: Number(it.issued_qty), procured: Number(it.ticket_procured_qty || 0), repaired: Number(it.repaired_qty || 0), raw: it };
       const ex = map.get(key);
       if (ex) {
+        if (entryAt && (!ex.date || entryAt > ex.date)) ex.date = entryAt;
         ex.opening += store.opening; ex.onHand += store.onHand; ex.issued += store.issued; ex.procured += store.procured; ex.repaired += store.repaired; ex.stores.push(store);
         for (const tid of tickets) if (!ex.ticketNos.includes(tid)) ex.ticketNos.push(tid);
       }
-      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets] });
+      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets], date: entryAt });
     }
     return [...map.values()].sort((a, b) => a.itemName.localeCompare(b.itemName));
-  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap, purchaseFacts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
     let inStock = 0, low = 0, out = 0;
@@ -479,14 +488,17 @@ export function StockRegister() {
   }, [merged]);
 
   // Column sort — click a header to sort by it (toggles asc/desc).
+  // Date-wise by default: newest bill / entry first (meeting Oct 2026).
   const mergedSort = useSortable(merged, {
+    date: r => (r.date ? new Date(r.date) : null),
     item: r => r.itemName,
     opening: r => r.opening,
     onHand: r => r.onHand,
     issued: r => r.issued,
     procured: r => r.procured,
     status: r => (r.onHand <= 0 ? 0 : r.onHand <= 2 ? 1 : 2),
-  }, { key: 'item', dir: 'asc' });
+  }, { key: 'date', dir: 'desc' });
+  const groupByDay = mergedSort.sort.key === 'date';
 
   // Paginate the register — it can hold hundreds of items per plant.
   const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${search}|${plantFilter.join(',')}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
@@ -973,6 +985,7 @@ export function StockRegister() {
                 <table className="dt2">
                   <thead>
                     <tr>
+                      <Th sortKey="date" s={mergedSort} firstDir="desc">{t('storereq.col_date', 'Date')}</Th>
                       <Th sortKey="item" s={mergedSort}>{t('storereq.col_item', 'Item')}</Th>
                       <th>{t('storereq.col_jobNo', 'Job No')}</th>
                       <th>{t('storereq.col_equipment', 'Equipment')}</th>
@@ -986,14 +999,25 @@ export function StockRegister() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 11 : 10} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
-                    {pageRows.map(m => {
+                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 12 : 11} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
+                    {pageRows.map((m, idx) => {
                       const st = stockStatus(m.onHand);
                       const isOpen = expanded === m.key;
                       const single = m.stores.length === 1;
+                      // Group header whenever the IST day changes (date-wise view only).
+                      const day = istDayKey(m.date);
+                      const newDay = groupByDay && (idx === 0 || istDayKey(pageRows[idx - 1].date) !== day);
                       return (
                         <React.Fragment key={m.key}>
+                          {newDay && (
+                            <tr className="stock-day-group">
+                              <td colSpan={multiStore ? 12 : 11} style={{ background: '#F1F5F9', fontSize: 11.5, fontWeight: 700, color: '#475569', padding: '6px 12px' }}>
+                                {m.date ? formatDate(m.date) : t('storereq.stockNoDate', 'No date')}
+                              </td>
+                            </tr>
+                          )}
                           <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : m.key)}>
+                            <td className="text-slate-500 text-xs" style={{ whiteSpace: 'nowrap' }}>{formatDate(m.date)}</td>
                             <td className="font-semibold text-slate-700">{m.itemName}</td>
                             <td className="font-mono text-xs text-slate-500">{m.jobNo}</td>
                             <td className="text-slate-500 text-xs">{m.equipment}{m.model ? ` · ${m.model}` : ''}</td>
@@ -1034,7 +1058,7 @@ export function StockRegister() {
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={multiStore ? 11 : 10} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
+                              <td colSpan={multiStore ? 12 : 11} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
                                 {m.stores.map(s => (
                                   <div key={s.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, fontSize: 11.5, color: '#64748B', padding: '3px 0' }}>
                                     <strong style={{ color: '#334155', minWidth: 70 }}>{s.plant}</strong>

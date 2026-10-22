@@ -47,7 +47,7 @@ function PicBadge({ url, onOpen }: { url: string | null; onOpen: () => void }) {
   );
 }
 
-const UNITS  = ['nos', 'kg', 'L', 'sets', 'MT', 'boxes'];
+const UNITS  = ['nos', 'ft', 'kg', 'L', 'sets', 'MT', 'boxes'];
 
 const URGENCY_MAP: Record<string, 'low' | 'medium' | 'high' | 'plant_stopper'> = {
   Normal: 'medium',

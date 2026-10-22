@@ -466,6 +466,29 @@ export function UserManagement() {
     }
   }
 
+  // Grant / revoke one allowance on a ROLE from the person's edit panel.
+  // Same step-up as the role editor; writes the role row immediately.
+  const [savingRoleCap, setSavingRoleCap] = useState(false);
+  async function toggleRoleCapability(role: RoleRow, cap: string, grant: boolean) {
+    if (!can('manage_roles') || savingRoleCap) return;
+    const ok = await stepUp();
+    if (!ok) return;
+    setSavingRoleCap(true);
+    try {
+      const current = role.capabilities || [];
+      const capabilities = grant ? [...new Set([...current, cap])] : current.filter(c => c !== cap);
+      const { error } = await updateRows('roles', { capabilities }).eq('id', role.id);
+      if (error) { toast.error(t('userMgmt.errSaveFailed', { msg: error.message })); return; }
+      await refreshRoles();
+      window.dispatchEvent(new Event('suntek:roles-changed'));
+      toast.success(grant
+        ? t('userMgmt.capGrantedOnRole', { defaultValue: 'Granted on role {{role}}', role: role.label })
+        : t('userMgmt.capRevokedOnRole', { defaultValue: 'Revoked on role {{role}}', role: role.label }));
+    } finally {
+      setSavingRoleCap(false);
+    }
+  }
+
   async function handleDeleteRole(r: RoleRow) {
     if (r.is_admin || r.is_system) return;
     if (users.some(u => u.role_id === r.id)) {
@@ -1079,6 +1102,39 @@ export function UserManagement() {
           </div>
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('userMgmt.rolesHint', 'First selected = primary (drives display + login). Access = the union of all selected.')}</div>
         </PanelField>
+
+        {/* Schedule Setup (A6). Granted here, on the person, because that is
+            where the admin is looking — but SAVED ON THEIR PRIMARY ROLE, the
+            single source of truth for capabilities. Everyone on that role gets
+            it, which the hint says out loud. */}
+        {editingUser && form.role_id && can('manage_roles') && (() => {
+          const role = roles.find(r => r.id === form.role_id);
+          if (!role || role.is_admin) return null;
+          const on = (role.capabilities || []).includes('manage_schedules');
+          return (
+            <PanelField label={t('userMgmt.scheduleSetupAccess', 'Schedule Setup access')}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, border: `1px solid ${on ? '#FDBA74' : '#E2E8F0'}`, background: on ? '#FFF7ED' : '#F8FAFC' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A' }}>{on ? '✓ ' : '🔒 '}{t('userMgmt.capManageSchedules', 'Add or delete schedule setup')}</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>
+                    {t('userMgmt.capManageSchedulesHint', { defaultValue: 'Saved on the role "{{role}}" — everyone with that role gets the Schedule Setup tab.', role: role.label })}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  data-testid="toggle-manage-schedules"
+                  aria-pressed={on}
+                  disabled={savingRoleCap}
+                  title={on ? t('userMgmt.revokeRequiresPassword', 'Revoke (requires password)') : t('userMgmt.grantRequiresPassword', 'Grant (requires password)')}
+                  onClick={() => toggleRoleCapability(role, 'manage_schedules', !on)}
+                  style={{ width: 44, height: 24, borderRadius: 12, background: on ? '#EA580C' : '#CBD5E1', border: 'none', cursor: savingRoleCap ? 'wait' : 'pointer', position: 'relative', flexShrink: 0 }}
+                >
+                  <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#fff', position: 'absolute', top: 3, transition: 'left 0.2s', left: on ? 22 : 4 }} />
+                </button>
+              </div>
+            </PanelField>
+          );
+        })()}
 
         {/* Combined access — union of every selected role, not just the primary. */}
         {selectedRoles.length > 0 && (
