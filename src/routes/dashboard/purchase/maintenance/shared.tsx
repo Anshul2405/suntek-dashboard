@@ -99,10 +99,8 @@ export function statusBadge(status: string, t?: TFn) {
   return <span className="badge" style={{ background: cfg.bg, color: cfg.color, fontWeight: 700 }}>{label}</span>;
 }
 
-export function formatDate(d: string | null | undefined) {
-  if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+// One app-wide format (IST, "22 Oct 2026") — see lib/utils/formatting.
+export { formatDate } from '../../../../lib/utils/formatting';
 
 export function daysFromNow(d: string | null | undefined): number | null {
   if (!d) return null;

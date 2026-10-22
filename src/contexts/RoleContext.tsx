@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, BATCH_SHEET_ROUTES } from '../lib/profiles';
+import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, unionRoleAccess } from '../lib/profiles';
 import type { MockProfile, RoleRow } from '../lib/profiles';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
@@ -118,6 +118,9 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   const [rolesStatus, setRolesStatus] = useState<RolesStatus>('loading');
   // DB directory (active user_accounts rows).
   const [dbUsers, setDbUsers] = useState<DbUser[]>([]);
+  // Every extra role each directory person holds (user_roles), by account id —
+  // so "view as" shows the same UNION of access the person gets at login.
+  const [dbUserRoles, setDbUserRoles] = useState<Map<string, string[]>>(() => new Map());
 
   // The DB profile data resolved for the logged-in user (role id + name), before
   // it's mapped through the role catalog. null = no session / still resolving.
@@ -258,14 +261,33 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   // ── DB directory — built from active user_accounts rows ─────────────────────
   useEffect(() => {
     async function loadDbUsers() {
-      const { data } = await supabase
-        .from('user_accounts')
-        .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
-        .eq('is_active', true)
-        .returns<DbUser[]>();
+      const [{ data }, { data: urs }] = await Promise.all([
+        supabase
+          .from('user_accounts')
+          .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
+          .eq('is_active', true)
+          .returns<DbUser[]>(),
+        supabase.from('user_roles').select('user_account_id, role_id')
+          .returns<{ user_account_id: string; role_id: string }[]>(),
+      ]);
       if (data) setDbUsers(data);
+      const m = new Map<string, string[]>();
+      for (const r of urs ?? []) {
+        const arr = m.get(r.user_account_id);
+        if (arr) arr.push(r.role_id); else m.set(r.user_account_id, [r.role_id]);
+      }
+      setDbUserRoles(m);
     }
     loadDbUsers();
+    // A grant made in User Management (e.g. manage_schedules on a store
+    // manager's role) must show up in "view as" without a reload.
+    const onFocus = () => { if (document.visibilityState === 'visible') loadDbUsers(); };
+    document.addEventListener('visibilitychange', onFocus);
+    window.addEventListener('suntek:roles-changed', loadDbUsers);
+    return () => {
+      document.removeEventListener('visibilitychange', onFocus);
+      window.removeEventListener('suntek:roles-changed', loadDbUsers);
+    };
   }, []);
 
   // The directory of all real (provisioned) people, mapped through the role
@@ -287,7 +309,11 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         photoUrl: u.photo_url ?? undefined,
       };
       if (role) {
-        out.push(roleToProfile(role, overrides));
+        const base = roleToProfile(role, overrides);
+        const extra = (dbUserRoles.get(u.id) ?? [])
+          .map((id) => roleMap.get(id))
+          .filter((r): r is RoleRow => !!r);
+        out.push(extra.length ? { ...base, ...unionRoleAccess(role, extra) } : base);
       } else {
         // Unknown role → a locked directory entry (no access), still taggable.
         out.push({
@@ -300,7 +326,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       }
     }
     return out;
-  }, [dbUsers, roleMap, rolesStatus]);
+  }, [dbUsers, dbUserRoles, roleMap, rolesStatus]);
 
   const allProfiles = directory;
 
@@ -317,16 +343,8 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       const extraRoles = sessionRoleIds
         .map((id) => roleMap.get(id))
         .filter((r): r is RoleRow => !!r);
-      const all = [role, ...extraRoles.filter((r) => r.id !== role.id)];
-      if (all.length > 1) {
-        let routes = all.some((r) => r.allowed_routes?.includes('*'))
-          ? ['*']
-          : [...new Set(all.flatMap((r) => r.allowed_routes ?? []))];
-        const capabilities = [...new Set(all.flatMap((r) => r.capabilities ?? []))];
-        if (!routes.includes('*') && all.some((r) => r.id === 'factory_operator')) {
-          routes = [...new Set([...routes, ...BATCH_SHEET_ROUTES])];
-        }
-        return { ...base, allowedDashboardRoutes: routes, capabilities };
+      if (extraRoles.some((r) => r.id !== role.id)) {
+        return { ...base, ...unionRoleAccess(role, extraRoles) };
       }
       return base;
     }

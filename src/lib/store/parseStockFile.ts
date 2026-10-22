@@ -102,7 +102,9 @@ const UNIT_MAP: Record<string, string> = {
   'ltr': 'Ltr', 'ltr.': 'Ltr', 'litre': 'Ltr', 'l': 'Ltr',
   'kg': 'Kg', 'kgs': 'Kg', 'pair': 'Pair', 'set': 'Set', 'sets': 'Set',
   'roll': 'Roll', 'role': 'Roll', 'pkt': 'Pkt', 'packet': 'Pkt',
-  'mtr': 'Mtr', 'meter': 'Mtr', 'm': 'Mtr', 'can': 'Can', 'bag': 'Bag', 'bottle': 'Bottle',
+  'mtr': 'Mtr', 'meter': 'Mtr', 'm': 'Mtr',
+  'ft': 'Ft', 'ft.': 'Ft', 'feet': 'Ft', 'foot': 'Ft', 'fts': 'Ft', 'rft': 'Ft',
+  'can': 'Can', 'bag': 'Bag', 'bottle': 'Bottle',
 };
 export function normalizeUnit(raw: unknown): string {
   const s = (raw == null ? '' : String(raw)).trim();
@@ -112,7 +114,8 @@ export function normalizeUnit(raw: unknown): string {
 
 /** Canonical units offered in pickers — the distinct outputs of UNIT_MAP. */
 export const UNIT_OPTIONS: string[] = [
-  'Pcs', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
+  // Ft sits right after Pcs: pipe, cable and hose are bought by the foot.
+  'Pcs', 'Ft', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
 ];
 
 // ── Equipment/model from the item name, e.g. "Acid Pump (NZRP50) Sleeve" ─────

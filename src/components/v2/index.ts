@@ -13,3 +13,4 @@ export { StatusPill, type PillTone } from './StatusPill';
 export { InfoBanner } from './InfoBanner';
 export { TablePaginationV2 } from './TablePaginationV2';
 export { ThV2 } from './ThV2';
+export { DateRangeFilter } from './DateRangeFilter';
