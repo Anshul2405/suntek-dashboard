@@ -382,7 +382,7 @@ export function ActivityLog() {
       const tks = ticketsRes.data || [];
       primeTicketNos(tks);
       setTickets(tks);
-      // Incident reports (migration 0022) — best-effort, plant-scoped.
+      // Incident reports (migration 0040) — best-effort, plant-scoped.
       const incRes = await withEmbedFallback(
         scopeQuery(supabase.from('incident_reports').select('*, plants(name)')).order('created_at', { ascending: false }).returns<IncidentRow[]>(),
         () => scopeQuery(supabase.from('incident_reports').select('*')).order('created_at', { ascending: false }).returns<IncidentRow[]>(),

@@ -15,6 +15,13 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { SlidePanel } from '../../components/SlidePanel';
 import type { SalesContract } from '../../hooks/useBusyData';
+import { BUSY_COMPANIES } from '../../lib/busyCompanies';
+
+/** The all-companies view labels a party "Name · Chlorides"; history searches by name. */
+function customerSearchName(label: string): string {
+  const m = label.match(/^(.*) · ([^·]+)$/);
+  return m && BUSY_COMPANIES.some(c => c.short === m[2].trim()) ? m[1].trim() : label;
+}
 import { supabase } from '../../lib/supabase';
 import { insertRows } from '../../lib/db';
 import { useSalesMTD, useSalesContracts, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
@@ -415,7 +422,7 @@ export function Sales() {
                 <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{v}</span>
               </div>
             ))}
-            {profileCanAccess(activeProfile, '/dashboard/customers') && <ButtonV2 variant="primary" className="mt-4" onClick={() => navigate(`/dashboard/customers?q=${encodeURIComponent(detail.customer)}`)}>
+            {profileCanAccess(activeProfile, '/dashboard/customers') && <ButtonV2 variant="primary" className="mt-4" onClick={() => navigate(`/dashboard/customers?q=${encodeURIComponent(customerSearchName(detail.customer))}`)}>
               {t('sales.openHistory', 'Open customer history')}
             </ButtonV2>}
           </div>

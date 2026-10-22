@@ -1035,7 +1035,7 @@ export interface Database {
       store_requisitions: {
         Row: {
           id: string;
-          /** Sequential human number (SR-0007) — migration 0022; DB default. */
+          /** Sequential human number (SR-0007) — migration 0040; DB default. */
           req_no?: number | null;
           item: string;
           plant_id: string | null;
@@ -1053,7 +1053,7 @@ export interface Database {
         Update: Partial<Database['public']['Tables']['store_requisitions']['Insert']>;
       };
 
-      // ── Incident reports (migration 0022) ──
+      // ── Incident reports (migration 0040) ──
       incident_reports: {
         Row: {
           id: string;
@@ -1170,8 +1170,8 @@ export interface Database {
       maintenance_tickets: {
         Row: {
           id: string;
-          /** Sequential human number (MT-0042) — migration 0022; DB default. */
-          ticket_no?: number | null;
+          /** Sequential human number (MT-0042) — migration 0040; DB default. */
+          ticket_no?: number | string | null;
           type: 'periodic' | 'emergency';
           status:
             | 'open'

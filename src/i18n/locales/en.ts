@@ -3451,7 +3451,7 @@ const en = {
     sub: "Safety / process incidents for your plants. Tag people to notify them.",
     title: "Incident reports",
     searchPh: "Search incident no., title, plant, person, ticket…",
-    needsMigration: "Incident reports need database migration 0022 (incident_reports). Ask the admin to apply it.",
+    needsMigration: "Incident reports need database migration 0040 (incident_reports). Ask the admin to apply it.",
     tagsSaved: "Tags saved — new people notified",
     saved: "Incident {{no}} reported",
     sev_critical: "Critical",

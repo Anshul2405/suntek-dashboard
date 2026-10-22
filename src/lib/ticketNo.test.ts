@@ -20,6 +20,12 @@ describe('ticket numbers', () => {
     expect(matchesTicketNo(tk, 'MT-0042')).toBe(true);
     expect(matchesTicketNo(tk, '0043')).toBe(false);
   });
+  it('shows a DB text code verbatim and searches its digits', () => {
+    const tk2 = { id: 'aaaa0000-0000-0000-0000-000000000000', ticket_no: 'STK0007' };
+    expect(ticketNoLabel(tk2)).toBe('STK0007');
+    expect(ticketNoForId(tk2.id)).toBe('STK0007');
+    for (const q of ['STK0007', 'stk0007', '0007', '7']) expect(matchesTicketNo(tk2, q)).toBe(true);
+  });
   it('requisition numbers', () => {
     expect(reqNoLabel({ id: 'x', req_no: 7 })).toBe('SR-0007');
   });

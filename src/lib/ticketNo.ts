@@ -1,7 +1,7 @@
 /**
  * One human ticket number everywhere: MT-0042.
  *
- * `maintenance_tickets.ticket_no` is a sequential integer (migration 0022,
+ * `maintenance_tickets.ticket_no` is a sequential integer (migration 0040,
  * back-filled in created_at order, then a DB sequence). Every screen that shows
  * or searches a ticket goes through `ticketNoLabel` — lists, the ticket panel,
  * Activity Log, Store Req, Stock Register, notifications, search.
@@ -10,8 +10,12 @@
  * bell items) resolve it through a small shared cache: `primeTicketNos` from
  * any list that already loaded tickets, `useTicketNos(ids)` to fetch the rest.
  *
- * Before 0022 is applied there is no number to show; the fallback is a stable
- * 6-character code from the id (still prefixed MT-) so the column is never
+ * A TEXT code already allocated by the database (e.g. "STK0001" from another
+ * branch's next_ticket_no) is shown verbatim — this module never renumbers a
+ * ticket. Only a bare integer is formatted as MT-0042.
+ *
+ * Before any ticket-number migration is applied there is no number to show; the
+ * fallback is a stable 6-character code from the id so the column is never
  * blank — it changes to the real number the moment the migration lands.
  */
 import { useEffect, useState } from 'react';
@@ -25,7 +29,7 @@ export function formatTicketNo(n: number): string {
   return `${TICKET_PREFIX}-${String(n).padStart(4, '0')}`;
 }
 
-/** Fallback code before migration 0022: stable, but not sequential. */
+/** Fallback code before migration 0040: stable, but not sequential. */
 export function fallbackTicketCode(id: string): string {
   return `${TICKET_PREFIX}-${id.replace(/-/g, '').slice(0, 6).toUpperCase()}`;
 }
@@ -38,8 +42,15 @@ function parseNo(v: number | string | null | undefined): number | null {
 
 const cache = new Map<string, string>();
 
+/** A DB-allocated text code ("STK0001", "MT-0042") — shown as is. */
+function textCode(v: number | string | null | undefined): string | null {
+  return typeof v === 'string' && /[A-Za-z]/.test(v) ? v.trim() : null;
+}
+
 /** Display label for a ticket row. Also primes the id → label cache. */
 export function ticketNoLabel(t: TicketLike): string {
+  const code = textCode(t.ticket_no);
+  if (code) { cache.set(t.id, code); return code; }
   const n = parseNo(t.ticket_no);
   if (n != null) {
     const label = formatTicketNo(n);
@@ -66,6 +77,8 @@ export function primeTicketNos(rows: TicketLike[]): void {
 export function ticketSearchTerms(t: TicketLike): string[] {
   const label = ticketNoLabel(t);
   const out = [label, label.replace('-', ''), t.id, t.id.slice(0, 8)];
+  const digits = label.match(/(\d+)$/)?.[1];
+  if (digits) out.push(digits, String(Number(digits)));
   const n = parseNo(t.ticket_no);
   if (n != null) out.push(String(n), String(n).padStart(4, '0'), `${TICKET_PREFIX}${n}`, `${TICKET_PREFIX}-${n}`);
   return out.map(s => s.toLowerCase());
@@ -106,7 +119,7 @@ export function useTicketNos(ids: (string | null | undefined)[]): (id: string | 
   return ticketNoForId;
 }
 
-/** Requisition number for store_requisitions: SR-0007 (req_no, migration 0022). */
+/** Requisition number for store_requisitions: SR-0007 (req_no, migration 0040). */
 export function reqNoLabel(r: { id: string; req_no?: number | string | null }): string {
   const n = parseNo(r.req_no);
   return n != null ? `SR-${String(n).padStart(4, '0')}` : `SR-${r.id.replace(/-/g, '').slice(0, 6).toUpperCase()}`;

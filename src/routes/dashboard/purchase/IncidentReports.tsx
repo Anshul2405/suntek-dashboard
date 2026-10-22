@@ -242,7 +242,7 @@ export function IncidentsPanel({ focusId, onFocusConsumed, prefill, onPrefillCon
     <>
       {missingTable && (
         <InfoBanner className="mb-4" tone="amber">
-          {t('incident.needsMigration', 'Incident reports need database migration 0022 (incident_reports). Ask the admin to apply it.')}
+          {t('incident.needsMigration', 'Incident reports need database migration 0040 (incident_reports). Ask the admin to apply it.')}
         </InfoBanner>
       )}
       <FilterBar className="mb-4" search={q} onSearch={setQ} searchPlaceholder={t('incident.searchPh', 'Search incident no., title, plant, person, ticket…')}
