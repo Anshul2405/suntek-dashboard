@@ -772,24 +772,24 @@ export function FAR() {
               changed twice (migration 58's rename, migration 69's Drum Plant).
               A hard-coded roster in help text goes stale silently. */}
           <KpiInfoButton info={{ title: 'Total Fixed Assets', what: 'Count of all capitalised fixed assets registered across the factories you have access to. Each asset is named and tracked in the FAR, and belongs to exactly one factory.', source: 'Form entry', formLabel: 'Add Asset form', formPath: '/dashboard/purchase/far', note: 'Live count from the Supabase fixed_assets table, scoped to your factories.' }} />
-          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={assets.length}
+          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading ? '…' : assets.length}
             onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             viewLabel={t('far.viewRegister', 'View register')}
-            caption={plantsInFar.length === 0
+            caption={loading ? '\u00a0' : plantsInFar.length === 0
               ? t('far.captionNoFactories', 'no assets registered yet')
               : plantsInFar.length === 1
-                ? t('far.captionOneFactory', { defaultValue: 'in {{plant}}', plant: plantsInFar[0].name })
+                ? t('far.captionOneFactory', { defaultValue: 'in {{plant}}', plant: displayLocationName(plantsInFar[0].name) })
                 : t('far.captionNFactories', { defaultValue: 'across {{count}} factories', count: plantsInFar.length })} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Assets Flagged for Repair', what: 'Count of fixed assets that have been flagged as requiring repair or maintenance and are awaiting resolution. High count = production downtime risk.', source: 'Derived', note: 'Open (not yet closed) emergency maintenance tickets from the maintenance workflow.' }} />
-          <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
+          <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={loading ? '…' : farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
             onView={() => farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             viewLabel={t('far.viewRepairs', 'View FAR repairs')} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Pic-Proof Coverage', what: 'Percentage of registered assets that have a photo on file as proof of existence. Required for insurance claims and audits. Target 100%.', source: 'Derived', note: 'Assets with a photo on file ÷ total registered assets. 0% when the FAR is empty. Updates as photos are added or removed.' }} />
-          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={`${picCoverage}%`}
+          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading ? '…' : `${picCoverage}%`}
             caption={<div className="progress mt-1"><div style={{ width: `${picCoverage}%` }}></div></div>}
             onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             viewLabel={t('far.viewRegister', 'View register')} />

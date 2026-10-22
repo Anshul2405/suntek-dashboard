@@ -123,6 +123,7 @@ export function Overview() {
 
   // Supabase snapshot data
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [alertsLoaded, setAlertsLoaded] = useState(false);
   const [tanks, setTanks] = useState<TankRow[]>([]);
   const [drumRows, setDrumRows] = useState<DrumRow[]>([]);
   const [pendingReqs, setPendingReqs] = useState<ReqRow[]>([]);
@@ -134,7 +135,7 @@ export function Overview() {
   // Pending approvals: SAME waiting set + SAME plant scope as Store Req's
   // ?queue=pending view, and a real count (the old count was the length of an
   // 8-row page of 'pending' only — capped at 8 and blind to the other stages).
-  const { scopeQuery, ready: scopeReady } = usePlantScope();
+  const { scopeQuery, ready: scopeReady, allowedPlants } = usePlantScope();
   const { activeProfile } = useRoleContext();
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
   const canDecide = canDecideStoreReq(activeProfile, isAdminProfile(activeProfile));
@@ -168,6 +169,7 @@ export function Overview() {
         supabase.from('active_batches').select('started_at').eq('status', 'active').returns<{ started_at: string }[]>(),
       ]);
       setAlerts(alertsRes.data || []);
+      setAlertsLoaded(true);
       setTanks(tanksRes.data || []);
       setDrumRows(drumsRes.data || []);
       setOpenMaint(maintRes.error ? null : (maintRes.count ?? 0));
@@ -230,7 +232,7 @@ export function Overview() {
             <div className="ops-shift-label">{t('overview.pendingApprovals', 'Pending Approvals')}</div>
             <div className="ops-shift-val">{pendingStoreReq ?? '…'}</div>
             <div className="ops-shift-cap">
-              {pendingStoreReq ? t('overview.requiresAction', 'Requires your action →') : t('overview.allClear', 'All clear')}
+              {pendingStoreReq == null ? '\u00a0' : pendingStoreReq ? t('overview.requiresAction', 'Requires your action →') : t('overview.allClear', 'All clear')}
             </div>
           </button>
           <button
@@ -242,7 +244,7 @@ export function Overview() {
             <div className="ops-shift-label">{t('overview.openMaintenance', 'Open Maintenance')}</div>
             <div className="ops-shift-val">{openMaint ?? '…'}</div>
             <div className="ops-shift-cap">
-              {openMaint ? t('overview.ticketsInProgress', 'Tickets in progress') : t('overview.noOpenTickets', 'No open tickets')}
+              {openMaint == null ? '\u00a0' : openMaint ? t('overview.ticketsInProgress', 'Tickets in progress') : t('overview.noOpenTickets', 'No open tickets')}
             </div>
           </button>
           <button
@@ -256,22 +258,24 @@ export function Overview() {
             <div className="ops-shift-cap">
               {avgBatchHours != null
                 ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
-                : t('overview.acrossFactories', { count: 4 })}
+                : t('overview.acrossFactories', { count: allowedPlants.length })}
             </div>
           </button>
           <button
             type="button"
             className="ops-shift-tile"
             data-tone={toneForCount(alerts.length)}
+            disabled={alerts.length === 0}
+            style={alerts.length === 0 ? { cursor: 'default' } : undefined}
             onClick={() => {
               if (alerts.length === 0) return;
               document.getElementById('ov-alerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }}
           >
             <div className="ops-shift-label">{t('overview.openAlerts', 'Open Alerts')}</div>
-            <div className="ops-shift-val">{alerts.length}</div>
+            <div className="ops-shift-val">{alertsLoaded ? alerts.length : '…'}</div>
             <div className="ops-shift-cap">
-              {alerts.length ? t('overview.acrossModules', 'Across all modules') : t('overview.allQuiet', 'All quiet')}
+              {!alertsLoaded ? '\u00a0' : alerts.length ? t('overview.acrossModules', 'Across all modules') : t('overview.allQuiet', 'All quiet')}
             </div>
           </button>
         </div>
@@ -387,7 +391,7 @@ export function Overview() {
           <KpiBlock
             label={t('overview.pendingApprovals', 'Pending Approvals')}
             value={pendingStoreReq ?? '…'}
-            delta={pendingStoreReq ? t('overview.requiresActionShort', 'Requires action') : t('overview.noChange', '— No change')}
+            delta={pendingStoreReq == null ? '' : pendingStoreReq ? t('overview.requiresActionShort', 'Requires action') : t('overview.noChange', '— No change')}
             deltaTone={pendingStoreReq ? 'orange' : 'slate'}
           />
         </div>
@@ -431,7 +435,10 @@ export function Overview() {
               </tr>
             </thead>
             <tbody>
-              {shownPending.length === 0 && (
+              {pendingStoreReq == null && (
+                <tr><td colSpan={7} className="text-center text-slate-400 py-6">…</td></tr>
+              )}
+              {pendingStoreReq != null && shownPending.length === 0 && (
                 <tr>
                   <td colSpan={7} className="!p-0">
                     <div className="ops-empty">

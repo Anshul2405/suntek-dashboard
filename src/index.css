@@ -623,7 +623,7 @@
     transition: background 140ms ease-out;
     position: relative;
   }
-  .ops-shift-tile:hover { background: #F8FAFC; }
+  .ops-shift-tile:hover:not(:disabled) { background: #F8FAFC; }
   .ops-shift-tile:active { background: #F1F5F9; }
   .ops-shift-tile[data-tone="hot"]::before,
   .ops-shift-tile[data-tone="warn"]::before {
