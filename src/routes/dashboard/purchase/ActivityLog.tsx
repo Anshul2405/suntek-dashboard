@@ -314,7 +314,7 @@ export function ActivityLog() {
   const toast = useToast();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
-  const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
+  const { scopeQuery, allowedPlants, ready: scopeReady, locations, allowedUnits } = usePlantScope();
   const { addNotification } = useNotifications();
   const screenBlacklist = useBlacklistGuard();
   const [open, setOpen] = useState(false);
@@ -333,6 +333,8 @@ export function ActivityLog() {
   const fromDate = searchParams.get('from') || '';
   const toDate = searchParams.get('to') || '';
   const srcFilter = searchParams.get('src') || '';
+  const stateFilter = searchParams.get('state') || '';
+  const unitFilter = searchParams.get('unit') || '';
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(searchParams);
     for (const [k, v] of Object.entries(patch)) {
@@ -441,8 +443,28 @@ export function ActivityLog() {
   // offering names that no longer exist after a rename. The filter compares
   // display names on both sides (rows carry the same live join), so it stays
   // consistent; the entry form below keys off the plant ID.
-  const plantOptions = [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name));
+  const plantOptions = useMemo(
+    () => [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name)),
+    [allowedPlants, scopeReady],
+  );
   const plantNames = plantOptions.map(p => p.name);
+  // State and unit come from the granted plants, so the filters never offer a
+  // place the user cannot see. Each is shown only when there is a choice.
+  const stateOfPlant = useMemo(() => {
+    const byLoc = new Map(locations.map(l => [l.id, l.state] as const));
+    return new Map(plantOptions.map(p => [p.name, (p.location_id && byLoc.get(p.location_id)) || ''] as const));
+  }, [locations, plantOptions]);
+  const stateOptions = [...new Set([...stateOfPlant.values()].filter(Boolean))].sort();
+  const unitOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const p of plantOptions) for (const u of allowedUnits(p.id)) if (!seen.has(u.name)) seen.set(u.name, u.name);
+    return [...seen.keys()].sort();
+  }, [plantOptions, allowedUnits]);
+  const unitByTicket = useMemo(() => {
+    const unitName = new Map<string, string>();
+    for (const p of plantOptions) for (const u of allowedUnits(p.id)) unitName.set(u.id, u.name);
+    return new Map(tickets.map(tk => [tk.id, (tk.unit_id && unitName.get(tk.unit_id)) || ''] as const));
+  }, [tickets, plantOptions, allowedUnits]);
 
   // Search + plant filter, then paginate — Activity Log grows unbounded over time.
   const filtered = useMemo(() => {
@@ -450,6 +472,8 @@ export function ActivityLog() {
     return rows.filter(r =>
       (!plantFilter || r.plant === plantFilter) &&
       (!srcFilter || r.source === srcFilter) &&
+      (!stateFilter || stateOfPlant.get(r.plant || '') === stateFilter) &&
+      (!unitFilter || (!!r.ticketId && unitByTicket.get(r.ticketId) === unitFilter)) &&
       inIstDayRange(r.date, fromDate, toDate) &&
       (kpi === 'all'
         || (kpi === 'verified' && r.source === 'manual' && !!r.verifiedBy)
@@ -458,7 +482,7 @@ export function ActivityLog() {
         || (kpi === 'maint' && r.source === 'maintenance')) &&
       (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef].some(f => (f || '').toLowerCase().includes(q))),
     );
-  }, [rows, search, plantFilter, fromDate, toDate, kpi, srcFilter]);
+  }, [rows, search, plantFilter, fromDate, toDate, kpi, srcFilter, stateFilter, unitFilter, stateOfPlant, unitByTicket]);
   const actSort = useSortable(filtered, {
     equipment: r => r.equipment,
     activity: r => r.type,
@@ -468,7 +492,7 @@ export function ActivityLog() {
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${srcFilter}|${fromDate}|${toDate}|${kpi}|${actSort.sort.key}|${actSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${srcFilter}|${stateFilter}|${unitFilter}|${fromDate}|${toDate}|${kpi}|${actSort.sort.key}|${actSort.sort.dir}` });
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -582,9 +606,6 @@ export function ActivityLog() {
             >
               {showManualOnly ? t('activity.showMaintenanceFeed') : t('activity.manualOnly')}
             </button>
-            <button className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm" onClick={() => setOpen(true)}>
-              + {t('activity.logActivityBtn')}
-            </button>
           </div>
         </div>
         <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -601,6 +622,18 @@ export function ActivityLog() {
             <option value="maintenance">{t('activity.srcMaint', 'Maintenance')}</option>
             <option value="incident">{t('activity.srcIncident', 'Incidents')}</option>
           </select>
+          {stateOptions.length > 1 && (
+            <select value={stateFilter} onChange={e => patchParams({ state: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
+              <option value="">{t('activity.allStates', 'All states')}</option>
+              {stateOptions.map(st => <option key={st} value={st}>{st}</option>)}
+            </select>
+          )}
+          {unitOptions.length > 0 && (
+            <select value={unitFilter} onChange={e => patchParams({ unit: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
+              <option value="">{t('activity.allUnits', 'All units')}</option>
+              {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          )}
           <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => setFromTo(from, to)} />
         </div>
         {loadError ? (
@@ -609,7 +642,7 @@ export function ActivityLog() {
         ) : loading ? (
           <SkeletonRows rows={6} />
         ) : filtered.length === 0 ? (
-          <EmptyState title={t('activity.emptyState')} message={search || plantFilter ? t('activity.noMatches', 'No rows match your filters.') : undefined} />
+          <EmptyState title={t('activity.emptyState')} message={search || plantFilter || srcFilter || stateFilter || unitFilter || fromDate || toDate || kpi !== 'all' ? t('activity.noMatches', 'No rows match your filters.') : undefined} />
         ) : (
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
@@ -637,7 +670,7 @@ export function ActivityLog() {
                   <td className="text-slate-500 text-xs">{fmtDate(a.date)}</td>
                   <td>{a.doneBy || '—'}</td>
                   <td className="text-slate-500">{a.verifiedBy || '—'}</td>
-                  <td>{a.plant || '—'}</td>
+                  <td>{displayLocationName(a.plant) || '—'}</td>
                   <td><PicBadge photos={a.photos} onOpen={() => setLightbox(a.photos)} /></td>
                 </tr>
               ))}
