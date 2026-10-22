@@ -11,7 +11,8 @@ import {
 import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
-import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE } from '../../lib/store/requisitionQueue';
+import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE, isMyApproval, canDecideStoreReq } from '../../lib/store/requisitionQueue';
+import { isAdminProfile } from '../../lib/profiles';
 import { reqNoLabel } from '../../lib/ticketNo';
 import { formatDateTime } from '../../lib/utils/formatting';
 import type { Database } from '../../lib/database.types';
@@ -136,8 +137,9 @@ export function Overview() {
   const { scopeQuery, ready: scopeReady } = usePlantScope();
   const { activeProfile } = useRoleContext();
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
+  const canDecide = canDecideStoreReq(activeProfile, isAdminProfile(activeProfile));
   const shownPending = approvalView === 'mine'
-    ? pendingReqs.filter(r => (r.raised_by || '') === activeProfile.name)
+    ? pendingReqs.filter(r => isMyApproval(r, { name: activeProfile.name, canDecide }))
     : pendingReqs;
   useEffect(() => {
     if (!scopeReady) return;
@@ -452,17 +454,16 @@ export function Overview() {
                   <td className="num">{r.qty}</td>
                   <td className="text-slate-500">{fmtDT(r.created_at)}</td>
                   <td>
-                    {['high', 'plant_stopper'].includes(r.urgency ?? '')
-                      ? <StatusPill tone="red" label={t('overview.urgent', 'Urgent')} />
-                      : (
-                        <ButtonV2
-                          size="sm" variant="outline"
-                          className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
-                          onClick={(e) => { e.stopPropagation(); navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`); }}
-                        >
-                          {t('overview.review', 'Review')}
-                        </ButtonV2>
-                      )}
+                    <span className="inline-flex items-center gap-2">
+                      {['high', 'plant_stopper'].includes(r.urgency ?? '') && <StatusPill tone="red" label={t('overview.urgent', 'Urgent')} />}
+                      <ButtonV2
+                        size="sm" variant="outline"
+                        className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`); }}
+                      >
+                        {t('overview.review', 'Review')}
+                      </ButtonV2>
+                    </span>
                   </td>
                 </tr>
               ))}

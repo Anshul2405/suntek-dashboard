@@ -23,7 +23,7 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
-import { STORE_REQ_WAITING, isWaitingReq } from '../../../lib/store/requisitionQueue';
+import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq } from '../../../lib/store/requisitionQueue';
 import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
 import { inIstDayRange } from '../../../lib/utils/formatting';
@@ -62,6 +62,10 @@ const URGENCY_MAP: Record<string, 'low' | 'medium' | 'high' | 'plant_stopper'> =
 
 const STATUS_STAGE: Record<string, { bg: string; color: string; label: string }> = {
   pending:    { bg: '#FEF3C7', color: '#D97706', label: 'UNIT HEAD' },
+  pending_store:    { bg: '#FEF3C7', color: '#D97706', label: 'STORE' },
+  pending_approval: { bg: '#FEF3C7', color: '#D97706', label: 'APPROVAL' },
+  pending_buyer:    { bg: '#FEF3C7', color: '#D97706', label: 'BUYER' },
+  pending_vijay:    { bg: '#FEF3C7', color: '#D97706', label: 'VIJAY' },
   approved:   { bg: '#DCFCE7', color: '#16A34A', label: 'APPROVED' },
   dispatched: { bg: '#DBEAFE', color: '#2563EB', label: 'DISPATCHED' },
   received:   { bg: '#DCFCE7', color: '#16A34A', label: 'RECEIVED' },
@@ -91,13 +95,7 @@ export function StoreRequisitions() {
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
-  const canDecideReq =
-    isAdminProfile(activeProfile) ||
-    activeProfile.id === 'unit_head' ||
-    activeProfile.baseRoleId === 'unit_head' ||
-    activeProfile.id === 'management' ||
-    activeProfile.baseRoleId === 'management' ||
-    (activeProfile.capabilities || []).includes('manage_users');
+  const canDecideReq = canDecideStoreReq(activeProfile, isAdminProfile(activeProfile));
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [items, setItems] = useState<ReqRow[]>([]);
@@ -123,10 +121,10 @@ export function StoreRequisitions() {
     const to = searchParams.get('toDate') || '';
     return items.filter(r => {
       if (queuePending && !isWaitingReq(r.status)) return false;
-      if (approvalView === 'mine' && (r.raised_by || '') !== activeProfile.name) return false;
+      if (approvalView === 'mine' && !isMyApproval(r, { name: activeProfile.name, canDecide: canDecideReq })) return false;
       return inIstDayRange(r.created_at, from, to);
     });
-  }, [items, queuePending, searchParams, approvalView, activeProfile.name]);
+  }, [items, queuePending, searchParams, approvalView, activeProfile.name, canDecideReq]);
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
@@ -136,7 +134,7 @@ export function StoreRequisitions() {
     qty: r => r.qty,
     stage: r => r.status,
   });
-  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${search}|${reqSort.sort.key}|${reqSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${search}|${approvalView}|${queuePending}|${reqSort.sort.key}|${reqSort.sort.dir}` });
 
   async function load() {
     try {
@@ -261,7 +259,8 @@ export function StoreRequisitions() {
   }
 
   // Summary tiles for the Requirements tab (computed from the loaded rows).
-  const pendingCount   = items.filter(r => r.status === 'pending').length;
+  // Same waiting set as Overview's Pending Approvals and ?queue=pending.
+  const pendingCount   = items.filter(r => isWaitingReq(r.status)).length;
   const readyCount     = items.filter(r => ['approved', 'dispatched'].includes(r.status)).length;
   const urgentCount    = items.filter(r => ['high', 'plant_stopper'].includes(r.urgency ?? '')).length;
 
@@ -376,8 +375,8 @@ export function StoreRequisitions() {
                         <td>
                           <span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>
                         </td>
-                        <td className="text-slate-500">{r.status === 'pending' ? t('storereq.awaiting_unit_head') : '—'}</td>
-                        <td className="font-semibold">{t('storereq.decision_' + stageKey, r.status)}</td>
+                        <td className="text-slate-500">{isWaitingReq(stageKey) ? t('storereq.awaiting_' + stageKey) : '—'}</td>
+                        <td className="font-semibold">{t('storereq.decision_' + (isWaitingReq(stageKey) ? 'pending' : stageKey))}</td>
                         <td onClick={e => e.stopPropagation()}><PicBadge url={r.photo_url} onOpen={() => r.photo_url && setLightbox([{ url: r.photo_url, label: r.item }])} /></td>
                       </tr>
                     );
@@ -487,7 +486,7 @@ export function StoreRequisitions() {
               <Row k={t('storereq.col_qty')} v={String(detailReq.qty)} />
               <Row k={t('storereq.field_priority')} v={detailReq.urgency === 'high' || detailReq.urgency === 'plant_stopper' ? t('storereq.opt_urgent') : t('storereq.opt_normal')} />
               <Row k={t('storereq.col_stage')} v={<span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>} />
-              <Row k={t('storereq.col_decision')} v={t('storereq.decision_' + stageKey, detailReq.status)} />
+              <Row k={t('storereq.col_decision')} v={t('storereq.decision_' + (isWaitingReq(stageKey) ? 'pending' : stageKey))} />
               {detailReq.remarks && <Row k={t('storereq.field_reason')} v={detailReq.remarks} />}
               <Row k={t('storereq.detail_requested', 'Requested on')} v={detailReq.created_at ? new Date(detailReq.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'} />
               {detailReq.photo_url && (
