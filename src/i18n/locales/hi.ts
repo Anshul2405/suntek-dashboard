@@ -1113,6 +1113,10 @@ const hi: Translations = {
     tabPurchaseOrders: 'परचेज़ ऑर्डर्स',
   },
   sales: {
+    openHistory: "कस्टमर हिस्ट्री खोलें",
+    avgInvoice: "एवरेज इनवॉइस (FY)",
+    detailSub: "सेल्स · BUSY",
+    openDetail: "कस्टमर डिटेल्स देखें",
     cancel: "कैंसल",
     contractSaved: "कॉन्ट्रैक्ट सेव्ड",
     contractValue: "कॉन्ट्रैक्ट वैल्यू",
@@ -1187,6 +1191,15 @@ const hi: Translations = {
     statusOverdue: 'ओवरड्यू',
   },
   "activity": {
+    openTicket: "टिकट खोलें",
+    openIncident: "इंसिडेंट खोलें",
+    kpiAll: "सभी",
+    kpiFilterOn: "दिखा रहे हैं: {{what}}",
+    kpiFilterHint: "टेबल फ़िल्टर करने के लिए क्लिक करें · हटाने के लिए फिर क्लिक करें",
+    kpiShowAll: "सभी रो दिखाएं",
+    photoIncident: "इंसिडेंट फोटो",
+    evtIncident: "इंसिडेंट रिपोर्ट हुआ",
+    evtAwaitingVerification: "वेरिफिकेशन बाकी",
     allPlants: "ऑल प्लांट्स",
     byProcurement: "प्रोक्योरमेंट",
     byStore: "स्टोर",
@@ -2403,6 +2416,7 @@ const hi: Translations = {
     "toSeeDiffs": "टु सी कोएफिशिएंट डिफरेंसेज़ फॉर d{{d}}।",
   },
   "overview": {
+    showingOfTotal: "{{total}} में से {{n}} दिखा रहे हैं",
     cpmMatrixTitle: "CPM स्टॉक · डेंसिटी × लोकेशन",
     cpmMatrixSub: "ड्रम्स ऑन हैंड, लाइव · सेल शेडिंग शोज़ रिलेटिव वॉल्यूम",
     openStock: "ओपन स्टॉक",
@@ -2626,6 +2640,7 @@ const hi: Translations = {
     "vsTarget": "वर्सेज़ टारगेट {{grade}}",
   },
   "storereq": {
+    queuePendingChip: "अप्रूवल वेटिंग",
     stockNoDate: "डेट नहीं",
     col_date: "डेट",
     stockHeading: "स्टॉक रजिस्टर",

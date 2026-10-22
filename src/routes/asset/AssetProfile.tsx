@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { ticketNoLabel } from '../../lib/ticketNo';
+import { formatDate, formatDateTime } from '../../lib/utils/formatting';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -61,8 +63,8 @@ type ScheduleRow = Database['public']['Tables']['maintenance_schedules']['Row'];
 type PartRow = Database['public']['Tables']['maintenance_store_requests']['Row'];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
-const fmtDateTime = (d: string | null | undefined) => d ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const fmtDate = (d: string | null | undefined) => formatDate(d);
+const fmtDateTime = (d: string | null | undefined) => formatDateTime(d);
 
 function Screen({ emoji, title, sub }: { emoji: string; title: string; sub: string }) {
   return (
@@ -453,7 +455,7 @@ export function AssetProfile() {
                         className="text-[12.5px] font-bold hover:underline"
                         style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
                       >
-                        #{tk.id.slice(0, 8)}
+                        {ticketNoLabel(tk)}
                       </button>
                       <span className="badge" style={{ background: isEmergency ? 'var(--red-soft)' : 'var(--blue-soft)', color: isEmergency ? '#DC2626' : '#2563EB', fontWeight: 700 }}>
                         {isEmergency ? t('far.apEmergency', 'Emergency') : t('far.apPreventive', 'Preventive')}

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { EmptyState } from '../../components/ui/states';
 import { usePagination } from '../../components/ui/usePagination';
 import { useSortable } from '../../components/ui/useSortable';
@@ -14,7 +15,9 @@ import { KpiInfoButton } from '../../components/KpiInfoButton';
 
 export function CustomerHistory() {
   const { t } = useTranslation();
-  const [search, setSearch] = useState('');
+  // ?q= prefill — Sales opens a customer's history from its detail panel.
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(() => searchParams.get('q') ?? '');
   const { data: kpis } = useOverviewKPIs();
   const { data: topCustomers } = useTopCustomers(1);
   const { data: customerList } = useCustomerList();

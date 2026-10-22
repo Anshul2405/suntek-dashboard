@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { ticketNoLabel, ticketNoForId } from '../../../lib/ticketNo';
+import { formatDate } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Download, ShoppingCart, Package, Truck, Hourglass } from 'lucide-react';
@@ -116,7 +118,7 @@ export function PurchaseOrders() {
           const t = tById.get(s.ticket_id);
           const store = t?.unit ? (UNIT_LABELS[t.unit] || t.unit) : (t?.plants?.name || '—');
           return {
-            id: s.id, ticketRef: s.ticket_id.slice(0, 8), ticketId: s.ticket_id, part: s.part_name, equipment: t?.equipment || '', store,
+            id: s.id, ticketRef: t ? ticketNoLabel(t) : ticketNoForId(s.ticket_id), ticketId: s.ticket_id, part: s.part_name, equipment: t?.equipment || '', store,
             supplier: s.supplier_name || '—', qty: Number(s.quantity ?? 0),
             unitPrice: s.unit_price != null ? Number(s.unit_price) : null,
             total: s.total_price != null ? Number(s.total_price) : null,
@@ -206,7 +208,7 @@ export function PurchaseOrders() {
     supplier: r => r.supplier, qty: r => r.qty, unitPrice: r => r.unitPrice, total: r => r.total,
     busyRef: r => r.busyRef, date: r => (r.date ? new Date(r.date) : null),
   }, { key: 'date', dir: 'desc' }); // default: latest first
-  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintPOs.length}|${maintSort.sort.key}|${maintSort.sort.dir}` });
+  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintSort.sort.key}|${maintSort.sort.dir}` });
 
   return (
     <>
@@ -377,7 +379,7 @@ export function PurchaseOrders() {
                   <td className="num font-semibold">{totalCost != null ? `₹ ${Number(totalCost).toLocaleString('en-IN')}` : '—'}</td>
                   <td className="text-slate-500 text-xs">{m.busyRef || '—'}</td>
                   <td>{m.billUrl ? <button type="button" onClick={() => setBillLightbox([{ url: m.billUrl as string, label: t('po.bill_lightbox_label', { defaultValue: 'Supplier bill · #{{ref}}', ref: m.ticketRef }) }])} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, textDecoration: 'underline' }}>{t('common.view', 'View')}</button> : <span className="text-slate-300 text-xs">—</span>}</td>
-                  <td className="text-slate-500 text-xs">{m.date ? new Date(m.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
+                  <td className="text-slate-500 text-xs">{formatDate(m.date)}</td>
                 </tr>
                 );
               })}

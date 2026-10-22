@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ticketNoLabel, ticketNoForId, ticketSearchTerms } from '../../../lib/ticketNo';
+import { formatDate } from '../../../lib/utils/formatting';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Wrench, Trash2, PackageCheck } from 'lucide-react';
@@ -29,7 +31,7 @@ type ReceiptRow = Database['public']['Tables']['repair_return_receipts']['Row'] 
 type AllocRow = Database['public']['Tables']['repair_return_allocations']['Row'];
 
 const fmtDate = (d: string | null | undefined) =>
-  d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  formatDate(d);
 
 /** Units of THIS part line still awaiting return from the vendor. */
 function partPending(p: DefectivePartRow): number {
@@ -139,7 +141,7 @@ export function RepairScrapPanel() {
   }, [parts, rows]);
 
   const filteredItems = useTextFilter(partItems, search,
-    i => [i.part.part_name, i.ticket.equipment, i.ticket.plants?.name, i.ticket.id.slice(0, 8), i.ticket.assigned_to]);
+    i => [i.part.part_name, i.ticket.equipment, i.ticket.plants?.name, ...ticketSearchTerms(i.ticket), i.ticket.assigned_to]);
   // A ticket that repaired 3 and scrapped 2 appears in BOTH lists, each with
   // its own quantity — which is the whole point of the split.
   const repair = useMemo(() => filteredItems.filter(i => Number(i.part.repair_qty) > 0), [filteredItems]);
@@ -169,11 +171,11 @@ export function RepairScrapPanel() {
       <div className="text-base font-bold font-heading">{t('repairScrap.title', 'Repair & scrap tracking')}</div>
       <div className="text-xs text-slate-500 mb-3">{t('repairScrap.subtitle', 'Assets sent for repair or scrapped at the end of a maintenance job — with photo proof and a link to the ticket.')}</div>
       <TableSearch value={search} onChange={setSearch} placeholder={t('repairScrap.searchPh', 'Search equipment, plant, ticket…')} />
-      <RepairScrapTable variant="repair" title={t('repairScrap.repairItems', 'Repair items')} tone="amber" icon={<Wrench size={14} />} rows={repair}
+      <RepairScrapTable variant="repair" title={t('repairScrap.repairItems', 'Repair items')} tone="amber" icon={<Wrench size={14} />} rows={repair} filterKey={search}
         canReturn={canReturn} onReturn={setReturnItem}
         onOpenTicket={id => navigate(`/dashboard/purchase/maint?ticket=${id}`)} onPhoto={setLightbox} />
       <div style={{ height: 20 }} />
-      <RepairScrapTable variant="scrap" title={t('repairScrap.scrapItems', 'Scrap items')} tone="red" icon={<Trash2 size={14} />} rows={scrap}
+      <RepairScrapTable variant="scrap" title={t('repairScrap.scrapItems', 'Scrap items')} tone="red" icon={<Trash2 size={14} />} rows={scrap} filterKey={search}
         canReturn={false} onReturn={() => {}}
         onOpenTicket={id => navigate(`/dashboard/purchase/maint?ticket=${id}`)} onPhoto={setLightbox} />
       {receipts.length > 0 && (
@@ -191,7 +193,7 @@ export function RepairScrapPanel() {
   );
 }
 
-function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onReturn, onOpenTicket, onPhoto }: {
+function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onReturn, onOpenTicket, onPhoto, filterKey = '' }: {
   variant: 'repair' | 'scrap';
   title: string;
   tone: 'amber' | 'red';
@@ -201,6 +203,8 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
   onReturn: (r: PartItem) => void;
   onOpenTicket: (id: string) => void;
   onPhoto: (imgs: LightboxImage[]) => void;
+  /** The parent's search text — page resets only when the USER changes it. */
+  filterKey?: string;
 }) {
   const { t } = useTranslation();
   const isRepair = variant === 'repair';
@@ -214,7 +218,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
     qty: i => (isRepair ? Number(i.part.repair_qty) : Number(i.part.scrap_qty)),
     ...(isRepair ? { pending: (i: PartItem) => partPending(i.part) } : {}),
   }, { key: 'closed', dir: 'desc' });
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${rows.length}|${s.sort.key}|${s.sort.dir}` });
+  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${filterKey}|${s.sort.key}|${s.sort.dir}` });
   const iconSq = tone === 'amber' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600';
   const cols = isRepair ? 10 : 7;
   return (
@@ -254,7 +258,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                     <td className="font-semibold">{p.part_name}</td>
                     <td className="text-slate-500">{r.equipment}</td>
                     <td className="text-slate-500">{r.plants?.name || '—'}</td>
-                    <td><span className="num text-xs text-blue-600 font-semibold">#{r.id.slice(0, 8)}</span></td>
+                    <td><span className="num text-xs text-blue-600 font-semibold">{ticketNoLabel(r)}</span></td>
                     <td className="text-slate-500">{fmtDate(r.closed_at)}</td>
                     {!isRepair && <td className="num font-bold" style={{ color: '#DC2626' }}>{Number(p.scrap_qty)}</td>}
                     {isRepair && (
@@ -345,7 +349,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
     by: r => r.actor_name,
     status: r => r.status,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${filtered.length}|${s.sort.key}|${s.sort.dir}` });
+  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${search}|${s.sort.key}|${s.sort.dir}` });
 
   async function doReverse(receiptId: string) {
     if (!reason.trim()) { toastError(t('repairReturn.errReason', 'A reason is required to reverse a return.')); return; }
@@ -419,7 +423,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
                               <strong>{a.item_name}</strong>
                               <span>+{Number(a.qty)} {t('repairReturn.toRepairedStock', 'to repaired stock')}</span>
                               <button onClick={() => onOpenTicket(a.ticket_id)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, padding: 0 }}>
-                                #{a.ticket_id.slice(0, 8)}
+                                {ticketNoForId(a.ticket_id)}
                               </button>
                             </div>
                           ))}

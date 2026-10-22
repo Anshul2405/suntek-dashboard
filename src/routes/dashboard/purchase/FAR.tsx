@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { inIstDayRange, formatDateTime } from '../../../lib/utils/formatting';
+import { useTicketNos, ticketNoForId } from '../../../lib/ticketNo';
+import { DateRangeFilter } from '../../../components/v2/DateRangeFilter';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
@@ -119,7 +122,7 @@ function fyOf(d: string | null | undefined): string {
 }
 
 function fmtDT(d: string | null | undefined): string {
-  return d ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  return formatDateTime(d);
 }
 function inr(n: number): string { return `₹ ${Math.round(n).toLocaleString('en-IN')}`; }
 
@@ -550,11 +553,14 @@ export function FAR() {
   );
   useEffect(() => { if (!selectedFY && fyList.length) setSelectedFY(fyList[0]); }, [fyList, selectedFY]);
   const activeFY = selectedFY || fyList[0] || null;
+  // Closed / raised From–To inside the FY (inclusive IST days, empty = all).
+  const [maintRange, setMaintRange] = useState({ from: '', to: '' });
   const fyEntries = useMemo(
-    () => farRelatedEntries.filter(e => e.fy === activeFY)
+    () => farRelatedEntries.filter(e => e.fy === activeFY && inIstDayRange(e.closed_at || e.created_at, maintRange.from, maintRange.to))
       .sort((a, b) => (b.closed_at || b.created_at).localeCompare(a.closed_at || a.created_at)),
-    [farRelatedEntries, activeFY],
+    [farRelatedEntries, activeFY, maintRange],
   );
+  const farTicketNo = useTicketNos(fyEntries.map(e => e.id));
   const fyTotal = fyEntries.reduce((s, e) => s + e.cost, 0);
   const fyLastUpdated = fyEntries.reduce((mx, e) => { const d = e.closed_at || e.created_at; return d > mx ? d : mx; }, '');
 
@@ -567,8 +573,8 @@ export function FAR() {
     closed: e => new Date(e.closed_at || e.created_at),
     cost: e => e.cost,
   }, { key: 'closed', dir: 'desc' });
-  const groupPg = usePagination(groupSort.sorted, { resetKey: `${groupSort.sorted.length}|${groupSort.sort.key}|${groupSort.sort.dir}` });
-  const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
+  const groupPg = usePagination(groupSort.sorted, { resetKey: `${equipSearch}|${equipPlantFilter.join(',')}|${groupSort.sort.key}|${groupSort.sort.dir}` });
+  const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${maintRange.from}|${maintRange.to}|${fySort.sort.key}|${fySort.sort.dir}` });
 
   // ── Pic-proof coverage — % of registered assets with a photo on file ─────────
   const picCoverage = assets.length
@@ -578,7 +584,7 @@ export function FAR() {
   function downloadMaintCsv() {
     if (!activeFY) return;
     const rows = fyEntries.map(e => ({
-      ticket: e.id.slice(0, 8), equipment: e.equipment, plant: e.plant, part: e.part,
+      ticket: farTicketNo(e.id), equipment: e.equipment, plant: e.plant, part: e.part,
       status: e.status, created: fmtDT(e.created_at), closed: fmtDT(e.closed_at),
       busy: e.busyRef || '', cost: Math.round(e.cost),
     }));
@@ -810,6 +816,7 @@ export function FAR() {
         {fyList.length === 0
           ? <span className="text-xs text-slate-400 block mb-4">{t('far.noMaintRecorded')}</span>
           : <SegmentTabs className="mb-4" items={fyList.map(fy => ({ key: fy, label: fy }))} value={activeFY ?? fyList[0]} onChange={setSelectedFY} />}
+        {fyList.length > 0 && <DateRangeFilter className="mb-4" from={maintRange.from} to={maintRange.to} onChange={setMaintRange} />}
 
         {activeFY && (
           <>
@@ -840,7 +847,7 @@ export function FAR() {
                   )}
                   {fyPg.pageRows.map(e => (
                     <tr key={e.id} onClick={() => setDrillEntry(e)} style={{ cursor: 'pointer' }}>
-                      <td className="num text-xs text-slate-500">#{e.id.slice(0, 8)}</td>
+                      <td className="num text-xs text-slate-500">{farTicketNo(e.id)}</td>
                       <td className="font-semibold text-slate-700">{e.equipment}</td>
                       <td className="text-slate-500 text-xs">{e.part}</td>
                       <td className="text-slate-500 text-xs">{e.status.replace(/_/g, ' ')}</td>
@@ -1227,7 +1234,7 @@ export function FAR() {
                       <span className="num text-[13px] font-bold" style={{ color: e.cost ? '#15803D' : '#94A3B8' }}>{e.cost ? inr(e.cost) : t('far.inHouseNoPart')}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2 mt-1">
-                      <span className="text-[11px] text-slate-500">#{e.id.slice(0, 8)} · {e.status.replace(/_/g, ' ')} · {e.fy}</span>
+                      <span className="text-[11px] text-slate-500">{ticketNoForId(e.id)} · {e.status.replace(/_/g, ' ')} · {e.fy}</span>
                       <span className="text-[11px] text-slate-400">{e.closed_at ? fmtDT(e.closed_at) : fmtDT(e.created_at)}</span>
                     </div>
                   </button>
@@ -1255,7 +1262,7 @@ export function FAR() {
           );
           return (
             <div>
-              <Row k={t('far.rowTicketNo')} v={drillEntry.id.slice(0, 8)} />
+              <Row k={t('far.rowTicketNo')} v={ticketNoForId(drillEntry.id)} />
               <Row k={t('far.rowEquipment')} v={drillEntry.equipment} />
               <Row k={t('far.rowPlant')} v={drillEntry.plant} />
               <Row k={t('far.rowPartType')} v={drillEntry.part} />
