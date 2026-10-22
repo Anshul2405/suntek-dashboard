@@ -414,10 +414,10 @@ export function FAR() {
       // and offering them the full list would let them pick a factory they
       // cannot write to. The insert is then rejected by RLS (plant_in_scope)
       // and they get a database error instead of being told they lack access.
-      const src = allowedPlants.length > 0 ? allowedPlants : (scopeReady ? [] : dbPlants);
+      const src = plantsForPicker(allowedPlants, scopeReady);
       return [...src].sort((a, b) => a.name.localeCompare(b.name));
     },
-    [allowedPlants, dbPlants, scopeReady],
+    [allowedPlants, scopeReady],
   );
 
   // Plants present in the FAR. Used ONLY for the "does this factory have any
