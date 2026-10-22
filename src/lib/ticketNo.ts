@@ -83,3 +83,28 @@ export function reqNoLabel(r: { id: string; req_no?: number | string | null }): 
   if (Number.isFinite(n) && n > 0) return `SR-${String(n).padStart(4, '0')}`;
   return r.id.slice(0, 8);
 }
+
+/**
+ * Give freshly inserted tickets their STK code from next_ticket_no(), one at a
+ * time so each gets its own number. Returns id → code for the ones assigned.
+ * Quietly does nothing on a database without the 0034 column / function.
+ */
+export async function assignTicketNos(ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const { supabase } = await import('./supabase');
+  const db = supabase as unknown as {
+    rpc: (fn: string) => Promise<{ data: string | null; error: unknown }>;
+    from: (table: string) => any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
+  for (const id of ids) {
+    try {
+      const { data: code, error } = await db.rpc('next_ticket_no');
+      if (error || !code) return out;
+      const { error: upErr } = await db.from('maintenance_tickets').update({ ticket_no: code }).eq('id', id).is('ticket_no', null);
+      if (upErr) return out;
+      out.set(id, code);
+      cache.set(id, code);
+    } catch { return out; }
+  }
+  return out;
+}

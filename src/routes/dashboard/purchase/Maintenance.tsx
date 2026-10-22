@@ -33,7 +33,7 @@ import { suggestAssets } from '../../../lib/far/assets';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
-import { ticketNoLabel } from '../../../lib/ticketNo';
+import { assignTicketNos, ticketNoLabel } from '../../../lib/ticketNo';
 import { IncidentReports } from './IncidentReports';
 import { pickReplacementChecklist } from '../../../lib/pm/parseMaintenanceFile';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
@@ -506,6 +506,9 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+/** Schedules this tab is turning into periodic tickets right now. */
+const materialising = new Set<string>();
+
 export function Maintenance() {
   const { activeProfile, allProfiles, roles, can } = useRoleContext();
   const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor, ready: scopeReady } = usePlantScope();
@@ -786,6 +789,7 @@ export function Maintenance() {
     // Materialise due periodic tickets — batched, so importing hundreds of schedules
     // doesn't fire hundreds of sequential inserts/notifications on load.
     if (schedulesData) {
+      const locked: string[] = [];
       try {
         const nowTs = Date.now();
         const toCreate: Record<string, unknown>[] = [];
@@ -813,8 +817,25 @@ export function Maintenance() {
           });
         }
         if (toDeactivate.length) await (supabase.from('maintenance_schedules') as never as { update: (v: unknown) => { in: (c: string, v: string[]) => Promise<unknown> } }).update({ is_active: false }).in('id', toDeactivate);
+        // loadData runs again as soon as plant scope resolves, so two loads can
+        // both see "no open ticket". Lock the schedules this tab is creating and
+        // re-read just before inserting, so a schedule gets one ticket.
+        const fresh = toCreate.filter(r => !materialising.has(r.schedule_id as string));
+        fresh.forEach(r => { materialising.add(r.schedule_id as string); locked.push(r.schedule_id as string); });
+        if (fresh.length) {
+          const { data: openNow } = await supabase.from('maintenance_tickets').select('schedule_id')
+            .in('schedule_id', fresh.map(r => r.schedule_id as string)).neq('status', 'closed')
+            .returns<{ schedule_id: string | null }[]>();
+          const taken = new Set((openNow || []).map(r => r.schedule_id));
+          toCreate.splice(0, toCreate.length, ...fresh.filter(r => !taken.has(r.schedule_id as string)));
+        } else {
+          toCreate.length = 0;
+        }
         if (toCreate.length) {
-          for (let i = 0; i < toCreate.length; i += 200) await insertRows('maintenance_tickets', toCreate.slice(i, i + 200) as never);
+          for (let i = 0; i < toCreate.length; i += 200) {
+            const { data: made } = await insertRows('maintenance_tickets', toCreate.slice(i, i + 200) as never).select('id');
+            await assignTicketNos(((made || []) as { id: string }[]).map(r => r.id));
+          }
           notify({
             target_roles: ['admin', 'unit_head', ...maintenanceRoleIds],
             title: `${toCreate.length} periodic maintenance task${toCreate.length === 1 ? '' : 's'} due`,
@@ -828,6 +849,7 @@ export function Maintenance() {
           if (refreshed) setTickets(refreshed);
         }
       } catch (e) { console.error('[Maintenance] periodic generation failed', e); }
+      finally { locked.forEach(id => materialising.delete(id)); }
     }
   }, [scopeQuery, maintenanceRoleIds]);
 
@@ -1264,13 +1286,8 @@ export function Maintenance() {
     }).select('*, plants(name)').single();
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
     if (newTicket && !(newTicket as { ticket_no?: string }).ticket_no) {
-      try {
-        const { data: allocated } = await (supabase as unknown as { rpc: (fn: string) => Promise<{ data: string | null }> }).rpc('next_ticket_no');
-        if (allocated) {
-          await updateRows('maintenance_tickets', { ticket_no: allocated } as never).eq('id', newTicket.id);
-          (newTicket as { ticket_no?: string }).ticket_no = allocated;
-        }
-      } catch { /* column or RPC not on this database yet */ }
+      const allocated = (await assignTicketNos([newTicket.id])).get(newTicket.id);
+      if (allocated) (newTicket as { ticket_no?: string }).ticket_no = allocated;
     }
 
 
@@ -1817,6 +1834,10 @@ export function Maintenance() {
           requires_approval: requiresApproval,
         }).select('*, plants(name)').single();
         ticket = data ?? undefined;
+        if (ticket && !(ticket as { ticket_no?: string }).ticket_no) {
+          const code = (await assignTicketNos([ticket.id])).get(ticket.id);
+          if (code) ticket = { ...ticket, ticket_no: code } as typeof ticket;
+        }
       }
       if (!ticket) throw new Error('Could not create ticket');
       const result = await uploadMaintenancePhoto(completionBlob, {
