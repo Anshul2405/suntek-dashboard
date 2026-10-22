@@ -1080,6 +1080,41 @@ export function UserManagement() {
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('userMgmt.rolesHint', 'First selected = primary (drives display + login). Access = the union of all selected.')}</div>
         </PanelField>
 
+        {selectedRole && !selectedRole.is_admin && can('manage_roles') && (
+          <div style={{ marginBottom: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, background: '#F8FAFC' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{t('userMgmt.scheduleSetupTitle', 'Schedule setup')}</div>
+            <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 4, lineHeight: 1.45 }}>
+              {t('userMgmt.scheduleSetupBody', 'Lets this role open Maintenance → Schedule Setup and add, revise, or delete schedule rows. Store managers are hidden from that tab until this is on.')}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, border: `1px solid ${(selectedRole.capabilities || []).includes('manage_schedules') ? '#86EFAC' : '#E2E8F0'}`, background: '#fff', marginTop: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{t('userMgmt.cap.manage_schedules.title', 'Add or delete schedule setup')}</div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{t('userMgmt.importRoleNote', { defaultValue: 'Saved on the {{role}} role, so everyone with that role gets it.', role: selectedRole.label })}</div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const on = (selectedRole.capabilities || []).includes('manage_schedules');
+                  const ok = await stepUp();
+                  if (!ok) return;
+                  const capabilities = on
+                    ? (selectedRole.capabilities || []).filter(c => c !== 'manage_schedules')
+                    : [...new Set([...(selectedRole.capabilities || []), 'manage_schedules'])];
+                  const { error } = await updateRows('roles', { capabilities }).eq('id', selectedRole.id);
+                  if (error) { toast.error(error.message); return; }
+                  await refreshRoles();
+                  toast.success(on
+                    ? t('userMgmt.importCapOff', { defaultValue: 'Removed from the {{role}} role.', role: selectedRole.label })
+                    : t('userMgmt.importCapOn', { defaultValue: 'Saved on the {{role}} role.', role: selectedRole.label }));
+                }}
+                style={{ width: 44, height: 24, borderRadius: 12, background: (selectedRole.capabilities || []).includes('manage_schedules') ? '#16A34A' : '#CBD5E1', border: 'none', cursor: 'pointer', position: 'relative', flexShrink: 0 }}
+              >
+                <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#fff', position: 'absolute', top: 3, left: (selectedRole.capabilities || []).includes('manage_schedules') ? 22 : 4 }} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Combined access — union of every selected role, not just the primary. */}
         {selectedRoles.length > 0 && (
           <div style={{ marginBottom: 16, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, padding: '10px 14px' }}>

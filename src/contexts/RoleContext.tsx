@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, BATCH_SHEET_ROUTES } from '../lib/profiles';
+import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, unionRoleAccess } from '../lib/profiles';
 import type { MockProfile, RoleRow } from '../lib/profiles';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
@@ -118,6 +118,8 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   const [rolesStatus, setRolesStatus] = useState<RolesStatus>('loading');
   // DB directory (active user_accounts rows).
   const [dbUsers, setDbUsers] = useState<DbUser[]>([]);
+  type UserRoleLink = { user_account_id: string; role_id: string };
+  const [userRoleLinks, setUserRoleLinks] = useState<UserRoleLink[]>([]);
 
   // The DB profile data resolved for the logged-in user (role id + name), before
   // it's mapped through the role catalog. null = no session / still resolving.
@@ -258,12 +260,19 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   // ── DB directory — built from active user_accounts rows ─────────────────────
   useEffect(() => {
     async function loadDbUsers() {
-      const { data } = await supabase
-        .from('user_accounts')
-        .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
-        .eq('is_active', true)
-        .returns<DbUser[]>();
+      const [{ data }, { data: links }] = await Promise.all([
+        supabase
+          .from('user_accounts')
+          .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
+          .eq('is_active', true)
+          .returns<DbUser[]>(),
+        supabase
+          .from('user_roles')
+          .select('user_account_id, role_id')
+          .returns<UserRoleLink[]>(),
+      ]);
       if (data) setDbUsers(data);
+      if (links) setUserRoleLinks(links);
     }
     loadDbUsers();
   }, []);
@@ -287,7 +296,17 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         photoUrl: u.photo_url ?? undefined,
       };
       if (role) {
-        out.push(roleToProfile(role, overrides));
+        const extra = userRoleLinks
+          .filter((l) => l.user_account_id === u.id)
+          .map((l) => roleMap.get(l.role_id))
+          .filter((r): r is RoleRow => !!r);
+        const all = [role, ...extra.filter((r) => r.id !== role.id)];
+        const access = unionRoleAccess(all);
+        out.push(roleToProfile(role, {
+          ...overrides,
+          allowedDashboardRoutes: access.allowed_routes,
+          capabilities: access.capabilities,
+        }));
       } else {
         // Unknown role → a locked directory entry (no access), still taggable.
         out.push({
@@ -300,7 +319,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       }
     }
     return out;
-  }, [dbUsers, roleMap, rolesStatus]);
+  }, [dbUsers, roleMap, rolesStatus, userRoleLinks]);
 
   const allProfiles = directory;
 
@@ -319,14 +338,8 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         .filter((r): r is RoleRow => !!r);
       const all = [role, ...extraRoles.filter((r) => r.id !== role.id)];
       if (all.length > 1) {
-        let routes = all.some((r) => r.allowed_routes?.includes('*'))
-          ? ['*']
-          : [...new Set(all.flatMap((r) => r.allowed_routes ?? []))];
-        const capabilities = [...new Set(all.flatMap((r) => r.capabilities ?? []))];
-        if (!routes.includes('*') && all.some((r) => r.id === 'factory_operator')) {
-          routes = [...new Set([...routes, ...BATCH_SHEET_ROUTES])];
-        }
-        return { ...base, allowedDashboardRoutes: routes, capabilities };
+        const access = unionRoleAccess(all);
+        return { ...base, allowedDashboardRoutes: access.allowed_routes, capabilities: access.capabilities };
       }
       return base;
     }

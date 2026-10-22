@@ -35,7 +35,19 @@ interface StoreBreakdown { id: string; plantId: string | null; plant: string; op
 interface MergedRow {
   key: string; itemName: string; equipment: string; model: string | null; unit: string;
   opening: number; onHand: number; issued: number; procured: number; repaired: number; stores: StoreBreakdown[];
-  jobNo: string; ticketNos: string[];
+  jobNo: string; ticketNos: string[]; entryAt: string;
+}
+
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA');
+}
+
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 const CHUNK = 500;
@@ -465,11 +477,13 @@ export function StockRegister() {
       const ex = map.get(key);
       if (ex) {
         ex.opening += store.opening; ex.onHand += store.onHand; ex.issued += store.issued; ex.procured += store.procured; ex.repaired += store.repaired; ex.stores.push(store);
+        const stamp = it.created_at || it.updated_at || '';
+        if (stamp > ex.entryAt) ex.entryAt = stamp;
         for (const tid of tickets) if (!ex.ticketNos.includes(tid)) ex.ticketNos.push(tid);
       }
-      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets] });
+      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets], entryAt: it.created_at || it.updated_at || '' });
     }
-    return [...map.values()].sort((a, b) => a.itemName.localeCompare(b.itemName));
+    return [...map.values()].sort((a, b) => (b.entryAt || '').localeCompare(a.entryAt || '') || a.itemName.localeCompare(b.itemName));
   }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const summary = useMemo(() => {
@@ -480,13 +494,14 @@ export function StockRegister() {
 
   // Column sort — click a header to sort by it (toggles asc/desc).
   const mergedSort = useSortable(merged, {
+    date: r => r.entryAt || '',
     item: r => r.itemName,
     opening: r => r.opening,
     onHand: r => r.onHand,
     issued: r => r.issued,
     procured: r => r.procured,
     status: r => (r.onHand <= 0 ? 0 : r.onHand <= 2 ? 1 : 2),
-  }, { key: 'item', dir: 'asc' });
+  }, { key: 'date', dir: 'desc' });
 
   // Paginate the register — it can hold hundreds of items per plant.
   const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${search}|${plantFilter.join(',')}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
@@ -973,6 +988,7 @@ export function StockRegister() {
                 <table className="dt2">
                   <thead>
                     <tr>
+                      <Th sortKey="date" s={mergedSort} firstDir="desc">{t('storereq.stockColDate', 'Date')}</Th>
                       <Th sortKey="item" s={mergedSort}>{t('storereq.col_item', 'Item')}</Th>
                       <th>{t('storereq.col_jobNo', 'Job No')}</th>
                       <th>{t('storereq.col_equipment', 'Equipment')}</th>
@@ -986,14 +1002,25 @@ export function StockRegister() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 11 : 10} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
-                    {pageRows.map(m => {
+                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 12 : 11} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
+                    {pageRows.map((m, idx) => {
                       const st = stockStatus(m.onHand);
                       const isOpen = expanded === m.key;
                       const single = m.stores.length === 1;
+                      const stamp = m.entryAt || '';
+                      const prevStamp = idx > 0 ? (pageRows[idx - 1].entryAt || '') : '';
+                      const showDay = stamp && dayKey(stamp) !== dayKey(prevStamp);
                       return (
                         <React.Fragment key={m.key}>
+                          {showDay && (
+                            <tr>
+                              <td colSpan={multiStore ? 12 : 11} className="text-xs font-bold text-slate-600 bg-slate-100 uppercase tracking-wide">
+                                {fmtDay(stamp)}
+                              </td>
+                            </tr>
+                          )}
                           <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : m.key)}>
+                            <td className="text-xs text-slate-500 whitespace-nowrap">{stamp ? fmtDay(stamp) : '—'}</td>
                             <td className="font-semibold text-slate-700">{m.itemName}</td>
                             <td className="font-mono text-xs text-slate-500">{m.jobNo}</td>
                             <td className="text-slate-500 text-xs">{m.equipment}{m.model ? ` · ${m.model}` : ''}</td>
@@ -1034,7 +1061,7 @@ export function StockRegister() {
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={multiStore ? 11 : 10} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
+                              <td colSpan={multiStore ? 12 : 11} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
                                 {m.stores.map(s => (
                                   <div key={s.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, fontSize: 11.5, color: '#64748B', padding: '3px 0' }}>
                                     <strong style={{ color: '#334155', minWidth: 70 }}>{s.plant}</strong>

@@ -43,6 +43,15 @@ interface NotificationsContextValue {
   notifications: AppNotification[];
   unreadCount: number;
   markRead: (id: string) => void;
+  /**
+   * Mark every notification that deep-links to this maintenance ticket as read
+   * for me — opening the ticket is "reading" its notifications. Closing a ticket
+   * does NOT read them: a closed-ticket notification stays unread until the
+   * person opens that bell item or the ticket itself.
+   */
+  markTicketRead: (ticketId: string) => void;
+  /** Has the ACTIVE PERSON read it? (keys on the personal id, not the role id) */
+  isReadByMe: (n: AppNotification) => boolean;
   markAllRead: () => void;
   /** Remove every notification from THIS profile's view (read or unread). */
   clearAll: () => void;
@@ -70,6 +79,8 @@ const NotificationsContext = createContext<NotificationsContextValue>({
   notifications: [],
   unreadCount: 0,
   markRead: () => {},
+  markTicketRead: () => {},
+  isReadByMe: () => false,
   markAllRead: () => {},
   clearAll: () => {},
   addNotification: async () => false,
@@ -301,6 +312,15 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
       }, () => {});
   }
 
+  function markTicketRead(ticketId: string) {
+    if (!ticketId) return;
+    for (const n of notifications) {
+      if (ticketIdFromRoute(n.route) === ticketId && !n.read_by?.includes(selfKey)) markRead(n.id);
+    }
+  }
+
+  const isReadByMe = useCallback((n: AppNotification) => !!n.read_by?.includes(selfKey), [selfKey]);
+
   function markAllRead() {
     setNotifications(prev =>
       prev.map(n => n.read_by.includes(selfKey) ? n : { ...n, read_by: [...n.read_by, selfKey] })
@@ -338,7 +358,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
   }
 
   return (
-    <NotificationsContext.Provider value={{ notifications, unreadCount, markRead, markAllRead, clearAll, addNotification, tableReady, isNotificationCompleted, isNotificationStale }}>
+    <NotificationsContext.Provider value={{ notifications, unreadCount, markRead, markTicketRead, isReadByMe, markAllRead, clearAll, addNotification, tableReady, isNotificationCompleted, isNotificationStale }}>
       {children}
     </NotificationsContext.Provider>
   );

@@ -21,6 +21,10 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
+import { STORE_REQ_WAITING, isWaitingReq } from '../../../lib/store/requisitionQueue';
+import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
+import { DateRangeFilter } from '../../../components/v2';
+import { inIstDayRange } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
 
@@ -110,7 +114,13 @@ export function StoreRequisitions() {
     else setDetailReq(r);
   }
 
-  const filtered = useTextFilter(items, search, r => [r.item, r.plants?.name, r.id.slice(0, 8), r.status, r.ticket_id ? r.ticket_id.slice(0, 8) : '']);
+  const queuePending = searchParams.get('queue') === 'pending';
+  const listed = useMemo(() => {
+    const from = searchParams.get('fromDate') || '';
+    const to = searchParams.get('toDate') || '';
+    return items.filter(r => (!queuePending || isWaitingReq(r.status)) && inIstDayRange(r.created_at, from, to));
+  }, [items, queuePending, searchParams]);
+  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
     ticket: r => r.ticket_id ?? null,
@@ -341,10 +351,10 @@ export function StoreRequisitions() {
                         style={{ cursor: 'pointer' }}
                         title={r.ticket_id ? t('storereq.open_ticket', 'Open maintenance ticket') : t('storereq.open_detail', 'View request details')}
                       >
-                        <td className="font-bold text-xs text-slate-400">{r.id.slice(0, 8)}</td>
+                        <td className="font-bold text-xs text-slate-400">{reqNoLabel(r)}</td>
                         <td>
                           {r.ticket_id
-                            ? <span className="num text-xs text-blue-600 font-semibold">#{r.ticket_id.slice(0, 8)}</span>
+                            ? <span className="num text-xs text-blue-600 font-semibold">#{ticketNoForId(r.ticket_id)}</span>
                             : <span className="text-slate-300">—</span>}
                         </td>
                         <td>{r.item}</td>
@@ -445,7 +455,7 @@ export function StoreRequisitions() {
         open={!!detailReq}
         onClose={() => setDetailReq(null)}
         title={detailReq?.item || t('storereq.detail_title', 'Requisition')}
-        subtitle={detailReq ? `#${detailReq.id.slice(0, 8)} · ${detailReq.plants?.name || '—'}` : ''}
+        subtitle={detailReq ? `#${reqNoLabel(detailReq)} · ${detailReq.plants?.name || '—'}` : ''}
       >
         {detailReq && (() => {
           const s = STATUS_STAGE[detailReq.status] || STATUS_STAGE.pending;
@@ -458,7 +468,7 @@ export function StoreRequisitions() {
           );
           return (
             <div>
-              <Row k={t('storereq.col_req_no')} v={`#${detailReq.id.slice(0, 8)}`} />
+              <Row k={t('storereq.col_req_no')} v={`#${reqNoLabel(detailReq)}`} />
               <Row k={t('storereq.col_item')} v={detailReq.item} />
               <Row k={t('storereq.col_plant')} v={detailReq.plants?.name || '—'} />
               <Row k={t('storereq.col_qty')} v={String(detailReq.qty)} />

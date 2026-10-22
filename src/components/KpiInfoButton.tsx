@@ -67,7 +67,7 @@ export function KpiInfoButton({ info, style }: { info: KpiMeta; style?: React.CS
           (e.currentTarget as HTMLElement).style.borderColor = 'rgba(148,163,184,0.35)';
           setShow(false);
         }}
-        onClick={() => (show ? setShow(false) : openTooltip())}
+        onClick={(e) => { e.stopPropagation(); if (show) setShow(false); else openTooltip(); }}
         style={{
           width: 18, height: 18, borderRadius: '50%',
           background: 'rgba(148,163,184,0.15)',

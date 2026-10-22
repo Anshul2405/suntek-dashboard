@@ -12,12 +12,15 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { fetchAllRows } from '../../../lib/fetchAll';
-import { isAdminProfile, type RoleRow } from '../../../lib/profiles';
+import { isAdminProfile, canSeeScheduleSetup, type RoleRow } from '../../../lib/profiles';
+import { issueLineValue, storeIssueNeedsPhoto } from '../../../lib/store/issuePhoto';
+import { canEditRaisedTicket, ticketEditMinutesLeft } from '../../../lib/ticketEditWindow';
 import { useBlacklist } from '../../../contexts/BlacklistContext';
 import { uploadMaintenancePhoto } from '../../../lib/cloudinary';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, PanelFooter } from '../../../components/SlidePanel';
 import { MentionText, NotesButton, ReadReceipt } from '../../../components/mentions';
 import { useToast } from '../../../components/ui/toast';
+import { useNotifications } from '../../../contexts/NotificationsContext';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
 import { useTranslation } from 'react-i18next';
@@ -27,6 +30,8 @@ import { similarity } from '../../../lib/blacklist/similarity';
 import { PMScheduleImport } from './PMScheduleImport';
 import { suggestAssets } from '../../../lib/far/assets';
 import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
+import { ticketNoLabel } from '../../../lib/ticketNo';
+import { IncidentReports } from './IncidentReports';
 import { pickReplacementChecklist } from '../../../lib/pm/parseMaintenanceFile';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import type { AppNotification } from '../../../contexts/NotificationsContext';
@@ -502,6 +507,7 @@ export function Maintenance() {
   const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor } = usePlantScope();
   const { isPersonBlacklisted, notifyActivity, tableReady: blacklistReady } = useBlacklist();
   const toast = useToast();
+  const { markTicketRead } = useNotifications();
   const { t } = useTranslation();
   const people = useDirectory();
   const notifyMentions = useMentionNotifier();
@@ -562,7 +568,8 @@ export function Maintenance() {
   // demote them into a technician view and hide Schedule Setup from them.
   const isTechnician = role === 'technician_shd' || (!isAdmin && can('perform_maintenance'));
   const isUnitHead = role === 'unit_head';
-  const isStoreManager = ALL_STORE_MANAGER_IDS.includes(role);
+  const isStoreManager = [role, activeProfile.baseRoleId].some(id => !!id && ALL_STORE_MANAGER_IDS.includes(id));
+  const showScheduleSetup = canSeeScheduleSetup(activeProfile);
   const isPurchaseManager = role === 'purchase_manager';
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.
@@ -593,7 +600,7 @@ export function Maintenance() {
   };
 
   // Data
-  const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule'>('periodic');
+  const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule' | 'incidents'>('periodic');
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
@@ -672,6 +679,7 @@ export function Maintenance() {
   const [supplierName, setSupplierName] = useState(''); // external vendor → recorded as a Purchase Order
   const [purchaseQty, setPurchaseQty] = useState(''); // how many were actually bought (bulk ≥ shortfall)
   const [defectiveDecision, setDefectiveDecision] = useState<'repair' | 'scrap' | ''>('');
+  const [scrapNotes, setScrapNotes] = useState('');
   // After store handover the operator picks Consumed (used up, nothing to return)
   // or Defective return (old part → Repair / Scrap). Empty until they choose.
   const [partOutcome, setPartOutcome] = useState<'consumed' | 'defective' | ''>('');
@@ -822,6 +830,8 @@ export function Maintenance() {
   // Deep-link: a notification's "?ticket=<id>" opens that ticket directly.
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
+    const rawTab = searchParams.get('tab');
+    if (rawTab === 'periodic' || rawTab === 'emergency' || rawTab === 'schedule' || rawTab === 'incidents') setTab(rawTab);
     const tid = searchParams.get('ticket');
     if (!tid) return;
     const clearTicketParam = () => {
@@ -856,12 +866,14 @@ export function Maintenance() {
           return;
         }
         setSelectedTicket(found);
+        markTicketRead(found.id);
         setTab(found.type === 'periodic' ? 'periodic' : 'emergency');
         clearTicketParam();
       })();
       return () => { cancelled = true; };
     }
     setSelectedTicket(matched);
+    markTicketRead(matched.id);
     setTab(matched.type === 'periodic' ? 'periodic' : 'emergency');
     clearTicketParam();
     // toast/t intentionally omitted — ToastApi object is not referentially stable.
@@ -971,15 +983,18 @@ export function Maintenance() {
   // this keeps the client from ever holding what it may not show.
   useEffect(() => {
     let alive = true;
-    scopeQuery(supabase.from('fixed_assets').select('id, name, identification_mark, plant_id, job_no'))
-      .order('name')
-      .returns<{ id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null }[]>()
-      .then(({ data, error }) => {
-        if (!error) { if (alive) setFarAssets(data || []); return; }
-        return scopeQuery(supabase.from('fixed_assets').select('id, name, identification_mark, plant_id'))
-          .order('name')
-          .returns<{ id: string; name: string; identification_mark: string | null; plant_id: string | null }[]>()
-          .then(({ data: fallback }) => { if (alive) setFarAssets(fallback || []); });
+    type FarLite = { id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null };
+    const page = (cols: string) => (from: number, to: number) =>
+      scopeQuery(supabase.from('fixed_assets').select(cols))
+        .order('name').order('id')
+        .range(from, to)
+        .returns<FarLite[]>();
+    void fetchAllRows<FarLite>(page('id, name, identification_mark, plant_id, job_no'))
+      .then(async ({ data, error }) => {
+        if (!alive) return;
+        if (!error) { setFarAssets(data || []); return; }
+        const fallback = await fetchAllRows<FarLite>(page('id, name, identification_mark, plant_id'));
+        if (alive) setFarAssets(fallback.data || []);
       });
     return () => { alive = false; };
   }, [scopeQuery]);
@@ -1174,7 +1189,7 @@ export function Maintenance() {
   const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}` });
   const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}` });
   const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
-  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencyTickets.length}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
+  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
   const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${schedPlantFilter.join(',')}|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -1218,6 +1233,16 @@ export function Maintenance() {
       assigned_to: (isTechnician || role === 'factory_operator') ? activeProfile.name : null,
     }).select('*, plants(name)').single();
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
+    if (newTicket && !(newTicket as { ticket_no?: string }).ticket_no) {
+      try {
+        const { data: allocated } = await (supabase as unknown as { rpc: (fn: string) => Promise<{ data: string | null }> }).rpc('next_ticket_no');
+        if (allocated) {
+          await updateRows('maintenance_tickets', { ticket_no: allocated } as never).eq('id', newTicket.id);
+          (newTicket as { ticket_no?: string }).ticket_no = allocated;
+        }
+      } catch { /* column or RPC not on this database yet */ }
+    }
+
 
     // Optional: photo of the broken/defective item(s) attached at raise time.
     if (newTicket && raisePhotoBlob) {
@@ -1285,21 +1310,43 @@ export function Maintenance() {
   }
 
   // ── Admin: edit / delete a ticket ───────────────────────────────────────────
-  function startEdit(t: TicketRow) {
-    setEditForm({ equipment: t.equipment || '', description: t.description || '', plant: t.plant_id || '', status: t.status });
+  function canCorrectTicket(tk: TicketRow | null | undefined) {
+    if (!tk) return false;
+    if (isAdmin) return true;
+    if (tk.status === 'closed') return false;
+    if (!canEditRaisedTicket(tk.created_at)) return false;
+    const me = activeProfile.name?.trim().toLowerCase();
+    const raiser = (tk.raised_by || '').trim().toLowerCase();
+    return !!me && me === raiser;
+  }
+
+  function startEdit(tk: TicketRow) {
+    if (!canCorrectTicket(tk)) {
+      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      return;
+    }
+    setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status });
     setEditingTicket(true);
   }
 
   async function saveEdit() {
-    if (!selectedTicket) return;
+    if (!selectedTicket || !canCorrectTicket(selectedTicket)) {
+      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === editForm.plant);
+    const changes: string[] = [];
+    if ((selectedTicket.equipment || '').trim() !== editForm.equipment.trim()) changes.push(`equipment: ${selectedTicket.equipment || '—'} → ${editForm.equipment || '—'}`);
+    if ((selectedTicket.description || '').trim() !== (editForm.description || '').trim()) changes.push(`description: ${(selectedTicket.description || '—').slice(0, 40)} → ${(editForm.description || '—').slice(0, 40)}`);
     await updateRows('maintenance_tickets', {
       equipment: editForm.equipment,
       description: editForm.description || null,
       plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
-      status: editForm.status as TicketStatus,
     }).eq('id', selectedTicket.id);
-    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, status: editForm.status as TicketStatus, plants: plant ? { name: plant.name } : t.plants } : t);
+    if (changes.length) {
+      await auditNote(selectedTicket, `✎ ${isAdmin ? 'Admin edit' : 'Edited'} by ${activeProfile.name} · ${changes.join('; ')}`);
+    }
+    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, plants: plant ? { name: plant.name } : t.plants } : t);
     await notifyMentions(editForm.description, {
       entityType: 'maintenance_ticket', entityId: selectedTicket.id,
       entityLabel: editForm.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
@@ -2190,6 +2237,11 @@ export function Maintenance() {
     if (!selectedTicket) return;
     const fromOwnStore = req.store_decision === 'available';
     if (fromOwnStore) {
+      const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
+      if (storeIssueNeedsPhoto(issueValue) && !handoverPhotoBlob) {
+        toast.error(t('maint.handoverNeedPhotoOver1k', 'Photo is required for store issues worth more than ₹1,000.'));
+        return;
+      }
       if (!handoverNotes.trim() && !handoverPhotoBlob) { toast.error(t('maint.handoverNeedDescription', "Please add a short description (why you're providing this part) or a part photo before confirming handover.")); return; }
     } else if (!handoverInvoiceBlob && !handoverPhotoBlob) {
       toast.error(t('maint.handoverNeedInvoice', 'Please upload at least the invoice or part photo before confirming handover.')); return;
@@ -2307,6 +2359,11 @@ export function Maintenance() {
     if (!selectedTicket || !defectiveBlob) return;
     // Client-side mirror of the DB rule: every removed part must be accounted
     // for as either repair or scrap before the ticket can close.
+    const totalsPreview = splitTotals(defectiveLines);
+    if (totalsPreview.scrap > 0 && !scrapNotes.trim()) {
+      toast.error(t('maint.scrapNotesRequired', 'Add notes before moving this item to scrap.'));
+      return;
+    }
     const splitErrors = validateSplit(defectiveLines);
     if (splitErrors.length) {
       const first = splitErrors[0];
@@ -2350,6 +2407,9 @@ export function Maintenance() {
         closed_by: activeProfile.name,
       }).eq('id', selectedTicket.id);
       const summary = `${totals.repair} ${t('maint.toRepair', 'to repair')} · ${totals.scrap} ${t('maint.scrapped', 'scrapped')}`;
+      if (totals.scrap > 0) {
+        await auditNote(selectedTicket, `Scrap notes: ${scrapNotes.trim()}`);
+      }
       notify({
         target_roles: ['admin', 'unit_head', 'store_manager_maint'],
         title: `Ticket closed: ${selectedTicket.equipment}`,
@@ -2359,7 +2419,7 @@ export function Maintenance() {
         plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id,
       });
       await notifyTicketWatchers(selectedTicket, `Ticket closed: ${selectedTicket.equipment}`, `Defective parts → ${summary} · closed by ${activeProfile.name}.`);
-      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setUploadPct(0);
+      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setScrapNotes(''); setUploadPct(0);
       await loadData();
     } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
     finally { setUploading(false); }
@@ -2898,8 +2958,10 @@ export function Maintenance() {
           const badge = STAGE_BADGE[s];
           // Available-from-store items skip procurement → no bill; procured items carry one.
           const fromOwnStore = req.store_decision === 'available';
+          const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
+          const needIssuePhoto = fromOwnStore && storeIssueNeedsPhoto(issueValue);
           const canConfirmHandover = fromOwnStore
-            ? (!!handoverNotes.trim() || !!handoverPhotoBlob)
+            ? ((needIssuePhoto ? !!handoverPhotoBlob : true) && (!!handoverNotes.trim() || !!handoverPhotoBlob))
             : (!!handoverInvoiceBlob || !!handoverPhotoBlob);
           // Map the request to the plant's stock so the store manager confirms
           // rather than re-counts: exact link if the tech picked it, else fuzzy.
@@ -3039,7 +3101,7 @@ export function Maintenance() {
                   ) : (
                     <PhotoUploader onBlobReady={setHandoverInvoiceBlob} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
                   )}
-                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={t('maint.partPhotoHint', 'Photo of the part being handed over')} />
+                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={needIssuePhoto ? t('maint.issuePhotoHint', 'Required if this material is worth more than ₹1,000.') : t('maint.partPhotoHint', 'Photo of the part being handed over')} />
                   {uploading && <UploadBar pct={uploadPct} color="#9333EA" />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button onClick={() => { setActingReqId(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
@@ -3234,8 +3296,15 @@ export function Maintenance() {
                   })}
                 </div>
 
+                {splitTotals(defectiveLines).scrap > 0 && (
+                  <div style={{ margin: '8px 0 12px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#DC2626', marginBottom: 4 }}>{t('maint.scrapNotesTitle', 'Add notes before scrap')}</div>
+                    <div style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>{t('maint.scrapNotesHint', 'Why this item is being scrapped. Required.')}</div>
+                    <textarea value={scrapNotes} onChange={e => setScrapNotes(e.target.value)} placeholder={t('maint.scrapNotesPlaceholder', 'e.g. Housing cracked beyond repair, no salvageable parts.')} rows={3} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #FECACA', borderRadius: 10, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', resize: 'vertical' }} />
+                  </div>
+                )}
                 {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
-                <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
+                <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading || (splitTotals(defectiveLines).scrap > 0 && !scrapNotes.trim())} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading || (splitTotals(defectiveLines).scrap > 0 && !scrapNotes.trim())) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
               </>
             )}
           </div>
@@ -3353,7 +3422,8 @@ export function Maintenance() {
           { key: 'periodic', label: t('maint.periodic'), icon: <Calendar /> },
           { key: 'emergency', label: t('maint.emergency'), icon: <AlertTriangle /> },
           // Role gate identical to the old strip: hidden for technicians + store managers.
-          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: isTechnician || isStoreManager },
+          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: !showScheduleSetup },
+          { key: 'incidents', label: t('maint.incidents', 'Incidents'), icon: <AlertTriangle /> },
         ]}
         value={tab}
         onChange={setTab}
@@ -3369,6 +3439,15 @@ export function Maintenance() {
         <div className="card2 p-5"><SkeletonRows rows={6} /></div>
       ) : (
       <>
+
+      {tab === 'incidents' && (
+        <IncidentReports
+          plants={dbPlants}
+          reporter={activeProfile.name}
+          reporterRole={role}
+          focusId={searchParams.get('incident')}
+        />
+      )}
 
       {/* ── PERIODIC TAB ─────────────────────────────────────────────────── */}
       {tab === 'periodic' && (
@@ -3583,7 +3662,7 @@ export function Maintenance() {
                   )}
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
-                      <td className="font-mono text-xs text-slate-400">{tk.id.slice(0, 8)}</td>
+                      <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}</td>
                       <td className="font-semibold">{tk.equipment}</td>
                       <td>{tk.plants?.name || '—'}</td>
                       <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
@@ -3610,7 +3689,7 @@ export function Maintenance() {
       )}
 
       {/* ── SCHEDULE SETUP TAB ─────────────────────────────────────────────── */}
-      {tab === 'schedule' && !isTechnician && !isStoreManager && (
+      {tab === 'schedule' && showScheduleSetup && (
         <SectionCard
           flush
           title={t('maint.schedulesTitle')}
@@ -3877,7 +3956,7 @@ export function Maintenance() {
             )}
             <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               <div style={{ fontSize: 12, color: '#64748B', marginBottom: 2 }}>
-                #{selectedTicket.id.slice(0, 8)} · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
+                {ticketNoLabel(selectedTicket)} · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
                 {selectedTicket.assigned_to && <> · {t('maint.colAssignedTo', 'Assigned to')} {selectedTicket.assigned_to}</>} · {formatDate(selectedTicket.created_at)}
                 {/* Historical only — tickets raised before the units were retired
                     still record which one they were routed to. Shown so the old
@@ -3924,11 +4003,11 @@ export function Maintenance() {
                 Request Changes lets a reviewer send the ticket back for correction. */}
             {!editingTicket && !requestingChanges && !resubmitting && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} />
+                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
                 {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
                   <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} className="chip" style={{ color: '#DC2626' }}>{t('maint.requestChangesChip', '↩ Request Changes')}</button>
                 )}
-                {isAdmin && <button onClick={() => startEdit(selectedTicket)} className="chip">{t('maint.editChip', '✎ Edit')}</button>}
+                {canCorrectTicket(selectedTicket) && <button onClick={() => startEdit(selectedTicket)} className="chip">{isAdmin ? t('maint.editChipAdmin', '✎ Edit') : t('maint.editChip', '✎ Edit')}{!isAdmin && <> · {t('maint.editMinutesLeft', { defaultValue: '{{n}}m left', n: ticketEditMinutesLeft(selectedTicket.created_at) })}</>}</button>}
                 {isAdmin && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
               </div>
             )}
@@ -3947,9 +4026,7 @@ export function Maintenance() {
                     </PanelSelect>
                   </PanelField>
                   <PanelField label={t('maint.colStatus')}>
-                    <PanelSelect value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
-                      {Object.keys(STATUS_CFG).map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                    </PanelSelect>
+                    <div style={{ fontSize: 13, color: '#64748B', padding: '8px 0' }}>{statusLabel(editForm.status)}</div>
                   </PanelField>
                 </PanelRow>
                 <PanelField label={t('maint.issueDescription')}>

@@ -214,7 +214,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
     qty: i => (isRepair ? Number(i.part.repair_qty) : Number(i.part.scrap_qty)),
     ...(isRepair ? { pending: (i: PartItem) => partPending(i.part) } : {}),
   }, { key: 'closed', dir: 'desc' });
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${rows.length}|${s.sort.key}|${s.sort.dir}` });
+  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${s.sort.key}|${s.sort.dir}` });
   const iconSq = tone === 'amber' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600';
   const cols = isRepair ? 10 : 7;
   return (
@@ -345,7 +345,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
     by: r => r.actor_name,
     status: r => r.status,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${filtered.length}|${s.sort.key}|${s.sort.dir}` });
+  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${s.sort.key}|${s.sort.dir}` });
 
   async function doReverse(receiptId: string) {
     if (!reason.trim()) { toastError(t('repairReturn.errReason', 'A reason is required to reverse a return.')); return; }

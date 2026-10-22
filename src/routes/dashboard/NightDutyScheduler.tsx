@@ -279,7 +279,7 @@ export function NightDutyScheduler() {
       && (!schedFrom || r.d.duty_date >= schedFrom)
       && (!schedTo || r.d.duty_date <= schedTo));
   }, [duties, acctById, acctName, roleLabel, plantName, schedQ, schedPlant, schedStatus, schedFrom, schedTo, t]);
-  const schedPg = usePagination(scheduleRows, { resetKey: `${schedQ}|${schedPlant}|${schedStatus}|${schedFrom}|${schedTo}|${duties.length}` });
+  const schedPg = usePagination(scheduleRows, { resetKey: `${schedQ}|${schedPlant}|${schedStatus}|${schedFrom}|${schedTo}` });
 
   const PILL_TONE: Record<string, 'blue' | 'green' | 'slate' | 'red'> = {
     scheduled: 'blue', checked_in: 'green', completed: 'slate', missed: 'red',

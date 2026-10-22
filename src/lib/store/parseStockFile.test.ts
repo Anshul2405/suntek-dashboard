@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
-  resolveClosing, reconcile, reconcileAll, labelForPeriod, parseStockFile,
+  resolveClosing, reconcile, reconcileAll, labelForPeriod, parseStockFile, normalizeUnit,
   type MonthParse, type MonthItem,
 } from './parseStockFile';
 
@@ -372,5 +372,15 @@ describe('parseStockFile — Drum Plant SPARE layout', () => {
     const mccb = res.latest!.items.find(i => i.itemName === 'MCCB 100 AMP')!;
     expect(mccb.purchased).toBe(1);
     expect(mccb.opening).toBe(1);
+  });
+});
+
+describe('normalizeUnit', () => {
+  it('keeps Pcs and Feet as sibling options', () => {
+    expect(normalizeUnit('pcs')).toBe('Pcs');
+    expect(normalizeUnit('nos')).toBe('Pcs');
+    expect(normalizeUnit('feet')).toBe('Ft');
+    expect(normalizeUnit('ft')).toBe('Ft');
+    expect(normalizeUnit('Foot')).toBe('Ft');
   });
 });

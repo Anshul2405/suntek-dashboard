@@ -62,7 +62,7 @@ const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }>
 // PlantScopeContext — never hard-coded, or a factory rename would leave this
 // dropdown offering names that no longer exist.
 const PORTS = ['Kandla', 'Mundra'];
-const UNITS  = ['nos', 'kg', 'MT', 'L', 'sets', 'boxes'];
+const UNITS  = ['nos', 'Ft', 'kg', 'MT', 'L', 'sets', 'boxes'];
 
 export function PurchaseOrders() {
   const { t } = useTranslation();
@@ -206,7 +206,7 @@ export function PurchaseOrders() {
     supplier: r => r.supplier, qty: r => r.qty, unitPrice: r => r.unitPrice, total: r => r.total,
     busyRef: r => r.busyRef, date: r => (r.date ? new Date(r.date) : null),
   }, { key: 'date', dir: 'desc' }); // default: latest first
-  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintPOs.length}|${maintSort.sort.key}|${maintSort.sort.dir}` });
+  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintSort.sort.key}|${maintSort.sort.dir}` });
 
   return (
     <>

@@ -567,7 +567,7 @@ export function FAR() {
     closed: e => new Date(e.closed_at || e.created_at),
     cost: e => e.cost,
   }, { key: 'closed', dir: 'desc' });
-  const groupPg = usePagination(groupSort.sorted, { resetKey: `${groupSort.sorted.length}|${groupSort.sort.key}|${groupSort.sort.dir}` });
+  const groupPg = usePagination(groupSort.sorted, { resetKey: `${groupSort.sort.key}|${groupSort.sort.dir}` });
   const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
 
   // ── Pic-proof coverage — % of registered assets with a photo on file ─────────
