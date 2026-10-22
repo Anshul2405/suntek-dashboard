@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
-  ClipboardCheck, Wrench, Timer, BellRing, AlertTriangle, AlertCircle, Mic,
+  Wrench, AlertTriangle, AlertCircle, Mic,
   CheckSquare, ShoppingCart, Truck, FlaskConical, Boxes, ArrowRight, Package,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -20,7 +20,7 @@ import {
 import { DSOGauge, RingProgress, MiniBarChart, BulletCompare, DeltaBadge, OverdueAgingBar } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { StockSnapshot } from '../../components/overview/StockSnapshot';
-import { ButtonV2, SectionCard, StatusPill, WorkCard } from '../../components/v2';
+import { ButtonV2, SectionCard, StatusPill } from '../../components/v2';
 
 /** Fallback source→route map for older alert rows without an explicit `route`. */
 const ALERT_ROUTE: Record<string, string> = {
@@ -41,19 +41,34 @@ const MOVE_ROUTE: Record<string, string> = {
   stock:    '/dashboard/stock',
 };
 
-/** Small numbered section label — "1. TODAY'S WORK" per the mockup. */
-function SectionLabel({ n, children, right }: { n: number; children: React.ReactNode; right?: React.ReactNode }) {
+/** Small section label — plant ops board (no SaaS numbering). */
+function OpsHead({
+  title,
+  sub,
+  right,
+}: {
+  title: React.ReactNode;
+  sub?: React.ReactNode;
+  right?: React.ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between gap-3 mb-4">
-      <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">
-        {n}. {children}
+    <div className="ops-head">
+      <div>
+        <h3>{title}</h3>
+        {sub && <p>{sub}</p>}
       </div>
       {right}
     </div>
   );
 }
 
-/** One "Today's Work" mini-card: icon square, label, big number, caption. */
+function toneForCount(n: number | null, hotAt = 1): 'ok' | 'warn' | 'hot' | 'neutral' {
+  if (n == null) return 'neutral';
+  if (n <= 0) return 'ok';
+  if (n >= hotAt * 3) return 'hot';
+  return 'warn';
+}
+
 /** One "Business KPIs" column: gray label, big value, colored delta line. */
 function KpiBlock({ label, value, delta, deltaTone = 'slate', info }: {
   label: string;
@@ -64,11 +79,11 @@ function KpiBlock({ label, value, delta, deltaTone = 'slate', info }: {
 }) {
   const toneCls = { green: 'text-green-600', red: 'text-red-600', orange: 'text-orange-600', slate: 'text-slate-400' }[deltaTone];
   return (
-    <div className="flex-1 min-w-[150px] relative">
-      {info && <KpiInfoButton info={info} style={{ top: -4, right: 0 }} />}
-      <div className="text-[12px] text-slate-500">{label}</div>
-      <div className="text-[24px] font-bold text-slate-900 num mt-1 leading-none">{value}</div>
-      {delta && <div className={`text-[11.5px] mt-1.5 ${toneCls}`}>{delta}</div>}
+    <div className="ops-kpi-cell">
+      {info && <KpiInfoButton info={info} style={{ top: 8, right: 8 }} />}
+      <div className="ops-kpi-label">{label}</div>
+      <div className="ops-kpi-val">{value}</div>
+      {delta && <div className={`ops-kpi-delta ${toneCls}`}>{delta}</div>}
     </div>
   );
 }
@@ -169,101 +184,128 @@ export function Overview() {
   ];
 
   return (
-    <>
-      {/* ── Row 1: Today's Work + Critical Alerts ── */}
-      <div className="grid grid-cols-12 gap-4 mb-4">
-        <SectionCard className="col-span-12 lg:col-span-8 !p-0" flush>
-          <div className="p-5">
-            <SectionLabel n={1}>{t('overview.todaysWork', "Today's Work")}</SectionLabel>
-            <div className="flex gap-3 flex-wrap">
-              <WorkCard
-                className="flex-1 min-w-[150px]"
-                icon={<ClipboardCheck />}
-                label={t('overview.pendingApprovals', 'Pending Approvals')}
-                value={pendingStoreReq ?? '…'}
-                caption={pendingStoreReq ? t('overview.requiresAction', 'Requires your action →') : t('overview.allClear', 'All clear')}
-                captionTone={pendingStoreReq ? 'orange' : 'green'}
-                onClick={() => navigate('/dashboard/purchase/storereq')}
-              />
-              <WorkCard
-                className="flex-1 min-w-[150px]"
-                icon={<Wrench />}
-                label={t('overview.openMaintenance', 'Open Maintenance')}
-                value={openMaint ?? '…'}
-                caption={openMaint ? t('overview.ticketsInProgress', 'Tickets in progress') : t('overview.noOpenTickets', 'No open tickets')}
-                captionTone={openMaint ? 'orange' : 'green'}
-                onClick={() => navigate('/dashboard/purchase/maint')}
-              />
-              <WorkCard
-                className="flex-1 min-w-[150px]"
-                icon={<Timer />}
-                label={t('overview.activeBatches', 'Active Batches')}
-                value={activeBatchCount ?? '…'}
-                caption={avgBatchHours != null ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' }) : t('overview.acrossFactories', { count: 4 })}
-                onClick={() => navigate('/dashboard/batches')}
-              />
-              <WorkCard
-                className="flex-1 min-w-[150px]"
-                icon={<BellRing />}
-                label={t('overview.openAlerts', 'Open Alerts')}
-                value={alerts.length}
-                caption={alerts.length ? t('overview.acrossModules', 'Across all modules') : t('overview.allQuiet', 'All quiet')}
-                captionTone={alerts.length ? 'orange' : 'green'}
-                onClick={() => document.getElementById('ov-alerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-              />
+    <div className="ops-board">
+      {/* ── Today's Work (full width) + alerts only when needed ── */}
+      <div>
+        <OpsHead
+          title={t('overview.todaysWork', "Today's Work")}
+          sub={t('overview.todaysWorkSub', 'What needs a decision on the floor right now')}
+        />
+        <div className="ops-shift">
+          <button
+            type="button"
+            className="ops-shift-tile"
+            data-tone={toneForCount(pendingStoreReq)}
+            onClick={() => navigate('/dashboard/purchase/storereq')}
+          >
+            <div className="ops-shift-label">{t('overview.pendingApprovals', 'Pending Approvals')}</div>
+            <div className="ops-shift-val">{pendingStoreReq ?? '…'}</div>
+            <div className="ops-shift-cap">
+              {pendingStoreReq ? t('overview.requiresAction', 'Requires your action →') : t('overview.allClear', 'All clear')}
+            </div>
+          </button>
+          <button
+            type="button"
+            className="ops-shift-tile"
+            data-tone={toneForCount(openMaint)}
+            onClick={() => navigate('/dashboard/purchase/maint')}
+          >
+            <div className="ops-shift-label">{t('overview.openMaintenance', 'Open Maintenance')}</div>
+            <div className="ops-shift-val">{openMaint ?? '…'}</div>
+            <div className="ops-shift-cap">
+              {openMaint ? t('overview.ticketsInProgress', 'Tickets in progress') : t('overview.noOpenTickets', 'No open tickets')}
+            </div>
+          </button>
+          <button
+            type="button"
+            className="ops-shift-tile"
+            data-tone={activeBatchCount && activeBatchCount > 0 ? 'warn' : 'ok'}
+            onClick={() => navigate('/dashboard/batches')}
+          >
+            <div className="ops-shift-label">{t('overview.activeBatches', 'Active Batches')}</div>
+            <div className="ops-shift-val">{activeBatchCount ?? '…'}</div>
+            <div className="ops-shift-cap">
+              {avgBatchHours != null
+                ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
+                : t('overview.acrossFactories', { count: 4 })}
+            </div>
+          </button>
+          <button
+            type="button"
+            className="ops-shift-tile"
+            data-tone={toneForCount(alerts.length)}
+            onClick={() => {
+              if (alerts.length === 0) return;
+              document.getElementById('ov-alerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }}
+          >
+            <div className="ops-shift-label">{t('overview.openAlerts', 'Open Alerts')}</div>
+            <div className="ops-shift-val">{alerts.length}</div>
+            <div className="ops-shift-cap">
+              {alerts.length ? t('overview.acrossModules', 'Across all modules') : t('overview.allQuiet', 'All quiet')}
+            </div>
+          </button>
+        </div>
+
+        {alerts.length === 0 ? (
+          <div className="ops-alert-banner" id="ov-alerts">
+            <span className="ops-alert-clear-dot" aria-hidden />
+            <div>
+              <strong>{t('overview.noOpenAlerts', 'No open alerts')}</strong>
+              <span>{t('overview.plantQuietShort', 'All plants clear — new flags appear here.')}</span>
             </div>
           </div>
-        </SectionCard>
-
-        {/* Critical alerts */}
-        <div id="ov-alerts" className="col-span-12 lg:col-span-4 card2 p-5">
-          <SectionLabel
-            n={2}
-            right={alerts.length > 5 && (
-              <button
-                className="text-[12px] font-semibold text-blue-600 hover:underline"
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
-                onClick={() => setAlertsExpanded(e => !e)}
-              >
-                {alertsExpanded ? t('overview.showLess', 'Show less') : t('common.viewAll', 'View all')}
-              </button>
-            )}
-          >
-            {t('overview.criticalAlerts', 'Critical Alerts')}
-          </SectionLabel>
-          <div className="space-y-1">
-            {shownAlerts.map(a => {
-              const route = a.route || ALERT_ROUTE[a.source || ''];
-              const sev = a.severity === 'red' ? 'red' : a.severity === 'amber' ? 'amber' : 'slate';
-              return (
-                <div
-                  key={a.id}
-                  className={`flex items-start gap-2.5 py-2 rounded-lg px-1.5 -mx-1.5 ${route ? 'cursor-pointer hover:bg-slate-50' : ''}`}
-                  onClick={() => route && navigate(route)}
+        ) : (
+          <div id="ov-alerts" className="ops-alert-panel mt-3">
+            <OpsHead
+              title={t('overview.criticalAlerts', 'Critical Alerts')}
+              sub={t('overview.criticalAlertsSub', 'Plant stoppers & risk flags')}
+              right={alerts.length > 5 ? (
+                <button
+                  type="button"
+                  className="ops-link"
+                  onClick={() => setAlertsExpanded(e => !e)}
                 >
-                  <span className={`w-6 h-6 rounded-md inline-flex items-center justify-center shrink-0 mt-0.5 ${sev === 'red' ? 'bg-red-50 text-red-500' : sev === 'amber' ? 'bg-amber-50 text-amber-500' : 'bg-slate-100 text-slate-400'}`}>
-                    {sev === 'red' ? <AlertTriangle size={12} /> : <AlertCircle size={12} />}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium text-slate-800 leading-snug">{a.text}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">{a.source}</div>
+                  {alertsExpanded ? t('overview.showLess', 'Show less') : t('common.viewAll', 'View all')}
+                </button>
+              ) : undefined}
+            />
+            <div>
+              {shownAlerts.map(a => {
+                const route = a.route || ALERT_ROUTE[a.source || ''];
+                const sev = a.severity === 'red' ? 'red' : a.severity === 'amber' ? 'amber' : 'slate';
+                return (
+                  <div
+                    key={a.id}
+                    className="ops-alert-row"
+                    onClick={() => route && navigate(route)}
+                    role={route ? 'link' : undefined}
+                  >
+                    <span className={`w-6 h-6 rounded-md inline-flex items-center justify-center shrink-0 mt-0.5 ${sev === 'red' ? 'bg-red-50 text-red-600' : sev === 'amber' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {sev === 'red' ? <AlertTriangle size={12} /> : <AlertCircle size={12} />}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-medium text-slate-800 leading-snug">{a.text}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{a.source}</div>
+                    </div>
+                    <span className="text-[11px] text-slate-400 shrink-0">{a.when_label || AGE(a.created_at, t)}</span>
                   </div>
-                  <span className="text-[11px] text-slate-400 shrink-0">{a.when_label || AGE(a.created_at, t)}</span>
-                </div>
-              );
-            })}
-            {alerts.length === 0 && <div className="text-[13px] text-slate-400 py-4 text-center">{t('overview.noOpenAlerts', 'No open alerts')}</div>}
+                );
+              })}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* ── Row 2: Quick Actions ── */}
-      <div className="card2 p-5 mb-4">
-        <SectionLabel
-          n={3}
+      {/* ── Tool rail ── */}
+      <div>
+        <OpsHead
+          title={t('overview.quickActions', 'Quick Actions')}
+          sub={t('overview.quickActionsSub', 'Jump straight into the floor workflows')}
           right={
             <button
-              className="w-8 h-8 rounded-lg border border-slate-200 bg-white hover:border-orange-300 hover:bg-orange-50 inline-flex items-center justify-center text-slate-500 transition"
+              type="button"
+              className="w-8 h-8 rounded-lg border border-slate-200 bg-white hover:border-orange-300 hover:bg-orange-50 inline-flex items-center justify-center text-slate-500 cursor-pointer"
               onClick={() => setVoiceOpen(true)}
               aria-label={t('voice.heading')}
               title={t('voice.heading')}
@@ -271,28 +313,24 @@ export function Overview() {
               <Mic size={14} />
             </button>
           }
-        >
-          {t('overview.quickActions', 'Quick Actions')}
-        </SectionLabel>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        />
+        <div className="ops-tools">
           {QUICK_ACTIONS.map(a => (
-            <button
-              key={a.label}
-              onClick={() => navigate(a.to)}
-              className="flex items-center justify-center gap-2 border border-slate-200 rounded-[10px] px-3 py-3 bg-white hover:border-slate-300 hover:bg-slate-50 transition text-[13px] font-medium text-slate-700"
-              style={{ fontFamily: 'inherit', cursor: 'pointer' }}
-            >
-              <span className="text-slate-500 inline-flex [&>svg]:w-4 [&>svg]:h-4">{a.icon}</span>
+            <button key={a.label} type="button" className="ops-tool" onClick={() => navigate(a.to)}>
+              {a.icon}
               {a.label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* ── Row 3: Business KPIs (live BUSY data) ── */}
-      <div className="card2 p-5 mb-4">
-        <SectionLabel n={4}>{t('overview.businessKpis', 'Business KPIs')}</SectionLabel>
-        <div className="flex gap-6 flex-wrap divide-x divide-slate-100 [&>*+*]:pl-6">
+      {/* ── Business KPIs ── */}
+      <div>
+        <OpsHead
+          title={t('overview.businessKpis', 'Business KPIs')}
+          sub={t('overview.businessKpisSub', 'BUSY ledger pulse — MTD & FY')}
+        />
+        <div className="ops-kpi-rail">
           <KpiBlock
             label={t('overview.totalSalesMtd', 'Total Sales (MTD)')}
             value={kpis ? fmtINR(kpis.salesMTD) : '…'}
@@ -326,23 +364,22 @@ export function Overview() {
         </div>
       </div>
 
-      {/* ── Row 4: Pending Approvals table (live store requisitions) ── */}
-      <SectionCard className="mb-4" flush>
-        <div className="px-5 pt-5 pb-1 flex items-center justify-between">
-          <SectionLabel
-            n={5}
+      {/* ── Pending Approvals table ── */}
+      <SectionCard className="!rounded-[14px]" flush>
+        <div className="px-5 pt-5 pb-1">
+          <OpsHead
+            title={t('overview.pendingApprovals', 'Pending Approvals')}
+            sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
             right={
               <button
-                className="text-[12px] font-semibold text-blue-600 hover:underline"
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
+                type="button"
+                className="ops-link"
                 onClick={() => navigate('/dashboard/purchase/storereq')}
               >
                 {t('common.viewAll', 'View all')}
               </button>
             }
-          >
-            {t('overview.pendingApprovals', 'Pending Approvals')}
-          </SectionLabel>
+          />
         </div>
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
@@ -359,7 +396,14 @@ export function Overview() {
             </thead>
             <tbody>
               {pendingReqs.length === 0 && (
-                <tr><td colSpan={7} className="text-center text-slate-400 py-6 text-sm">{t('overview.noPendingApprovals', 'Nothing awaiting approval')}</td></tr>
+                <tr>
+                  <td colSpan={7} className="!p-0">
+                    <div className="ops-empty">
+                      <strong>{t('overview.noPendingApprovals', 'Nothing awaiting approval')}</strong>
+                      <span>{t('overview.noPendingApprovalsHint', 'When a store indent is raised from maintenance, it will queue here for review.')}</span>
+                    </div>
+                  </td>
+                </tr>
               )}
               {pendingReqs.map(r => (
                 <tr key={r.id} onClick={() => navigate('/dashboard/purchase/storereq')} style={{ cursor: 'pointer' }}>
@@ -400,10 +444,10 @@ export function Overview() {
 
       {/* ── Analytics Insight Row ── */}
       {analytics && (
-        <div className="grid grid-cols-12 gap-4 mb-4">
+        <div className="grid grid-cols-12 gap-4">
 
           {/* DSO Gauge */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Days Sales Outstanding (DSO)', what: 'How many days on average it takes to collect payment after a sale is made. Lower is better — below 30d is best-in-class.', source: 'Derived', formula: 'DSO = (Debtors Outstanding / FY Revenue) × 365', tables: ['DailySum', 'Master1', 'Tran1'], note: 'Debtors = Master1 WHERE ParentGrp=116. Target < 30 days.' }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.daysSalesOutstanding')}</div>
             <div className="flex items-center gap-3">
@@ -418,7 +462,7 @@ export function Overview() {
           </div>
 
           {/* Gross Margin Ring */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Gross Margin %', what: 'Percentage of FY revenue remaining after subtracting total purchases.', source: 'Derived', formula: 'Gross Margin = (FY Revenue − FY Purchase) / FY Revenue × 100', tables: ['Tran1'], note: 'Industry benchmark for chemical mfg is ~28%.' }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.grossMarginFy')}</div>
             <div className="flex items-center gap-3">
@@ -432,7 +476,7 @@ export function Overview() {
           </div>
 
           {/* Revenue Run Rate + bar sparkline */}
-          <div className="col-span-12 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Annualised Revenue Run Rate', what: 'Projects full-year revenue based on the average of the last 2 complete months.', source: 'Derived', formula: 'Run Rate = avg(last 2 complete months revenue) × 12', tables: ['Tran1'] }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.annualisedRunRate')}</div>
             <div className="text-[22px] font-extrabold text-slate-800 num">{fmtINR(analytics.revenueRunRate)}</div>
@@ -443,13 +487,13 @@ export function Overview() {
             <MiniBarChart
               data={analytics.monthly.map(m => m.revenue)}
               labels={analytics.monthly.map(m => m.label)}
-              color="#F47651"
+              color="#EF6C00"
               height={36}
             />
           </div>
 
           {/* Working Capital — debtors vs creditors */}
-          <div className="col-span-12 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Net Working Capital', what: 'Total debtors outstanding minus total creditors outstanding.', source: 'Derived', formula: 'NWC = Debtors Outstanding − Creditors Outstanding', tables: ['DailySum', 'Master1'] }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.netWorkingCapital')}</div>
             <div className={`text-[22px] font-extrabold num ${analytics.netWorkingCapital >= 0 ? 'text-green-700' : 'text-red-600'}`}>
@@ -461,7 +505,7 @@ export function Overview() {
               right={analytics.creditorsOutstanding}
               leftLabel={`${t('overview.debtors')} ${fmtINR(kpis?.debtorsOutstanding ?? 0)}`}
               rightLabel={`${t('overview.creditors')} ${fmtINR(analytics.creditorsOutstanding)}`}
-              leftColor="#F47651"
+              leftColor="#EF6C00"
               rightColor="#2563EB"
             />
           </div>
@@ -470,10 +514,10 @@ export function Overview() {
 
       {/* ── Analytics Insight Row 2 — Liquidity & Risk ── */}
       {analytics && analytics.dpo !== undefined && (
-        <div className="grid grid-cols-12 gap-4 mb-4">
+        <div className="grid grid-cols-12 gap-4">
 
           {/* DPO + Cash Conversion Cycle */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'DPO & Cash Conversion Cycle', what: 'DPO = how many days before the company pays its suppliers. CCC = DSO minus DPO.', source: 'Derived', formula: 'DPO = (Creditors Outstanding / FY Purchase) × 365\nCCC = DSO − DPO' }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.payablesCycleDpo')}</div>
             <div className="text-[28px] font-extrabold num text-blue-700">{analytics.dpo} d</div>
@@ -490,7 +534,7 @@ export function Overview() {
           </div>
 
           {/* Collection Ratio */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Collection Ratio MTD', what: "Percentage of this month's sales revenue that has already been received as cash.", source: 'Derived', formula: 'Collection Ratio = MTD Receipts / MTD Sales × 100' }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">{t('overview.collectionRatioMtd')}</div>
             <div className="flex items-center gap-3">
@@ -505,7 +549,7 @@ export function Overview() {
           </div>
 
           {/* Overdue Aging */}
-          <div className="col-span-12 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Overdue Aging Buckets', what: 'Outstanding bills broken into 4 age bands. Older buckets have higher collection risk.', source: 'BUSY DB', tables: ['Tran3'], filter: 'RecType=5, Status=1 (pending), DueDate < today' }} />
             <div className="flex items-center justify-between mb-3">
               <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('overview.overdueAging')}</div>
@@ -517,7 +561,7 @@ export function Overview() {
           </div>
 
           {/* Revenue vs Cash Gap */}
-          <div className="col-span-12 lg:col-span-3 card2 p-5" style={{ position: 'relative' }}>
+          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
             <KpiInfoButton info={{ title: 'Revenue vs Cash Received Gap', what: 'FY revenue invoiced minus FY receipts actually received — the total still owed across all customers.', source: 'Derived', formula: 'Gap = FY Revenue − FY Receipts (VchType=16)' }} />
             <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.revenueVsCashFy')}</div>
             <div className="text-[22px] font-extrabold num text-amber-600">{fmtINR(analytics.revenueReceiptsGap)}</div>
@@ -535,12 +579,12 @@ export function Overview() {
       )}
 
       {/* ── Movements + Top customers ── */}
-      <div className="grid grid-cols-12 gap-4 mb-4">
+      <div className="grid grid-cols-12 gap-4">
 
         {/* Movements feed */}
-        <div className="col-span-12 lg:col-span-8 card2 p-5" style={{ position: 'relative' }}>
+        <div className="col-span-12 lg:col-span-8 ops-surface p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: "Today's Movements Feed", what: 'Real-time activity feed showing sales, purchase, batch, stock, and maintenance events from the last 3 days. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType in (9,14,16,19), last 3 days' }} />
-          <div className="text-base font-bold font-heading mb-3">{t('overview.todaysMovements')}</div>
+          <OpsHead title={t('overview.todaysMovements')} />
 
           {/* Search */}
           <div className="relative mb-3">
@@ -548,7 +592,7 @@ export function Overview() {
               value={moveSearch}
               onChange={e => setMoveSearch(e.target.value)}
               placeholder={t('overview.searchMovesPlaceholder')}
-              className="pl-10 pr-4 py-2.5 w-full bg-white border border-slate-200 rounded-[10px] text-sm focus:outline-none focus:ring-2 focus:ring-slate-200 transition"
+              className="pl-10 pr-4 py-2.5 w-full bg-[#F8FAFC] border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#EF6C00] focus:ring-2 focus:ring-[rgba(239,108,0,0.15)] transition"
             />
             <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
@@ -569,14 +613,14 @@ export function Overview() {
           </div>
 
           {/* List */}
-          <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+          <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
             {filteredMoves.length > 0 ? filteredMoves.map((m, i) => (
               <div
                 key={i}
-                className="flex items-center gap-3 p-3 rounded-[10px] border border-slate-100 hover:border-slate-200 hover:bg-slate-50 cursor-pointer transition"
+                className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
                 onClick={() => navigate(MOVE_ROUTE[m.type] ?? '/dashboard')}
               >
-                <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-50 border border-slate-100 text-slate-500">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-100 text-slate-500">
                   <ArrowRight size={13} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -584,22 +628,27 @@ export function Overview() {
                   <div className="text-xs text-slate-500 truncate">{m.sub}</div>
                 </div>
                 <div className="text-right shrink-0">
-                  <div className="text-sm font-semibold" style={{ color: m.col }}>{m.amt}</div>
+                  <div className="text-sm font-semibold num" style={{ color: m.col }}>{m.amt}</div>
                   <div className="text-[10px] text-slate-400">{m.when}</div>
                 </div>
               </div>
             )) : (
-              <div className="text-center py-10 text-slate-400 text-sm">{t('overview.noMovementsMatch')}</div>
+              <div className="ops-empty rounded-xl border border-dashed border-slate-200">
+                <strong>{t('overview.noMovementsMatch')}</strong>
+                <span>{t('overview.noMovementsHint', 'Sales, purchases, and batch closes from BUSY will stream here.')}</span>
+              </div>
             )}
           </div>
         </div>
 
         {/* Top customers snapshot */}
-        <div className="col-span-12 lg:col-span-4 card2 p-5" style={{ position: 'relative' }}>
+        <div className="col-span-12 lg:col-span-4 ops-surface p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Customer History Snapshot', what: 'Top 3 customers ranked by MTD sales revenue, pulled live from BUSY.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType=9, Cancelled=0, TOP 3 by MTD revenue' }} />
-          <div className="text-base font-bold font-heading">{t('overview.customerHistorySnapshot')}</div>
-          <div className="text-xs text-slate-500 mt-0.5 mb-3">{t('overview.top3ByMtdRevenue')}</div>
-          <div className="space-y-1">
+          <OpsHead
+            title={t('overview.customerHistorySnapshot')}
+            sub={t('overview.top3ByMtdRevenue')}
+          />
+          <div className="space-y-0.5">
             {displayCustomers.map(c => (
               <div
                 key={c.name}
@@ -612,8 +661,8 @@ export function Overview() {
             ))}
           </div>
           <button
-            className="text-blue-600 text-xs font-semibold mt-3 hover:underline"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
+            type="button"
+            className="ops-link mt-3"
             onClick={() => navigate('/dashboard/customers')}
           >
             {t('overview.openCustomerHistory')} →
@@ -630,6 +679,6 @@ export function Overview() {
       />
 
       <VoiceSearch open={voiceOpen} onClose={() => setVoiceOpen(false)} />
-    </>
+    </div>
   );
 }

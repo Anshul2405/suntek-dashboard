@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pencil, Check, X, Plus, FlaskConical, Droplets, TestTube2, Package, BarChart3 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { upsertRows } from '../../lib/db';
 import { useRoleContext } from '../../contexts/RoleContext';
+import { isAdminProfile } from '../../lib/profiles';
 import { SectionCard, SegmentTabs, ButtonV2, StatusPill } from '../../components/v2';
 
 type Variant = 'suntek' | 'manav';
@@ -20,10 +22,6 @@ interface OilRatioRow {
   sort_order: number;
 }
 
-// The `oil_ratios` table is not yet in the generated database.types, so query
-// it through an untyped handle and map rows to the local OilRatioRow shape.
-const db = supabase as any;
-
 function varianceColor(vr: number): string {
   if (Math.abs(vr) > 1.5) return 'var(--red)';
   if (Math.abs(vr) > 1)   return 'var(--amber)';
@@ -33,7 +31,7 @@ function varianceColor(vr: number): string {
 export function OilRatioTable() {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const isAdmin = activeProfile.id === 'admin';
+  const isAdmin = isAdminProfile(activeProfile);
 
   const [rows, setRows] = useState<OilRatioRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,7 +45,7 @@ export function OilRatioTable() {
 
   async function load() {
     setLoading(true);
-    const { data } = await db
+    const { data } = await supabase
       .from('oil_ratios')
       .select('*')
       .order('brand', { ascending: true })
@@ -101,7 +99,7 @@ export function OilRatioTable() {
       ok: !!r.ok,
       sort_order: Number(r.sort_order) || 0,
     }));
-    const { error } = await db.from('oil_ratios').upsert(payload);
+    const { error } = await upsertRows('oil_ratios', payload);
     setSaving(false);
     if (error) {
       // eslint-disable-next-line no-alert

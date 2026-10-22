@@ -12,17 +12,17 @@ const ICON_TONES: Record<StatTone, string> = {
   orange:  'bg-orange-50 text-orange-500',
   green:   'bg-green-50 text-green-600',
   blue:    'bg-blue-50 text-blue-600',
-  purple:  'bg-purple-50 text-purple-600',
+  purple:  'bg-slate-100 text-slate-600',
 };
 
 const VALUE_TONES: Record<StatTone, string> = {
   default: 'text-slate-900',
-  amber:   'text-amber-600',
+  amber:   'text-amber-700',
   red:     'text-red-600',
   orange:  'text-orange-600',
-  green:   'text-green-600',
-  blue:    'text-blue-600',
-  purple:  'text-purple-600',
+  green:   'text-teal-700',
+  blue:    'text-blue-700',
+  purple:  'text-slate-700',
 };
 
 /**
@@ -53,8 +53,15 @@ export function StatCard({
   className?: string;
 }) {
   const { t } = useTranslation();
+  const clickable = !!onView;
   return (
-    <div className={cn('card2 p-5', className)}>
+    <div
+      className={cn('card2 p-5', clickable && 'cursor-pointer hover:border-slate-300 hover:shadow-sm transition', className)}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? onView : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onView?.(); } } : undefined}
+    >
       <div className="flex items-center gap-2.5 mb-3">
         {icon && (
           <span
@@ -75,13 +82,9 @@ export function StatCard({
       </div>
       {caption && <div className="text-xs text-slate-500 mt-2">{caption}</div>}
       {onView && (
-        <button
-          type="button"
-          onClick={onView}
-          className="text-blue-600 text-xs font-medium mt-2.5 hover:underline flex items-center gap-1"
-        >
+        <span className="text-[#D84315] text-xs font-semibold mt-2.5 hover:underline flex items-center gap-1">
           {viewLabel ?? t('common.view', 'View')} →
-        </button>
+        </span>
       )}
     </div>
   );

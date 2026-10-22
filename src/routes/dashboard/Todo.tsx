@@ -206,15 +206,18 @@ export function Todo() {
 
       {/* Empty states */}
       {totalCount === 0 ? (
-        <div className="card2 p-10 text-center">
-          <div style={{ fontSize: 40, marginBottom: 10 }}>🎉</div>
-          <div className="text-[15px] font-semibold text-slate-700">{t('todo.emptyTitle')}</div>
-          <div className="text-xs text-slate-400 mt-1">{t('todo.emptyBody')}</div>
+        <div className="ops-surface overflow-hidden">
+          <div className="ops-empty">
+            <strong>{t('todo.emptyTitle')}</strong>
+            <span>{t('todo.emptyBody')}</span>
+          </div>
         </div>
       ) : view.length === 0 ? (
-        <div className="card2 p-10 text-center">
-          <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
-          <div className="text-[14px] font-semibold text-slate-600">{t('todo.noMatch', { q: query })}</div>
+        <div className="ops-surface overflow-hidden">
+          <div className="ops-empty">
+            <strong>{t('todo.noMatch', { q: query })}</strong>
+            <span>{t('todo.noMatchHint', 'Try another name, plant, or clear the search.')}</span>
+          </div>
         </div>
       ) : (
         <>

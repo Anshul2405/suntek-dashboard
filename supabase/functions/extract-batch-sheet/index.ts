@@ -30,26 +30,27 @@ Carefully read and extract ALL handwritten data from this batch log sheet image.
 Return ONLY a valid JSON object — no markdown fences, no explanation, just JSON.
 
 SHEET SECTIONS:
-1. HEADER: the printed COMPANY / FIRM name at the very top of the sheet (e.g. "Madan Chemicals Pvt Ltd Unit-II" → "Madan Chemicals Pvt Ltd"), the "BATCH NO." value (just the number, e.g. "1228") and "FINAL GRAVITY" value (number, e.g. 1390)
+1. HEADER: the printed COMPANY / FIRM name at the very top of the sheet (e.g. "Madan Chemicals Pvt Ltd Unit-II" → "Madan Chemicals Pvt Ltd"), the "BATCH NO." value (e.g. "P-701" or "1228") and "FINAL GRAVITY" value (number, e.g. 1305)
 
 2. MAIN TABLE — extract every row that has any data written. Columns:
-   - DATE: format DD/MM/YY (e.g. "22/02/26")
-   - TIME: e.g. "10 PM", "2 AM", "6 AM", "10 AM", "2 PM", "6 PM"
-   - TEMP: integer °C (e.g. 101, 102, 104...)
-   - CP GRAVITY: integer (e.g. 910, 960, 1070...)
-   - Cl2 pressure: string preserving units, e.g. "800g", "900g", "1kg", "1.1", "1Kg", "1kg"
-   - Cl2 Pipe Line Pressure: string, usually "2kg" or "2Kg" or similar
-   - HCL GRAVITY: integer or null. "f" or "t" means full/same — use null
+   - DATE: format DD/MM/YY (e.g. "25/07/26")
+   - TIME: e.g. "2:00 pm", "10 PM", "2 AM"
+   - TEMP: integer °C
+   - CP GRAVITY: integer
+   - Cl2 pressure: string preserving units, e.g. "800", "800g", "1.0", "1kg"
+   - Cl2 Pipe Line Pressure: string, e.g. "2000", "2.0kg", "2kg" or "-"
+   - HCL GRAVITY: integer or null. "F", "f", or "t" means full/same — use null
    - OPERATOR: handwritten name
 
-3. PROCESS INFO (below the main table):
-   OIL TIME, DATE, TEMP, Cl2 Starting Time, TEMP, FRR TIME, TEMP, TOTAL BATCH TIME, PRESSURE
+3. PROCESS INFO (below the main table / NOTE block):
+   OIL TIME, DATE, TEMP, Cl2 Starting Time, TEMP, FRR TIME, TEMP, PRESSURE, TOTAL BATCH TIME
 
-4. BOTTOM SUMMARY (two-column layout):
+4. BOTTOM SUMMARY (two-column layout) — extract EVERY field:
    Left: TYPE OF OIL, Reactor Air Purging (Temp/Start Time/End Time), Cooling stop temp,
-         Degasser Air Purging Time (Start/End), Paraffin Weight, HS Used, Filling In-charge, HCL Quantity
+         Degasser Air Purging (Start/End), Paraffin Weight, HS Used, Filling In-charge, HCL Quantity
    Right: Melter No./Temp, Degasser No., Opening Balance, Total Drums Filled, Closing Balance,
-          Brightener, Helper, Operator, Free Cl2, OIL CON RATIO/Kg CP, Sp. Gravity/temp, Technical
+          Brightener, Helper, Operator, Free Cl2, OIL CON RATIO/Kg CP (number in grams if present),
+          Sp. Gravity/temp (as string e.g. "1305 / 30°C"), Technical
 
 Return this EXACT JSON (no extra keys, all values exactly typed as shown):
 {
@@ -76,6 +77,7 @@ Return this EXACT JSON (no extra keys, all values exactly typed as shown):
     "cl2StartingTemp": number_or_null,
     "frrTime": "string_or_null",
     "frrTemp": number_or_null,
+    "frrPressure": "string_or_null",
     "totalBatchTime": "string_or_null",
     "pressure": "string_or_null"
   },
@@ -92,10 +94,29 @@ Return this EXACT JSON (no extra keys, all values exactly typed as shown):
     "hclQuantity": number_or_null,
     "reactorAirPurgingTemp": number_or_null,
     "reactorAirPurgingStartTime": "string_or_null",
-    "reactorAirPurgingEndTime": "string_or_null"
+    "reactorAirPurgingEndTime": "string_or_null",
+    "coolingStopTemp": number_or_null,
+    "degasserAirPurgingStartTime": "string_or_null",
+    "degasserAirPurgingEndTime": "string_or_null",
+    "hsUsed": number_or_null,
+    "brightener": "string_or_null",
+    "freeCl2": "string_or_null",
+    "oilConRatio": number_or_null,
+    "fillingInCharge": "string_or_null",
+    "spGravityTemp": "string_or_null",
+    "technical": "string_or_null"
   },
   "notes": "any NOTE text from the sheet, or empty string"
 }`;
+
+/** Cap base64 payload size. Oversized images OOM the Edge worker before NVIDIA returns. */
+function truncateDataUrl(image: string, maxChars: number): string {
+  if (image.length <= maxChars) return image;
+  // Prefer keeping a valid data-URL prefix; if still too long, send as-is truncated
+  // (NVIDIA will reject invalid base64 — better than worker crash).
+  console.warn('[extract-batch-sheet] Truncating image from', image.length, 'to', maxChars);
+  return image.slice(0, maxChars);
+}
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 serve(async (req: Request) => {
@@ -132,22 +153,26 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── Forward to NVIDIA ────────────────────────────────────────────────────
-    // ── Forward to NVIDIA (model via NVIDIA_OCR_MODEL, one retry on 5xx) ──────
+    // Shrink huge data-URLs so the Edge worker stays under memory limits.
+    // Client already resizes, but PDFs / high-res cameras still blow the 90B path.
+    const imageForModel = truncateDataUrl(image, 900_000);
+    console.log('[extract-batch-sheet] Image for model length:', imageForModel.length);
+
+    // Prefer 11B vision (fits Edge memory). Override with NVIDIA_OCR_MODEL secret.
     let content: string;
     let usedModel: string;
     try {
       const r = await nvidiaChat({
         apiKey,
-        fallbackModel: 'meta/llama-3.2-90b-vision-instruct',
-        maxTokens: 4096,
+        fallbackModel: 'meta/llama-3.2-11b-vision-instruct',
+        maxTokens: 2048,
         jsonMode: true,
         messages: [
           {
             role: 'user',
             content: [
               { type: 'text', text: EXTRACTION_PROMPT },
-              { type: 'image_url', image_url: { url: image, detail: 'high' } },
+              { type: 'image_url', image_url: { url: imageForModel, detail: 'low' } },
             ],
           },
         ],

@@ -1,14 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { insertRows, upsertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../contexts/RoleContext';
+import { canViewBatchFacet } from '../../lib/profiles';
 import type { Database } from '../../lib/database.types';
 import { BatchSheetUpload } from '../../components/BatchSheetUpload';
 import { useOcrJobs } from '../../contexts/OcrJobsContext';
 import { BatchSheetReview } from '../../components/BatchSheetReview';
+import { ProductionBatchSheetForm } from '../../components/ProductionBatchSheetForm';
 import type { ExtractedBatchSheet } from '../../lib/nvidiaOcr';
 // Sales/Purchase OCR upload moved to the Sales & Purchase pages (admin/unit-head/
 // accountant only). The Technical Team's batch logger no longer carries them.
@@ -35,8 +38,18 @@ interface BatchLoggerProps {
 export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   const { t } = useTranslation();
   const toast = useToast();
+  const navigate = useNavigate();
   const ocr = useOcrJobs();
   const { plantIds } = usePlantScope(); // the logged-in operator's plant(s)
+  const { activeProfile } = useRoleContext();
+  const showRaw = canViewBatchFacet(activeProfile, 'raw');
+  const showSheet = canViewBatchFacet(activeProfile, 'sheet');
+  const showMat = canViewBatchFacet(activeProfile, 'mat');
+  const allowedTabs = useMemo(() => (['reading', 'new-batch', 'upload', 'history', 'create-sheet'] as const).filter(tab =>
+    tab === 'reading' || tab === 'new-batch' ? showRaw
+      : tab === 'upload' || tab === 'create-sheet' ? showSheet
+      : showMat
+  ), [showRaw, showSheet, showMat]);
   const [batchId, setBatchId] = useState('');
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [temp, setTemp]           = useState('');
@@ -111,7 +124,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
             if (sess.temp_input) setTemp(sess.temp_input);
             if (sess.cp_gravity_input) setCpGravity(sess.cp_gravity_input);
             if (sess.cl2_press_input) setCl2Press(sess.cl2_press_input);
-            if (sess.active_tab && ['reading','new-batch','upload','history'].includes(sess.active_tab)) setActiveTab(sess.active_tab);
+            if (sess.active_tab && ['reading','new-batch','upload','history','create-sheet'].includes(sess.active_tab)) setActiveTab(sess.active_tab as 'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet');
             if (sess.new_batch_no_input) setNewBatchNo(sess.new_batch_no_input);
             if (sess.new_recipe_input) setNewRecipe(sess.new_recipe_input);
             if (sess.new_target_qty_input) setNewTargetQty(sess.new_target_qty_input);
@@ -142,7 +155,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               if (data.temp_input) setTemp(data.temp_input);
               if (data.cp_gravity_input) setCpGravity(data.cp_gravity_input);
               if (data.cl2_press_input) setCl2Press(data.cl2_press_input);
-              if (data.active_tab && ['reading','new-batch','upload','history'].includes(data.active_tab)) setActiveTab(data.active_tab as typeof activeTab);
+              if (data.active_tab && ['reading','new-batch','upload','history','create-sheet'].includes(data.active_tab)) setActiveTab(data.active_tab as typeof activeTab);
               if (data.new_batch_no_input) setNewBatchNo(data.new_batch_no_input);
               if (data.new_recipe_input) setNewRecipe(data.new_recipe_input);
               if (data.new_target_qty_input) setNewTargetQty(data.new_target_qty_input);
@@ -171,15 +184,19 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
   // Tab State — driven by the sidebar (?tab=) when embedded in the dashboard.
   const [searchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<'reading' | 'new-batch' | 'upload' | 'history'>('reading');
+  const [activeTab, setActiveTab] = useState<'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet'>('reading');
   // When embedded, the 3 sidebar dropdowns select the active panel via ?tab=.
   useEffect(() => {
     if (!embedded) return;
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['reading', 'new-batch', 'upload', 'history'].includes(tabParam)) {
-      setActiveTab(tabParam as 'reading' | 'new-batch' | 'upload' | 'history');
+    if (tabParam && ['reading', 'new-batch', 'upload', 'history', 'create-sheet'].includes(tabParam)) {
+      setActiveTab(tabParam as 'reading' | 'new-batch' | 'upload' | 'history' | 'create-sheet');
     }
   }, [searchParams, embedded]);
+  useEffect(() => {
+    if (allowedTabs.includes(activeTab)) return;
+    if (allowedTabs[0]) setActiveTab(allowedTabs[0]);
+  }, [activeTab, allowedTabs]);
   const [newBatchNo, setNewBatchNo] = useState('');
   const [newRecipe, setNewRecipe] = useState('1400');
   const [newTargetQty, setNewTargetQty] = useState('1400');
@@ -408,7 +425,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   return (
     <div
       className={embedded ? 'flex flex-col' : 'h-screen flex flex-col'}
-      style={{ background: embedded ? 'transparent' : '#E2E8F0', fontFamily: 'Inter, sans-serif' }}
+      style={{ background: embedded ? 'transparent' : '#E2E8F0', fontFamily: 'inherit' }}
     >
       {/* Standalone-only header — hidden when embedded in the dashboard */}
       {!embedded && (
@@ -429,7 +446,27 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
         </header>
       )}
 
-      {/* Two-column body */}
+      {/* Meeting-spec production batch sheet — full-width linear wizard */}
+      {activeTab === 'create-sheet' && (
+        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-6'} data-tour="tour-create-form">
+          <div className="mb-4">
+            <div className="text-base font-bold text-slate-800">{t('batchProd.title', 'Create production batch sheet')}</div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {t('batchProd.subtitle', 'Linear flow: reactor → density → evidence photos → submit. Continuous batch number + per-reactor sequence.')}
+            </p>
+          </div>
+          <ProductionBatchSheetForm
+            onCreated={(batchNo) => {
+              // After create, open the Batch Sheet register so the new row is visible
+              // (staying on Batch Logger felt like the sheet vanished).
+              navigate(`/dashboard/batches?highlight=${encodeURIComponent(batchNo)}`);
+            }}
+          />
+        </main>
+      )}
+
+      {/* Two-column body — reading / new-batch / upload / history */}
+      {activeTab !== 'create-sheet' && (
       <main className={embedded ? 'flex-1 flex gap-6' : 'flex-1 overflow-hidden p-6 flex gap-6'}>
 
         {/* LEFT: Tab switches and Forms */}
@@ -446,6 +483,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 sidebar dropdowns (Batch / Operations / Logs) drive navigation. */}
             {!embedded && (
             <div className="flex gap-1 mb-4 bg-slate-100 p-1 rounded-xl border shrink-0">
+              {showRaw && (
               <button
                 type="button"
                 onClick={() => setActiveTab('reading')}
@@ -457,6 +495,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabLog')}
               </button>
+              )}
+              {showRaw && (
               <button
                 type="button"
                 onClick={() => setActiveTab('new-batch')}
@@ -468,6 +508,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabNewBatch')}
               </button>
+              )}
+              {showSheet && (
               <button
                 type="button"
                 onClick={() => setActiveTab('upload')}
@@ -479,6 +521,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabBatch')}
               </button>
+              )}
+              {showMat && (
               <button
                 type="button"
                 onClick={() => setActiveTab('history')}
@@ -490,6 +534,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               >
                 {t('batchEntry.tabHistory')}
               </button>
+              )}
             </div>
             )}
 
@@ -508,12 +553,14 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
             )}
 
             {activeTab === 'upload' ? (
+              <div data-tour="tour-upload">
               <BatchSheetUpload
                 channel="batch"
                 reviewing={!!uploadReview}
                 docLabel={t('batchEntry.batchSheet')}
                 accentColor="#7c3aed"
               />
+              </div>
             ) : activeTab === 'history' ? (
               <div className="flex-1 flex flex-col gap-4">
                 {/* Batch selector — choose which batch's reading history to view */}
@@ -538,10 +585,10 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 </div>
               </div>
             ) : activeTab === 'reading' ? (
-              <form onSubmit={handleSave} className="space-y-5 flex-1 flex flex-col justify-between">
+              <form onSubmit={handleSave} className="space-y-5 flex-1 flex flex-col justify-between" data-tour="tour-log-reading">
                 <div className="space-y-4">
                   {/* Batch selector */}
-                  <div>
+                  <div data-tour="tour-reading-batch">
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
                       {t('batchEntry.selectActiveBatch')}
                     </label>
@@ -559,7 +606,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                   </div>
 
                   {/* Temperature */}
-                  <div>
+                  <div data-tour="tour-reading-values">
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
                       {t('batchEntry.temperature')}
                     </label>
@@ -617,7 +664,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleCreateBatch} className="space-y-5 flex-1 flex flex-col justify-between">
+              <form onSubmit={handleCreateBatch} className="space-y-5 flex-1 flex flex-col justify-between" data-tour="tour-new-batch">
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
@@ -677,7 +724,9 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
           </div>
         </div>
 
-        {/* RIGHT: Batch log table — or OCR review panels when upload is active */}
+        {/* RIGHT: Batch log table — only on Log Reading / History.
+            New Batch & Upload were still showing the selected active batch's
+            readings (e.g. p11-dummy), which looked like the same log everywhere. */}
         {activeTab === 'upload' && uploadReview ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             <BatchSheetReview
@@ -685,19 +734,19 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               imageUrl={uploadReview.imageUrl}
               batches={batches}
               ipAddress={ipAddress}
+              plantId={plantIds[0] ?? null}
               onSaved={(savedBatchNo) => {
                 ocr.reset('batch');
                 loadBatches();
                 setActiveTab('reading');
-                toast.success(t('batchEntry.batchSheetSaved', { batchNo: savedBatchNo }));
+                // BatchSheetReview already toasts with yield detail.
+                void savedBatchNo;
               }}
               onCancel={() => ocr.reset('batch')}
             />
           </div>
-        ) : null}
-        <div className={`flex-1 bg-white rounded-2xl flex flex-col overflow-hidden shadow-sm${
-          (activeTab === 'upload' && uploadReview) ? ' hidden' : ''
-        }`}>
+        ) : (activeTab === 'reading' || activeTab === 'history') ? (
+        <div className="flex-1 bg-white rounded-2xl flex flex-col overflow-hidden shadow-sm" data-tour="tour-reading-log">
           {/* Table header bar */}
           <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50 rounded-t-2xl shrink-0">
             <div>
@@ -733,33 +782,58 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                       background: i === 0 ? '#F0FDF4' : undefined,
                     }}
                   >
-                    <td className="p-4 font-mono text-xs text-slate-500">{r.time}</td>
-                    <td className="p-4 font-mono">{r.temp}</td>
-                    <td className="p-4 font-mono">{r.cpGravity}</td>
-                    <td className="p-4 font-mono">{r.cl2Press}</td>
-                    <td className="p-4 text-slate-500">{r.operator}</td>
+                    <td className="p-4 font-mono text-slate-500">{r.time}</td>
+                    <td className="p-4 font-bold">{r.temp}</td>
+                    <td className="p-4 font-bold text-blue-600">{r.cpGravity}</td>
+                    <td className="p-4 font-bold">{r.cl2Press}</td>
+                    <td className="p-4 text-slate-600">{r.operator}</td>
                   </tr>
                 ))}
+                {visibleReadings.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="p-8 text-center text-slate-400 text-sm">
+                      {t('batchEntry.noReadingsYet', 'No readings logged for this batch yet.')}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
 
-          {/* Close batch footer */}
-          <div className="p-4 border-t border-slate-100 flex items-center justify-between shrink-0 bg-slate-50">
-            <div className="text-xs text-slate-500">
+          <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center shrink-0">
+            <div className="text-xs text-slate-500 font-medium">
               {t('batchEntry.readingsLogged', { count: visibleReadings.length })}
             </div>
-            <button
-              className="text-xs font-bold px-4 py-2 rounded-xl border transition-colors hover:bg-red-50"
-              style={{ borderColor: '#FCA5A5', color: '#DC2626' }}
-              onClick={() => toast.info(t('batchEntry.closeBatchInfo'))}
-            >
-              {t('batchEntry.closeBatchRunQc')}
-            </button>
+            {activeTab === 'reading' && (
+              <button
+                type="button"
+                data-tour="tour-close-batch"
+                className="text-xs font-bold px-4 py-2 rounded-xl border transition-colors hover:bg-red-50"
+                style={{ borderColor: '#FCA5A5', color: '#DC2626' }}
+                onClick={() => toast.info(t('batchEntry.closeBatchInfo'))}
+              >
+                {t('batchEntry.closeBatchRunQc')}
+              </button>
+            )}
           </div>
         </div>
+        ) : (
+          <div className="flex-1 bg-white rounded-2xl flex flex-col items-center justify-center shadow-sm px-8 text-center">
+            <div className="text-sm font-bold text-slate-700">
+              {activeTab === 'new-batch'
+                ? t('batchEntry.newBatchSideHintTitle', 'Start a live batch run')
+                : t('batchEntry.uploadSideHintTitle', 'Upload a sheet photo')}
+            </div>
+            <p className="mt-2 text-xs text-slate-500 max-w-sm leading-relaxed">
+              {activeTab === 'new-batch'
+                ? t('batchEntry.newBatchSideHint', 'This starts an Active Batch for Log Reading. It is not the production batch sheet list — use Create Batch Sheet / All sheets for those.')
+                : t('batchEntry.uploadSideHint', 'AI reads the photo into a review form. The live reading log stays under Log Reading.')}
+            </p>
+          </div>
+        )}
 
       </main>
+      )}
     </div>
   );
 }

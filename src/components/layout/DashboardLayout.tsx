@@ -12,6 +12,8 @@ import { useBlacklist } from '../../contexts/BlacklistContext';
 import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { SearchPaletteProvider } from '../../contexts/SearchPaletteContext';
+import { BrandLoader } from '../brand/BrandLoader';
+import { BatchFlowTourHost } from '../tour/BatchFlowTourHost';
 
 // ── Blacklisted overlay ───────────────────────────────────────────────────────
 
@@ -145,21 +147,21 @@ const FACTORY_SUBPAGES: Record<string, { title: L; breadcrumb: readonly L[]; sub
 
 /** v2 subtitles for non-purchase pages (rendered under the TopBar title). */
 const PAGE_SUBTITLES: Record<string, L> = {
-  '/dashboard': ['nav.subOverview', "Today's work, business KPIs and approvals across all plants."],
-  '/dashboard/todo': ['nav.subTodo', 'Everything pending your action — updates live as work moves on.'],
-  '/dashboard/night-manager': ['nav.subNightManager', 'Manage night duty schedules and employee check-ins.'],
-  '/dashboard/sales': ['nav.subSales', 'Contracts, dispatches and HCL/acid tracking.'],
-  '/dashboard/stock': ['nav.subStock', 'Tanks, drums and store items across plants.'],
-  '/dashboard/batches': ['nav.subBatches', 'Live production batches, QC and oil-ratio variance.'],
-  '/dashboard/customers': ['nav.subCustomers', 'Ledger, density and payment history per customer.'],
-  '/dashboard/oil-ratio': ['nav.subOilRatio', 'The production brain — density ↔ oil-ratio reference.'],
-  '/dashboard/audit': ['nav.subAudit', 'Security and change logs across the workspace.'],
-  '/dashboard/anomalies': ['nav.subAnomalies', 'Live risk radar across plants and modules.'],
-  '/dashboard/anomaly-center': ['nav.subAnomalyCenter', 'Investigate, assign and resolve anomalies.'],
-  '/dashboard/users': ['nav.subUsers', 'All staff registered in CaratSense — roles and access.'],
+  '/dashboard': ['nav.subOverview', 'Shift board — work queue, alerts and plant KPIs.'],
+  '/dashboard/todo': ['nav.subTodo', 'Items waiting on your role.'],
+  '/dashboard/night-manager': ['nav.subNightManager', 'Night duty roster and check-ins.'],
+  '/dashboard/sales': ['nav.subSales', 'Contracts, dispatches and acid tracking.'],
+  '/dashboard/stock': ['nav.subStock', 'Tanks, drums and store stock by plant.'],
+  '/dashboard/batches': ['nav.subBatches', 'Production sheets — TDS, COA and photo evidence.'],
+  '/dashboard/customers': ['nav.subCustomers', 'Customer ledger and payment history.'],
+  '/dashboard/oil-ratio': ['nav.subOilRatio', 'Density ↔ oil-ratio reference table.'],
+  '/dashboard/audit': ['nav.subAudit', 'Security and change log.'],
+  '/dashboard/anomalies': ['nav.subAnomalies', 'Open risk flags across modules.'],
+  '/dashboard/anomaly-center': ['nav.subAnomalyCenter', 'Investigate and close anomalies.'],
+  '/dashboard/users': ['nav.subUsers', 'Staff directory, roles and plant access.'],
   '/dashboard/blacklist': ['nav.subBlacklist', 'Restricted persons, vehicles and vendors.'],
-  '/dashboard/admin/uploads': ['nav.subUploadHistory', 'Review bulk imports and remove data from an incorrect file.'],
-  '/dashboard/daily-log': ['nav.subDailyLog', 'OCR-read daily unit sheets per plant.'],
+  '/dashboard/admin/uploads': ['nav.subUploadHistory', 'Bulk import history and rollbacks.'],
+  '/dashboard/daily-log': ['nav.subDailyLog', 'Daily unit sheets by plant.'],
 };
 
 /**
@@ -180,6 +182,7 @@ const PURCHASE_TAB_PATHS = [
   '/dashboard/purchase/activity',
   '/dashboard/purchase/storereq',
   '/dashboard/purchase/purchase',
+  '/dashboard/purchase/qr',
   '/dashboard/purchase/marine',
   '/dashboard/purchase/labour',
 ];
@@ -236,14 +239,7 @@ export function DashboardLayout() {
   // While the session / profile is still resolving, show a loader instead of the
   // locked "Access Restricted" fallback (which flashes — or sticks — otherwise).
   if (!authResolved || authLoading) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-          <div className="w-11 h-11 rounded-2xl bg-[#F47651] text-white flex items-center justify-center font-extrabold text-lg shadow-sm">S°</div>
-          <div className="animate-spin" style={{ width: 22, height: 22, border: '2.5px solid #E2E8F0', borderTopColor: '#F47651', borderRadius: '50%' }} />
-        </div>
-      </div>
-    );
+    return <BrandLoader label="Opening your workspace…" />;
   }
 
   const path = location.pathname;
@@ -415,6 +411,7 @@ export function DashboardLayout() {
           <Footer />
         </div>
       </main>
+      <BatchFlowTourHost />
     </div>
     </SearchPaletteProvider>
   );

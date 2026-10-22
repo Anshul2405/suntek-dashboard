@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { roleToProfile, ADMIN_FALLBACK, profileHasCapability } from '../lib/profiles';
+import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, BATCH_SHEET_ROUTES } from '../lib/profiles';
 import type { MockProfile, RoleRow } from '../lib/profiles';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
@@ -7,11 +7,11 @@ import { applyLanguage, hasStoredLanguage } from '../i18n';
 
 type DbUser = Pick<
   Database['public']['Tables']['user_accounts']['Row'],
-  'id' | 'name' | 'role_id' | 'role_label' | 'plant_name' | 'access_note' | 'auth_user_id' | 'created_at'
+  'id' | 'name' | 'role_id' | 'role_label' | 'plant_name' | 'access_note' | 'auth_user_id' | 'created_at' | 'photo_url'
 >;
 
 /** The DB profile data we resolve for the logged-in user (before role mapping). */
-type SessionProfile = { role: string | null; name: string | null };
+type SessionProfile = { role: string | null; name: string | null; photo_url?: string | null };
 
 type RolesStatus = 'loading' | 'ready' | 'failed';
 
@@ -167,6 +167,25 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
+    async function loadSessionRoles(userId: string) {
+      try {
+        const { data: acct } = await supabase
+          .from('user_accounts').select('id').eq('auth_user_id', userId).limit(1)
+          .returns<{ id: string }[]>();
+        const accountId = acct?.[0]?.id;
+        if (!accountId) {
+          if (!cancelled) setSessionRoleIds([]);
+          return;
+        }
+        const { data: urs } = await supabase
+          .from('user_roles').select('role_id').eq('user_account_id', accountId)
+          .returns<{ role_id: string }[]>();
+        if (!cancelled) setSessionRoleIds((urs ?? []).map((r) => r.role_id));
+      } catch {
+        if (!cancelled) setSessionRoleIds([]);
+      }
+    }
+
     async function resolveFromSession(userId: string | null) {
       if (!cancelled) setSessionUserId(userId);
       if (!userId) {
@@ -176,10 +195,10 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       }
       const { data, error } = await supabase
         .from('profiles')
-        .select('role, plant_id, name, preferred_language')
+        .select('role, plant_id, name, preferred_language, photo_url')
         .eq('id', userId)
         .maybeSingle()
-        .returns<{ role: string | null; plant_id: string | null; name: string | null; preferred_language: string | null }>();
+        .returns<{ role: string | null; plant_id: string | null; name: string | null; preferred_language: string | null; photo_url: string | null }>();
       if (cancelled) return;
 
       // Transient fetch failure (flaky mobile network) → retry instead of failing
@@ -198,25 +217,12 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         if (!hasStoredLanguage()) applyLanguage(data?.preferred_language);
       }
 
-      setSessionProfile({ role: data?.role ?? null, name: data?.name ?? null });
+      setSessionProfile({ role: data?.role ?? null, name: data?.name ?? null, photo_url: data?.photo_url ?? null });
 
       // Load the user's full role set (multi-role). Additive: on any failure we
       // keep the empty set and fall back to the single primary role — never
       // reducing access.
-      try {
-        const { data: acct } = await supabase
-          .from('user_accounts').select('id').eq('auth_user_id', userId).limit(1)
-          .returns<{ id: string }[]>();
-        const accountId = acct?.[0]?.id;
-        if (accountId) {
-          const { data: urs } = await supabase
-            .from('user_roles').select('role_id').eq('user_account_id', accountId)
-            .returns<{ role_id: string }[]>();
-          if (!cancelled) setSessionRoleIds((urs ?? []).map((r) => r.role_id));
-        } else if (!cancelled) {
-          setSessionRoleIds([]);
-        }
-      } catch { if (!cancelled) setSessionRoleIds([]); }
+      await loadSessionRoles(userId);
 
       setSessionResolved(true);
     }
@@ -228,7 +234,25 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       setPreviewProfileId(null); // reset any preview on login/logout
       resolveFromSession(session?.user?.id ?? null);
     });
-    return () => { cancelled = true; clearTimeout(retryRef.current); subscription.unsubscribe(); };
+
+    // Admin may grant a second role while this person is already logged in.
+    // Re-read user_roles when the tab becomes visible so Store Req / etc.
+    // appear without forcing a logout.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        const uid = session?.user?.id;
+        if (uid) loadSessionRoles(uid);
+      });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(retryRef.current);
+      subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // ── DB directory — built from active user_accounts rows ─────────────────────
@@ -236,7 +260,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     async function loadDbUsers() {
       const { data } = await supabase
         .from('user_accounts')
-        .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at')
+        .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
         .eq('is_active', true)
         .returns<DbUser[]>();
       if (data) setDbUsers(data);
@@ -260,6 +284,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         accountCreatedAt: u.created_at ?? undefined, // notification floor
         plant: u.plant_name ?? undefined,
         accessNote: u.access_note ?? undefined,
+        photoUrl: u.photo_url ?? undefined,
       };
       if (role) {
         out.push(roleToProfile(role, overrides));
@@ -284,18 +309,23 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   // (profiles.role); access is the UNION of every role's routes + capabilities.
   const authProfile = useMemo<MockProfile | null>(() => {
     if (!sessionUserId || !sessionProfile) return null;
+    const dirTwin = directory.find((p) => p.authUserId === sessionUserId);
+    const photoUrl = sessionProfile.photo_url || dirTwin?.photoUrl || undefined;
     const role = sessionProfile.role ? roleMap.get(sessionProfile.role) : undefined;
     if (role) {
-      const base = roleToProfile(role, { name: sessionProfile.name ?? '' });
+      const base = roleToProfile(role, { name: sessionProfile.name ?? '', photoUrl });
       const extraRoles = sessionRoleIds
         .map((id) => roleMap.get(id))
         .filter((r): r is RoleRow => !!r);
       const all = [role, ...extraRoles.filter((r) => r.id !== role.id)];
       if (all.length > 1) {
-        const routes = all.some((r) => r.allowed_routes?.includes('*'))
+        let routes = all.some((r) => r.allowed_routes?.includes('*'))
           ? ['*']
           : [...new Set(all.flatMap((r) => r.allowed_routes ?? []))];
         const capabilities = [...new Set(all.flatMap((r) => r.capabilities ?? []))];
+        if (!routes.includes('*') && all.some((r) => r.id === 'factory_operator')) {
+          routes = [...new Set([...routes, ...BATCH_SHEET_ROUTES])];
+        }
         return { ...base, allowedDashboardRoutes: routes, capabilities };
       }
       return base;
@@ -303,11 +333,11 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     // Role not found in the catalog.
     if (rolesStatus === 'failed' && sessionProfile.role === 'admin') {
       // Catalog failed to load entirely → don't lock the owner out.
-      return { ...ADMIN_FALLBACK, name: sessionProfile.name || 'Owner' };
+      return { ...ADMIN_FALLBACK, name: sessionProfile.name || 'Owner', photoUrl };
     }
     if (rolesStatus !== 'ready') return null; // still loading — hold for the catalog
-    return { ...LOCKED_FALLBACK, name: sessionProfile.name || LOCKED_FALLBACK.name };
-  }, [sessionUserId, sessionProfile, roleMap, rolesStatus, sessionRoleIds]);
+    return { ...LOCKED_FALLBACK, name: sessionProfile.name || LOCKED_FALLBACK.name, photoUrl };
+  }, [sessionUserId, sessionProfile, roleMap, rolesStatus, sessionRoleIds, directory]);
 
   // False until BOTH the session resolution and the role catalog load have
   // settled — so the UI shows a loader instead of flashing the locked fallback.
@@ -315,7 +345,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
 
   // Who can preview/switch: a real admin login, OR the dev bypass (no session in
   // a dev build, where Login lets you skip auth to demo the role switcher).
-  const isAdmin = authProfile?.id === 'admin';
+  const isAdmin = !!authProfile && isAdminProfile(authProfile);
   const devBypass = import.meta.env.DEV && sessionResolved && !sessionUserId;
   const canSwitch = isAdmin || devBypass;
 

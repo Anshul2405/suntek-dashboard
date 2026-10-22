@@ -123,6 +123,12 @@ export function humanizeError(e: unknown, opts: HumanizeOptions = {}): string {
     if (low.includes('reserved')) return 'That would reserve more than is on hand.';
     return `${doing} — one of the values is out of the allowed range.`;
   }
+  if (state === '22P02' || low.includes('invalid input syntax')) {
+    if (low.includes('integer') || low.includes('oil_ratio')) {
+      return `${doing} — oil ratio still has to be a number in the database. Run supabase-queries/88_oil_ratio_text.sql, then try again (values like 52% or dummy need that update).`;
+    }
+    return `${doing} — one field has the wrong type. Check the values and try again.`;
+  }
   if (low.includes('not_found') || state === 'PGRST116') {
     return `${doing} — the record no longer exists. Refresh the page and try again.`;
   }

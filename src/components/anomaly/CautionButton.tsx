@@ -7,6 +7,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { profileCanAccess } from '../../lib/profiles';
 import { dropdownStyle } from '../../lib/uiPosition';
 import type { Severity } from '../../lib/anomaly/types';
+import { IconAlert, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from '../layout/TopIcons';
 
 const ICON_BG: Record<Severity, string> = { urgent: '#FEE2E2', warning: '#FEF3C7', info: '#DBEAFE' };
 const ICON_COLOR: Record<Severity, string> = { urgent: '#DC2626', warning: '#D97706', info: '#2563EB' };
@@ -62,18 +63,12 @@ export function CautionButton() {
       <button
         ref={btnRef}
         title={t('anomaly.detectionTitle', 'Anomaly detection')}
-        className={`w-9 h-9 max-[390px]:w-8 max-[390px]:h-8 md:w-10 md:h-10 shrink-0 rounded-[10px] border flex items-center justify-center relative ${open ? 'bg-slate-900 border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
+        className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}${!open && criticalCount > 0 ? ' text-red-600' : ''}`}
         onClick={() => setOpen(v => !v)}
       >
-        <AlertTriangle size={16} color={open ? '#fff' : (criticalCount > 0 ? badgeColor : '#64748B')} strokeWidth={2} />
+        <IconAlert />
         {criticalCount > 0 && (
-          <span style={{
-            position: 'absolute', top: -2, right: -2,
-            minWidth: 16, height: 16, padding: '0 3px', borderRadius: 999,
-            background: badgeColor, border: '2px solid #fff',
-            fontSize: 9, fontWeight: 700, color: '#fff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
+          <span className={`tb-icon-badge${urgentCount > 0 ? ' tb-icon-badge--danger' : ''}`}>
             {criticalCount > 9 ? '9+' : criticalCount}
           </span>
         )}

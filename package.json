@@ -16,6 +16,7 @@
     "test:ui": "vitest --ui"
   },
   "dependencies": {
+    "@rolldown/binding-darwin-arm64": "1.0.2",
     "@supabase/supabase-js": "^2.106.1",
     "@tanstack/react-query": "^5.100.14",
     "class-variance-authority": "^0.7.1",
@@ -26,6 +27,7 @@
     "express": "^5.2.1",
     "i18next": "^26.3.3",
     "leaflet": "^1.9.4",
+    "lightningcss-darwin-arm64": "^1.33.0",
     "lucide-react": "^1.16.0",
     "mssql": "^12.5.5",
     "pdfjs-dist": "^4.10.38",

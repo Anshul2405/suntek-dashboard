@@ -47,7 +47,10 @@ export async function callRpc<T = unknown>(
   fn: 'apply_stock_purchase' | 'resolve_stock_anomaly' | 'apply_repair_return' | 'reverse_repair_return'
     | 'record_defective_disposition'
     | 'preview_import_batch' | 'delete_import_batch' | 'delete_import_batches'
-    | 'soft_delete_user' | 'restore_deleted_user',
+    | 'soft_delete_user' | 'restore_deleted_user'
+    | 'allocate_production_batch_numbers'
+    | 'latest_batch_closing_balance'
+    | 'next_job_no',
   args: Record<string, unknown>,
 ): Promise<{ data: T | null; error: { message: string } | null }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

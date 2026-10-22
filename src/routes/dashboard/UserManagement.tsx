@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Users, UserCheck, Shield, Settings, Pencil, History as HistoryIcon, Trash2, UserX, UserPlus } from 'lucide-react';
@@ -85,7 +85,7 @@ const ALL_DASHBOARD_SECTIONS: { route: string; label: string; labelKey: string }
   { route: '/dashboard/purchase/far',     label: 'Fixed Asset Register',       labelKey: 'userMgmt.sec_fixedAssetRegister' },
   { route: '/dashboard/purchase/qr',      label: 'Asset QR Codes',             labelKey: 'userMgmt.sec_assetQrCodes' },
   { route: '/dashboard/purchase/maint',   label: 'Maintenance',                labelKey: 'userMgmt.sec_maintenance' },
-  { route: '/dashboard/purchase/activity',label: 'Plant Activity Log',         labelKey: 'userMgmt.sec_plantActivityLog' },
+  { route: '/dashboard/purchase/activity',label: 'Activity Log',               labelKey: 'userMgmt.sec_plantActivityLog' },
   { route: '/dashboard/purchase/storereq',label: 'Store Requisitions',         labelKey: 'userMgmt.sec_storeRequisitions' },
   { route: '/dashboard/purchase/purchase',label: 'Purchase Orders',            labelKey: 'userMgmt.sec_purchaseOrders' },
   { route: '/dashboard/purchase/marine',  label: 'Marine Insurance',           labelKey: 'userMgmt.sec_marineInsurance' },
@@ -711,10 +711,18 @@ export function UserManagement() {
     if (accountId) {
       // Role memberships (multi-role). Primary role_id is already on the row.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (supabase.from('user_roles') as any).delete().eq('user_account_id', accountId);
+      const { error: delRolesErr } = await (supabase.from('user_roles') as any).delete().eq('user_account_id', accountId);
+      if (delRolesErr) {
+        toast.error(t('userMgmt.errRolesSync', { defaultValue: 'Could not update roles: {{msg}}', msg: delRolesErr.message }));
+        return;
+      }
       const roleIds = form.role_ids.length ? form.role_ids : (form.role_id ? [form.role_id] : []);
       if (roleIds.length) {
-        await insertRows('user_roles', roleIds.map(rid => ({ user_account_id: accountId, role_id: rid })));
+        const { error: insRolesErr } = await insertRows('user_roles', roleIds.map(rid => ({ user_account_id: accountId, role_id: rid })));
+        if (insRolesErr) {
+          toast.error(t('userMgmt.errRolesSync', { defaultValue: 'Could not update roles: {{msg}}', msg: insRolesErr.message }));
+          return;
+        }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (supabase.from('user_plants') as any).delete().eq('user_account_id', accountId);
@@ -798,6 +806,22 @@ export function UserManagement() {
   }
 
   const selectedRole = roles.find(r => r.id === form.role_id);
+  // Combined access preview — what the person will actually see after login.
+  // The green card used to show ONLY the primary role, which made multi-role
+  // grants look like they hadn't stuck (e.g. Store Manager + Purchase Manager
+  // only listed "Procurement bills" even though Store Req was checked).
+  const selectedRoles = useMemo(
+    () => form.role_ids.map(id => roles.find(r => r.id === id)).filter((r): r is RoleRow => !!r),
+    [form.role_ids, roles],
+  );
+  const unionRoutes = useMemo(() => {
+    if (selectedRoles.some(r => r.allowed_routes?.includes('*'))) return ['*'] as string[];
+    return [...new Set(selectedRoles.flatMap(r => r.allowed_routes ?? []))];
+  }, [selectedRoles]);
+  const unionSections = useMemo(
+    () => ALL_DASHBOARD_SECTIONS.filter(s => unionRoutes.includes('*') || unionRoutes.includes(s.route)),
+    [unionRoutes],
+  );
 
   // Roles the current user may ASSIGN. Admins (manage_roles) can assign any role;
   // a delegate (manage_users only) can assign only roles at/below their own tier
@@ -1032,6 +1056,22 @@ export function UserManagement() {
                   />
                   <span style={{ flex: 1 }}>{r.level} · {r.label}</span>
                   {on && isPrimary && <span className="badge" style={{ background: '#EFF6FF', color: '#2563EB', fontSize: 9.5, padding: '1px 6px' }}>{t('userMgmt.primary', 'primary')}</span>}
+                  {on && !isPrimary && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setForm(f => {
+                          const role_ids = [r.id, ...f.role_ids.filter(x => x !== r.id)];
+                          return { ...f, role_ids, role_id: r.id };
+                        });
+                      }}
+                      style={{ fontSize: 10, fontWeight: 700, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', fontFamily: 'inherit' }}
+                    >
+                      {t('userMgmt.makePrimary', 'Make primary')}
+                    </button>
+                  )}
                 </label>
               );
             })}
@@ -1040,14 +1080,37 @@ export function UserManagement() {
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('userMgmt.rolesHint', 'First selected = primary (drives display + login). Access = the union of all selected.')}</div>
         </PanelField>
 
-        {/* Role description card */}
-        {selectedRole && (
-          <div style={{ marginBottom: 16, background: levelColor(selectedRole.level).bg, border: `1px solid ${levelColor(selectedRole.level).color}30`, borderRadius: 12, padding: '10px 14px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: levelColor(selectedRole.level).color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              {selectedRole.level} · {selectedRole.label}
+        {/* Combined access — union of every selected role, not just the primary. */}
+        {selectedRoles.length > 0 && (
+          <div style={{ marginBottom: 16, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, padding: '10px 14px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#15803D', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {selectedRole
+                ? `${selectedRole.level} · ${selectedRole.label}${selectedRoles.length > 1 ? ` + ${selectedRoles.length - 1} more` : ''}`
+                : t('userMgmt.combinedAccess', 'Combined access')}
             </div>
-            <div style={{ fontSize: 11, color: '#64748B', marginTop: 3 }}>
-              {selectedRole.description || t('userMgmt.customAccess', 'Custom access')}
+            {selectedRoles.length > 1 && (
+              <div style={{ fontSize: 11, color: '#64748B', marginTop: 3 }}>
+                {t('userMgmt.rolesUnionHint', {
+                  defaultValue: 'Primary: {{primary}}. Also: {{others}}. Menu = all of these combined.',
+                  primary: selectedRole?.label || '—',
+                  others: selectedRoles.filter(r => r.id !== form.role_id).map(r => r.label).join(', '),
+                })}
+              </div>
+            )}
+            {selectedRoles.length === 1 && (
+              <div style={{ fontSize: 11, color: '#64748B', marginTop: 3 }}>
+                {selectedRole?.description || t('userMgmt.customAccess', 'Custom access')}
+              </div>
+            )}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+              {unionSections.length === 0 && (
+                <span style={{ fontSize: 11, color: '#94A3B8' }}>{t('userMgmt.noSections', 'No dashboard sections on these roles.')}</span>
+              )}
+              {unionSections.map(s => (
+                <span key={s.route} style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: '#DCFCE7', color: '#166534' }}>
+                  {t(s.labelKey, s.label)}
+                </span>
+              ))}
             </div>
           </div>
         )}
@@ -1495,6 +1558,9 @@ export function UserManagement() {
         </div>
 
         <PanelField label={t('userMgmt.allowedSectionsLabel', 'Dashboard sections this role can access')}>
+          <p style={{ fontSize: 11, color: '#64748B', margin: '0 0 8px' }}>
+            {t('userMgmt.activityLogGrantHint', 'Activity Log is also togglable from Factory → Activity Log (admin).')}
+          </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, maxHeight: 320, overflowY: 'auto', padding: 4 }}>
             {ALL_DASHBOARD_SECTIONS.map(s => {
               const on = roleForm.allowed_routes.includes(s.route);

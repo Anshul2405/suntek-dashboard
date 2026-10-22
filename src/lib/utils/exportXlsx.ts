@@ -9,13 +9,13 @@
  */
 
 import * as XLSX from 'xlsx';
-import type { MockProfile } from '../profiles';
+import { isAdminProfile, type MockProfile } from '../profiles';
 
 const PROTECTION_PASSWORD = 'suntek2024';
 
 /** Roles that receive fully editable exports (no sheet protection). */
 function isEditableRole(profile: MockProfile): boolean {
-  return profile.id === 'admin' || profile.id === 'unit_head';
+  return isAdminProfile(profile) || profile.id === 'unit_head' || profile.baseRoleId === 'unit_head';
 }
 
 export interface ExportColumn {

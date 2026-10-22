@@ -327,7 +327,7 @@ export function Warehouse({ embedded = false }: WarehouseProps) {
   // ── Embedded mode: no standalone header, fits inside DashboardLayout ────────
   if (embedded) {
     return (
-      <div style={{ fontFamily: 'Inter, sans-serif' }}>
+      <div style={{ fontFamily: 'inherit' }}>
         {/* Pill tab switcher matching dashboard style */}
         <div className="flex gap-1 mb-5">
           {(['stock', 'req'] as Tab[]).map(tb => (
@@ -351,7 +351,7 @@ export function Warehouse({ embedded = false }: WarehouseProps) {
 
   // ── Standalone mode: full-screen with own header ────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: '#F1F5F9', fontFamily: 'Inter, sans-serif' }}>
+    <div className="min-h-screen flex flex-col" style={{ background: '#F1F5F9', fontFamily: 'inherit' }}>
       <header className="bg-white px-8 p-4 border-b flex items-center justify-between shadow-sm shrink-0 flex-wrap gap-3">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center font-bold text-xl">S</div>

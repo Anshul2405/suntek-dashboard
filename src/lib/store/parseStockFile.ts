@@ -3,8 +3,10 @@
  * per-item stock model.
  *
  * The workbook holds a `Sales <Month>` and a `Purchase <Month>` sheet for each
- * month. Header sits on ~row 2 (a junk title row above it). Columns:
+ * month (also accepts `Sales_Aug26` / `Purchase_Aug26`). Header sits on ~row 2
+ * (a junk title row above it). Columns (Jharkhand store-keeping layout):
  *   Sr No. · Items Name · Unit · Op Stock/Opening · [1…31 day columns] · Closing Stock
+ * Drum Plant spare-parts layout uses SPARE + SPECIFICATION instead of Items Name.
  *
  * Per item, per month (both sheets combined):
  *   opening   = Sales "Op Stock"  (cross-checked vs Purchase "Opening")
@@ -108,6 +110,11 @@ export function normalizeUnit(raw: unknown): string {
   return UNIT_MAP[s.toLowerCase()] ?? s;
 }
 
+/** Canonical units offered in pickers — the distinct outputs of UNIT_MAP. */
+export const UNIT_OPTIONS: string[] = [
+  'Pcs', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
+];
+
 // ── Equipment/model from the item name, e.g. "Acid Pump (NZRP50) Sleeve" ─────
 export function deriveEquipment(name: string): { equipment: string; model: string | null } {
   const m = name.match(/^\s*(.*?)\s*\(([^)]*)\)/);
@@ -165,7 +172,9 @@ function parseSheetName(name: string): { kind: 'sales' | 'purchase'; key: string
   const km = s.match(/^(sales|purchase)/);
   if (!km) return null;
   const kind = km[1] as 'sales' | 'purchase';
-  const mm = s.match(/([a-z]+)\.?\s*'?(\d{2,4})/);
+  // Remainder after Sales/Purchase: " August 2026", "_Aug26", "-Aug'26", etc.
+  const rest = s.slice(km[0].length).replace(/^[\s_\-.]+/, '');
+  const mm = rest.match(/^([a-z]+)\.?\s*'?(\d{2,4})/);
   if (!mm) return null;
   const month = MONTHS[mm[1]];
   if (!month) return null;
@@ -203,18 +212,44 @@ export function resolveClosing(
     ? salesClosing
     : opening + purchased - used;
 }
+function isStockHeaderCell(c: unknown): boolean {
+  if (typeof c !== 'string') return false;
+  const t = c.trim();
+  return /items?\s*name/i.test(t) || /^spare$/i.test(t);
+}
+
+function rowItemName(
+  r: unknown[],
+  itemIdx: number,
+  spareIdx: number,
+  specIdx: number,
+): string {
+  if (itemIdx >= 0) {
+    const raw = r[itemIdx];
+    return raw == null ? '' : String(raw).trim();
+  }
+  if (spareIdx < 0) return '';
+  const spare = r[spareIdx] == null ? '' : String(r[spareIdx]).trim();
+  if (!spare) return '';
+  const spec = specIdx >= 0 && r[specIdx] != null ? String(r[specIdx]).trim() : '';
+  // "MCCB" + "100 AMP" → distinct SKUs share a spare family name.
+  return spec ? `${spare} ${spec}` : spare;
+}
+
 function parseSheet(ws: XLSX.WorkSheet): Map<string, SheetItem> {
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: null, blankrows: false });
-  // Header = the first row containing an "Items Name" cell.
-  const hi = rows.findIndex(r => Array.isArray(r) && r.some(c => typeof c === 'string' && /items?\s*name/i.test(c)));
+  // Header = first row with "Items Name" (store-keeping) or "SPARE" (Drum Plant).
+  const hi = rows.findIndex(r => Array.isArray(r) && r.some(isStockHeaderCell));
   if (hi < 0) return new Map();
   const header = (rows[hi] as unknown[]).map(c => (c == null ? '' : String(c).trim()));
   const findCol = (re: RegExp) => header.findIndex(h => re.test(h));
   const itemIdx = findCol(/items?\s*name/i);
+  const spareIdx = findCol(/^spare$/i);
+  const specIdx = findCol(/^specification/i);
   const unitIdx = findCol(/^unit/i);
   const openIdx = findCol(/op.*stock|opening/i);
   const closeIdx = findCol(/closing/i);
-  if (itemIdx < 0 || openIdx < 0) return new Map();
+  if ((itemIdx < 0 && spareIdx < 0) || openIdx < 0) return new Map();
   // Day columns live strictly between Opening and Closing (fallback: numeric headers after Opening).
   const dayIdxs: number[] = [];
   for (let j = openIdx + 1; j < header.length; j++) {
@@ -227,8 +262,7 @@ function parseSheet(ws: XLSX.WorkSheet): Map<string, SheetItem> {
   for (let i = hi + 1; i < rows.length; i++) {
     const r = rows[i] as unknown[];
     if (!Array.isArray(r)) continue;
-    const nameRaw = r[itemIdx];
-    const name = nameRaw == null ? '' : String(nameRaw).trim();
+    const name = rowItemName(r, itemIdx, spareIdx, specIdx);
     if (!name) continue;
     const key = joinKey(name);
     if (!key) continue;

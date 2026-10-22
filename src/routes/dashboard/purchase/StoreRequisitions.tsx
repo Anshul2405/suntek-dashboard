@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
-import { insertRows } from '../../../lib/db';
+import { insertRows, updateRows } from '../../../lib/db';
 import { useMentionNotifier } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
@@ -17,6 +17,8 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../../contexts/RoleContext';
+import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { RepairScrapPanel } from './RepairScrapPanel';
@@ -68,14 +70,28 @@ export function StoreRequisitions() {
   const navigate = useNavigate();
   // ?tab= keeps the active tab deep-linkable (single route → no RBAC change).
   const [searchParams, setSearchParams] = useSearchParams();
+  const { activeProfile } = useRoleContext();
+  const isTechnical =
+    activeProfile.id === 'factory_operator' || activeProfile.baseRoleId === 'factory_operator';
   const rawTab = searchParams.get('tab');
-  const tab: StoreTab = rawTab === 'stock' || rawTab === 'scrap' ? rawTab : 'requirements';
+  // Meet Aug 2026: Technical only sees Stock Register under Store Req.
+  const tab: StoreTab = isTechnical
+    ? 'stock'
+    : (rawTab === 'stock' || rawTab === 'scrap' ? rawTab : 'requirements');
   const setTab = (k: StoreTab) => {
+    if (isTechnical && k !== 'stock') return;
     setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', k); return p; }, { replace: true });
   };
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
   const { scopeQuery, allowedPlants } = usePlantScope();
+  const canDecideReq =
+    isAdminProfile(activeProfile) ||
+    activeProfile.id === 'unit_head' ||
+    activeProfile.baseRoleId === 'unit_head' ||
+    activeProfile.id === 'management' ||
+    activeProfile.baseRoleId === 'management' ||
+    (activeProfile.capabilities || []).includes('manage_users');
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [items, setItems] = useState<ReqRow[]>([]);
@@ -86,6 +102,7 @@ export function StoreRequisitions() {
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
+  const [deciding, setDeciding] = useState(false);
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
@@ -187,6 +204,45 @@ export function StoreRequisitions() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
+  async function decideReq(row: ReqRow, status: 'approved' | 'rejected' | 'dispatched') {
+    if (!canDecideReq) {
+      toast.error(t('storereq.decide_forbidden', 'Only Unit Head / Admin can decide this request.'));
+      return;
+    }
+    setDeciding(true);
+    try {
+      const { error } = await updateRows('store_requisitions', { status }).eq('id', row.id);
+      if (error) {
+        toast.error(t('storereq.decide_failed', { message: error.message, defaultValue: 'Update failed: {{message}}' }));
+        return;
+      }
+      setItems(prev => prev.map(r => r.id === row.id ? { ...r, status } : r));
+      setDetailReq(prev => prev && prev.id === row.id ? { ...prev, status } : prev);
+      toast.success(
+        status === 'approved' ? t('storereq.approved_ok', 'Request approved') :
+        status === 'rejected' ? t('storereq.rejected_ok', 'Request rejected') :
+        t('storereq.dispatched_ok', 'Marked dispatched'),
+      );
+      insertRows('notifications', {
+        target_roles: ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
+        title: t('storereq.decide_notif_title', {
+          defaultValue: 'Store req {{status}}: {{item}}',
+          status,
+          item: row.item,
+        }),
+        body: `#${row.id.slice(0, 8)} · ${row.plants?.name ?? ''}`,
+        type: status === 'rejected' ? 'urgent' : 'info',
+        route: '/dashboard/purchase/storereq',
+        actor_name: activeProfile.name || '',
+        actor_role: activeProfile.id,
+        read_by: [],
+        plant_id: row.plant_id || null,
+      }).then(() => {}, () => {});
+    } finally {
+      setDeciding(false);
+    }
+  }
+
   // Summary tiles for the Requirements tab (computed from the loaded rows).
   const pendingCount   = items.filter(r => r.status === 'pending').length;
   const readyCount     = items.filter(r => ['approved', 'dispatched'].includes(r.status)).length;
@@ -197,11 +253,13 @@ export function StoreRequisitions() {
       {/* Tab bar — Requirements · Stock Register · Scrap */}
       <SegmentTabs
         className="mb-5"
-        items={[
-          { key: 'requirements', label: t('storereq.tab_requirements', 'Requirements'), icon: <ListChecks /> },
-          { key: 'stock',        label: t('storereq.tab_stock', 'Stock Register'),      icon: <Package /> },
-          { key: 'scrap',        label: t('storereq.tab_scrap', 'Repair/Scrap'),        icon: <Recycle /> },
-        ]}
+        items={isTechnical
+          ? [{ key: 'stock', label: t('storereq.tab_stock', 'Stock Register'), icon: <Package /> }]
+          : [
+              { key: 'requirements', label: t('storereq.tab_requirements', 'Requirements'), icon: <ListChecks /> },
+              { key: 'stock',        label: t('storereq.tab_stock', 'Stock Register'),      icon: <Package /> },
+              { key: 'scrap',        label: t('storereq.tab_scrap', 'Repair/Scrap'),        icon: <Recycle /> },
+            ]}
         value={tab}
         onChange={setTab}
       />
@@ -218,21 +276,29 @@ export function StoreRequisitions() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
           label={t('storereq.stat_total', 'Total Requirements')} value={String(items.length).padStart(2, '0')}
-          caption={t('storereq.stat_total_sub', 'Open requests')} />
+          caption={t('storereq.stat_total_sub', 'Open requests')}
+          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={String(pendingCount).padStart(2, '0')}
-          caption={t('storereq.stat_pending_sub', 'Awaiting approval')} />
+          caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
+          onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={String(readyCount).padStart(2, '0')}
-          caption={t('storereq.stat_ready_sub', 'Approved & in progress')} />
+          caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
+          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
           label={t('storereq.stat_urgent', 'Urgent')} value={String(urgentCount).padStart(2, '0')}
-          caption={t('storereq.stat_urgent_sub', 'High priority requests')} />
+          caption={t('storereq.stat_urgent_sub', 'High priority requests')}
+          onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          viewLabel={t('storereq.viewUrgent', 'See urgent')} />
       </div>
 
       {/* Requirements table */}
-      <div className="relative">
-        <KpiInfoButton info={{ title: 'Open Store Requirements', what: 'All active store requisitions raised by plant/store keepers across SHD, Rehla, Ganjam, and HQ. Each row shows the approval stage, decision, and photo proof status. New requests are submitted via the "+ Raise request" button.', source: 'Mock data', formLabel: 'Raise request form', formPath: '/dashboard/purchase/storereq', note: 'Currently uses STORE_REQ mock data. Future: Supabase store_reqs table.' }} />
+      <div className="relative" id="open-reqs">
+        <KpiInfoButton info={{ title: 'Open Store Requirements', what: 'All active store requisitions raised by plant/store keepers. Each row shows approval stage and photo proof. Raise via "+ Raise request"; Unit Head / Admin can approve, reject, or mark dispatched.', source: 'Supabase', formLabel: 'Raise request form', formPath: '/dashboard/purchase/storereq', note: 'Live table store_requisitions. Maintenance part indents still flow via maintenance_store_requests on the Maintenance screen.' }} />
       <SectionCard
         flush
         title={t('storereq.open_req_title')}
@@ -410,6 +476,23 @@ export function StoreRequisitions() {
                 >
                   <img src={detailReq.photo_url} alt={detailReq.item} style={{ width: '100%', maxHeight: 220, objectFit: 'cover', display: 'block' }} />
                 </button>
+              )}
+              {canDecideReq && detailReq.status === 'pending' && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
+                    {t('storereq.approve_btn', 'Approve')}
+                  </ButtonV2>
+                  <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
+                    {t('storereq.reject_btn', 'Reject')}
+                  </ButtonV2>
+                </div>
+              )}
+              {canDecideReq && detailReq.status === 'approved' && (
+                <div style={{ marginTop: 16 }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'dispatched')}>
+                    {t('storereq.dispatch_btn', 'Mark dispatched')}
+                  </ButtonV2>
+                </div>
               )}
             </div>
           );

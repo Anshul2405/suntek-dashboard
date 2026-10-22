@@ -6,11 +6,13 @@
  * normMark() collapses those so they compare equal.
  */
 import { similarity } from '../blacklist/similarity';
+import { jobNoFar, isPlaceholderMark } from '../jobNo';
 
 export interface AssetLite {
   id: string;
   name: string;
   identification_mark: string | null;
+  job_no?: string | null;
 }
 
 /** Uppercase alphanumeric only — "GLC 1" → "GLC1", "HPT 1" → "HPT1", "CT-1" → "CT1". */
@@ -31,10 +33,10 @@ export interface AssetMatch<T extends AssetLite = AssetLite> { asset: T; score: 
 /** Best FAR asset for a PM equipment label: exact (normalised) mark first, else fuzzy name. */
 export function matchAsset<T extends AssetLite>(label: string, assets: T[]): AssetMatch<T> | null {
   const { name, mark } = parseEquipmentLabel(label);
-  if (mark) {
+  if (mark && !isPlaceholderMark(mark)) {
     const nm = normMark(mark);
     if (nm) {
-      const hit = assets.find(a => normMark(a.identification_mark) === nm);
+      const hit = assets.find(a => normMark(a.identification_mark) === nm || jobNoFar(a.id, a.identification_mark, a.job_no).toUpperCase().replace(/[^A-Z0-9]/g, '') === nm);
       if (hit) return { asset: hit, score: 1, via: 'mark' };
     }
   }
@@ -55,8 +57,13 @@ export function suggestAssets<T extends AssetLite>(query: string, assets: T[], t
   return assets
     .map(a => {
       const am = normMark(a.identification_mark);
-      const markHit = nm.length >= 2 && am === nm;
-      const markPartial = nm.length >= 2 && am && (am.includes(nm) || nm.includes(am)) ? 0.75 : 0;
+      const job = jobNoFar(a.id, a.identification_mark, a.job_no).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const qNorm = normMark(q);
+      const markHit = nm.length >= 2 && (am === nm || job === nm || job === qNorm);
+      const markPartial = nm.length >= 2 && (
+        (am && (am.includes(nm) || nm.includes(am)))
+        || (job && (job.includes(nm) || job.includes(qNorm) || qNorm.includes(job.slice(-8))))
+      ) ? 0.8 : 0;
       const score = markHit ? 1 : Math.max(similarity(name, a.name), markPartial);
       return { asset: a, score, via: (markHit || markPartial ? 'mark' : 'name') as 'mark' | 'name' };
     })

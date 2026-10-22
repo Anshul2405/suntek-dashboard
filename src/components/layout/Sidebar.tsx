@@ -6,7 +6,8 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { useAnomalies } from '../../contexts/AnomalyContext';
 import { useTodo } from '../../contexts/TodoContext';
 import { useSearchPalette } from '../../contexts/SearchPaletteContext';
-import { profileCanAccess } from '../../lib/profiles';
+import { canViewBatchFacet, canViewBatchRegister, hasBatchFacetCaps, isAdminProfile, profileCanAccess } from '../../lib/profiles';
+import { SuntekLogo } from '../brand/SuntekLogo';
 
 interface SidebarProps {
   user: AuthUser | null;
@@ -41,6 +42,8 @@ const FACTORY_ITEMS: NavItem[] = [
   { key: 'nav.activityLog',    path: '/dashboard/purchase/activity' },
   { key: 'nav.storeReq',       path: '/dashboard/purchase/storereq' },
   { key: 'nav.purchaseOrders', path: '/dashboard/purchase/purchase' },
+  { key: 'nav.marineInsurance', path: '/dashboard/purchase/marine'  },
+  { key: 'nav.labour',         path: '/dashboard/purchase/labour'   },
   { key: 'nav.batchSheet',     path: '/dashboard/batches'           },
   { key: 'nav.nightManager',   path: '/dashboard/night-manager'     },
 ];
@@ -124,14 +127,6 @@ function IconWarehouse() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
       <polyline points="9 22 9 12 15 12 15 22"/>
-    </svg>
-  );
-}
-function IconBatch() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="3"/>
-      <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
     </svg>
   );
 }
@@ -247,16 +242,28 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // Admin section dropdown — expanded by default per requirement.
   const [adminOpen, setAdminOpen] = useState(true);
 
-  // Technical Team (factory_operator) navigates via 3 dropdowns: Batch / Operations / Logs.
-  const isOperator = activeProfile.id === 'factory_operator';
-  const [batchOpen, setBatchOpen] = useState(true);
-  const [opsOpen, setOpsOpen] = useState(
-    location.pathname === '/dashboard/batches' || location.pathname === '/dashboard/stock'
-  );
+  // Technical Team (factory_operator) — Factory (Batch Sheet + Activity) / Operations / Logs.
+  // Also match provisioned users whose base role is factory_operator (id is db_<uuid>).
+  const isOperator =
+    activeProfile.id === 'factory_operator' || activeProfile.baseRoleId === 'factory_operator';
+  const [opsOpen, setOpsOpen] = useState(location.pathname === '/dashboard/stock');
   const [logsOpen, setLogsOpen] = useState(location.pathname === '/dashboard/daily-log');
+  const [plantOpen, setPlantOpen] = useState(
+    location.pathname === '/dashboard/batches' ||
+    location.pathname.startsWith('/dashboard/purchase/maint') ||
+    location.pathname.startsWith('/dashboard/purchase/storereq') ||
+    location.pathname.startsWith('/dashboard/purchase/activity')
+  );
 
   /** True if the active profile can access this exact route (or its children). */
   const canSee = (route: string) => profileCanAccess(activeProfile, route);
+
+  // Extra plant links Technical may hold beyond Batch Sheet (e.g. Maintenance).
+  const showOperatorMaint = isOperator && canSee('/dashboard/purchase/maint');
+  const showOperatorStoreReq = isOperator && canSee('/dashboard/purchase/storereq');
+  const showOperatorActivity = isOperator && canSee('/dashboard/purchase/activity');
+  // Always show Factory for Technical so Batch Sheet is reachable there.
+  const showOperatorPlant = isOperator;
 
   // ── Section visibility ──────────────────────────────────────────────────────
   //
@@ -275,11 +282,15 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
 
   // A Factory item is visible if the role can reach it (or, for a nested group like
   // FAR, any of its children).
-  const factoryVisible = (it: NavItem) => it.children ? it.children.some((c) => canSee(c.path)) : canSee(it.path);
+  const factoryVisible = (it: NavItem) =>
+    it.children ? it.children.some((c) => canSee(c.path)) : canSee(it.path);
   const visibleFactoryItems    = FACTORY_ITEMS.filter(factoryVisible);
   const visibleOperationsItems = OPERATIONS_ITEMS.filter((it) => canSee(it.path));
-  const showFactory    = visibleFactoryItems.length > 0;
-  const showOperations = visibleOperationsItems.length > 0;
+  // Technical Team uses its own Batch / Operations / Logs branch — hide the
+  // admin-style Factory + Operations accordions so Batch Sheet isn't listed twice
+  // and "Batch" isn't confused with Factory → Batch Sheet.
+  const showFactory    = !isOperator && visibleFactoryItems.length > 0;
+  const showOperations = !isOperator && visibleOperationsItems.length > 0;
 
   // L1 entry views — shown ONLY for the specific role that owns the task, as flat
   // items. Admin/Unit Head monitor via the Factory boards, not entry terminals.
@@ -288,7 +299,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // Daily log upload: admin + unit_head only. The Technical Team (factory_operator)
   // is the Batch Logger — their only job is "Log Reading" (batch-entry), and
   // /dashboard/daily-log isn't in their allowed routes, so it must not appear.
-  const showDailyLog = ['admin','unit_head'].includes(activeProfile.id);
+  const showDailyLog = isAdminProfile(activeProfile) || activeProfile.id === 'unit_head' || activeProfile.baseRoleId === 'unit_head';
 
   // Flat entry terminals live below the dropdowns (operators use their own branch).
   // Daily Unit Log now lives in the Reference dropdown, not here.
@@ -304,7 +315,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
 
   // Monitoring items
   const showAnomalies = canSee('/dashboard/anomalies');
-  const showOwner = activeProfile.id === 'admin';
+  const showOwner = isAdminProfile(activeProfile);
 
   // Intelligence accordion sub-tabs — order matters (first visible is the
   // accordion default target). Anomaly Detection is intentionally NOT here;
@@ -323,7 +334,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // Admin section — user management + blacklist + upload history
   // User Management shows for anyone who can manage users or roles (delegated too).
   const showAdmin = can('manage_users') || can('manage_roles');
-  const showBlacklist = activeProfile.id === 'admin' || activeProfile.id === 'unit_head';
+  const showBlacklist = isAdminProfile(activeProfile) || activeProfile.id === 'unit_head' || activeProfile.baseRoleId === 'unit_head';
   // Upload History is where an incorrect CSV/Excel import gets undone. Shown to
   // whoever holds the capability; the RPC checks it again server-side, so this
   // only controls whether the link appears.
@@ -336,12 +347,18 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
 
   // Child highlight. For the route shared by Factory→Purchase Order and
   // Operations→Purchase, only the entry the user opened (tracked by ?ctx=ops)
-  // lights up — never both.
+  // lights up — never both. Same idea for Batch Logger vs Reading History (?tab=).
   const itemActive = (it: NavItem) => {
     if (it.path === SHARED_PO_ROUTE) {
       if (!onSharedPO) return false;
       const isOpsEntry = it.nav?.includes('ctx=ops') ?? false;
       return isOpsEntry ? viaOps : !viaOps;
+    }
+    if (it.path === '/dashboard/batch-entry' && it.nav?.includes('tab=')) {
+      if (location.pathname !== '/dashboard/batch-entry') return false;
+      const want = new URLSearchParams(it.nav.split('?')[1] ?? '').get('tab') || 'reading';
+      const have = new URLSearchParams(location.search).get('tab') || 'reading';
+      return want === have;
     }
     return isActive(it.path);
   };
@@ -351,11 +368,6 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // Parent-dropdown highlight: active when any visible child is active.
   const factoryActive    = visibleFactoryItems.some(factoryItemActive);
   const operationsActive = visibleOperationsItems.some(itemActive);
-
-  // Batch logger tab (?tab=) — used to highlight the operator's Batch/Logs sub-items.
-  const currentTab = new URLSearchParams(location.search).get('tab') || 'reading';
-  const isBatchTab = (tab: string) =>
-    location.pathname === '/dashboard/batch-entry' && currentTab === tab;
 
   function navTo(path: string) {
     navigate(path);
@@ -375,25 +387,23 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       }}
     >
       {/* Logo */}
-      <div className="flex items-center gap-3 mb-7 shrink-0">
-        <div className="w-11 h-11 rounded-2xl bg-[#F47651] text-white flex items-center justify-center font-extrabold text-lg shadow-sm shrink-0">
-          S°
-        </div>
-        <div className="sb-hide">
-          <div className="font-extrabold text-[15px] leading-tight text-white">Suntek Group</div>
-          <div className="text-slate-400 text-[11px]">CaratSense • v2.0</div>
+      <div className="flex items-center gap-3 mb-6 shrink-0">
+        <SuntekLogo size={40} />
+        <div className="sb-hide min-w-0">
+          <div className="font-heading font-semibold text-[16px] leading-tight text-white tracking-tight">Suntek</div>
+          <div className="text-slate-400 text-[11px] tracking-wide">Plant ERP</div>
         </div>
       </div>
 
-      {/* Quick Search */}
+      {/* Quick Search — quiet, not orange hero */}
       <button
-        className="btn-accent rounded-[10px] px-4 py-2.5 font-semibold text-[13px] flex items-center gap-2 mb-2 w-full justify-center shrink-0"
+        className="rounded-lg px-3 py-2 text-[13px] font-medium flex items-center gap-2 mb-3 w-full shrink-0 border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white cursor-pointer"
         title={`${t('nav.quickSearch')} (⌘K)`}
         onClick={() => { openPalette(); onClose?.(); }}
       >
         <IconSearch />
-        <span className="sb-hide">{t('nav.quickSearch')}</span>
-        <kbd className="sb-hide bg-white/15 border-white/15 text-white">⌘ K</kbd>
+        <span className="sb-hide flex-1 text-left">{t('nav.quickSearch')}</span>
+        <kbd className="sb-hide text-[10px] text-slate-400 bg-transparent border border-white/10 rounded px-1.5 py-0.5">⌘K</kbd>
       </button>
 
       {/* ── WORKSPACE ─────────────────────────────────────────────────────── */}
@@ -530,57 +540,91 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
         )}
       </nav>
 
-      {/* ── Technical Team (factory_operator) special nav — Batch / Operations / Logs ── */}
+      {/* ── Technical Team (factory_operator) — Factory / Operations / Logs ── */}
       {isOperator && (
       <nav className="flex flex-col gap-1">
 
-        {/* Batch dropdown */}
-        <a
-          className={`nav-link${location.pathname === '/dashboard/batch-entry' ? ' active' : ''}`}
-          onClick={() => { setBatchOpen((o) => !o); if (!batchOpen) navTo('/dashboard/batch-entry?tab=reading'); }}
-        >
-          <IconBatch />
-          <span>{t('nav.batch')}</span>
-          <svg className="ml-auto transition-transform duration-200" style={{ transform: batchOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
-        </a>
-        {batchOpen && (
-          <div className="nav-sub">
-            <a className={`nav-link${isBatchTab('reading') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=reading')}>{t('nav.logReading')}</a>
-            <a className={`nav-link${isBatchTab('new-batch') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=new-batch')}>{t('nav.newBatch')}</a>
-            <a className={`nav-link${isBatchTab('upload') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=upload')}>{t('nav.uploadBatchSheet')}</a>
-          </div>
+        {/* Operations — CP/Stock */}
+        {canSee('/dashboard/stock') && (
+          <>
+            <a
+              className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`}
+              onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/stock'); }}
+            >
+              <IconFlask />
+              <span>{t('section.operations')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {opsOpen && (
+              <div className="nav-sub">
+                <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
+              </div>
+            )}
+          </>
         )}
 
-        {/* Operations dropdown */}
-        <a
-          className={`nav-link${(isActive('/dashboard/batches') || isActive('/dashboard/stock')) ? ' active' : ''}`}
-          onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/batches'); }}
-        >
-          <IconFlask />
-          <span>{t('section.operations')}</span>
-          <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
-        </a>
-        {opsOpen && (
-          <div className="nav-sub">
-            <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.batchSheet')}</a>
-            <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
-          </div>
+        {/* Plant — only when Technical was also granted Maintenance / Store Req */}
+        {showOperatorPlant && (
+          <>
+            <a
+              className={`nav-link${(isActive('/dashboard/batches') || isActive('/dashboard/purchase/maint') || isActive('/dashboard/purchase/storereq') || isActive('/dashboard/purchase/activity')) ? ' active' : ''}`}
+              onClick={() => {
+                setPlantOpen((o) => !o);
+                if (!plantOpen) {
+                  navTo(canViewBatchRegister(activeProfile)
+                    ? '/dashboard/batches'
+                    : '/dashboard/batch-entry?tab=reading');
+                }
+              }}
+            >
+              <IconBox />
+              <span>{t('nav.factory')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: plantOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {plantOpen && (
+              <div className="nav-sub">
+                {(!hasBatchFacetCaps(activeProfile) || canViewBatchFacet(activeProfile, 'mat') || canViewBatchFacet(activeProfile, 'sheet')) && (
+                  <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.batchSheet')}</a>
+                )}
+                {hasBatchFacetCaps(activeProfile) && canViewBatchFacet(activeProfile, 'raw') && (
+                  <a className={`nav-link${isActive('/dashboard/batch-entry') && (new URLSearchParams(location.search).get('tab') || 'reading') === 'reading' ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=reading')}>{t('nav.logReading', 'Log reading')}</a>
+                )}
+                {hasBatchFacetCaps(activeProfile) && canViewBatchFacet(activeProfile, 'sheet') && (
+                  <a className={`nav-link${isActive('/dashboard/batch-entry') && new URLSearchParams(location.search).get('tab') === 'create-sheet' ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=create-sheet')}>{t('nav.createBatchSheet', 'Create Batch Sheet')}</a>
+                )}
+                {showOperatorActivity && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/activity') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/activity')}>{t('nav.activityLog')}</a>
+                )}
+                {showOperatorMaint && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/maint') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/maint')}>{t('nav.maintenance')}</a>
+                )}
+                {showOperatorStoreReq && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/storereq') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/storereq?tab=stock')}>{t('nav.storeReq')}</a>
+                )}
+              </div>
+            )}
+          </>
         )}
 
-        {/* Logs dropdown */}
-        <a
-          className={`nav-link${(isActive('/dashboard/daily-log') || isBatchTab('history')) ? ' active' : ''}`}
-          onClick={() => { setLogsOpen((o) => !o); if (!logsOpen) navTo('/dashboard/daily-log'); }}
-        >
-          <IconClipboard />
-          <span>{t('nav.logs')}</span>
-          <svg className="ml-auto transition-transform duration-200" style={{ transform: logsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
-        </a>
-        {logsOpen && (
-          <div className="nav-sub">
-            <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>{t('nav.dailyUnitLog')}</a>
-            <a className={`nav-link${isBatchTab('history') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=history')}>{t('nav.readingHistory')}</a>
-          </div>
+        {canSee('/dashboard/daily-log') && (
+          <>
+            <a
+              className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`}
+              onClick={() => {
+                setLogsOpen((o) => !o);
+                if (!logsOpen) navTo('/dashboard/daily-log');
+              }}
+            >
+              <IconClipboard />
+              <span>{t('nav.logs')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: logsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {logsOpen && (
+              <div className="nav-sub">
+                <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>{t('nav.dailyUnitLog')}</a>
+              </div>
+            )}
+          </>
         )}
       </nav>
       )}
@@ -609,7 +653,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
           >
             <IconMoon />
             <span>{t('nav.nightCheckin')}</span>
-            <span className="pill-count" style={{ background: '#EEF2FF', color: '#4F46E5' }}>{t('nav.pillEntry', 'entry')}</span>
+            <span className="pill-count" style={{ background: 'rgba(255,255,255,0.08)', color: '#94A3B8' }}>{t('nav.pillEntry', 'entry')}</span>
           </a>
         )}
 
@@ -638,13 +682,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showDailyLog && (
               <a className={`nav-link${isActive('/dashboard/daily-log') ? ' active' : ''}`} onClick={() => navTo('/dashboard/daily-log')}>
                 <span>{t('nav.dailyUnitLog')}</span>
-                <span className="pill-count" style={{ background: '#FFFBEB', color: '#D97706' }}>OCR</span>
               </a>
             )}
             {showOilRatio && (
               <a className={`nav-link${isActive('/dashboard/oil-ratio') ? ' active' : ''}`} onClick={() => navTo('/dashboard/oil-ratio')}>
                 <span>{t('nav.oilRatioTable')}</span>
-                <span className="pill-count" style={{ background: '#FEF3C7', color: '#B45309' }}>{t('nav.pillBrain', 'brain')}</span>
               </a>
             )}
             {showAudit && (
@@ -753,19 +795,16 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showAdmin && (
               <a className={`nav-link${isActive('/dashboard/users') ? ' active' : ''}`} onClick={() => navTo('/dashboard/users')}>
                 <span>{t('nav.userManagement')}</span>
-                <span className="pill-count" style={{ background: '#FEF3C7', color: '#B45309' }}>{t('nav.pillAdmin', 'admin')}</span>
               </a>
             )}
             {showBlacklist && (
               <a className={`nav-link${isActive('/dashboard/blacklist') ? ' active' : ''}`} onClick={() => navTo('/dashboard/blacklist')}>
                 <span>{t('nav.blacklist')}</span>
-                <span className="pill-count" style={{ background: '#FEF2F2', color: '#DC2626' }}>{t('nav.pillRestrict', 'restrict')}</span>
               </a>
             )}
             {showUploads && (
               <a className={`nav-link${isActive('/dashboard/admin/uploads') ? ' active' : ''}`} onClick={() => navTo('/dashboard/admin/uploads')}>
                 <span>{t('nav.uploadHistory', 'Upload History')}</span>
-                <span className="pill-count" style={{ background: '#FEF2F2', color: '#DC2626' }}>{t('nav.pillDelete', 'delete')}</span>
               </a>
             )}
           </div>
@@ -774,17 +813,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       )}
 
       {/* ── User card — shows active profile, not real auth user ──────────── */}
-      <div className="sb-hide mt-6 p-3 rounded-xl bg-white/5">
+      <div className="sb-hide mt-6 p-2.5 rounded-lg border border-white/8 bg-white/[0.04]">
         <div className="flex items-center gap-2.5">
           <div
-            className={[
-              'w-9 h-9 rounded-full flex-shrink-0',
-              'bg-gradient-to-br',
-              activeProfile.avatarFrom,
-              activeProfile.avatarTo,
-              'flex items-center justify-center',
-              'text-white font-bold text-xs',
-            ].join(' ')}
+            className="w-9 h-9 rounded-lg flex-shrink-0 bg-[#EF6C00] flex items-center justify-center text-white font-bold text-xs"
           >
             {activeProfile.initials}
           </div>
@@ -794,7 +826,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             </div>
             <div className="text-[11px] text-slate-400">{activeProfile.roleLabel}</div>
             {activeProfile.plant && (
-              <div className="text-[10px] text-slate-500">📍 {activeProfile.plant}</div>
+              <div className="text-[10px] text-slate-500 truncate">{activeProfile.plant}</div>
             )}
             {activeProfile.accessNote && (
               <div className="text-[9px] text-slate-500 truncate mt-0.5" title={activeProfile.accessNote}>

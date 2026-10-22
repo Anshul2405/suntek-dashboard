@@ -8,7 +8,7 @@ import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
-import { normalizeUnit } from '../../../lib/store/parseStockFile';
+import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
 import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../../../lib/store/purchaseParse';
 import { reconcileBillAmount } from '../../../lib/nvidiaOcr';
 import { normalizeGstin, isValidGstin } from '../../../lib/utils/gst';
@@ -141,6 +141,13 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
   const candidatesFor = (name: string) => matchCandidates(name, stockForPlant);
   const bestChoice = (name: string) => { const c = candidatesFor(name); return c[0] && c[0].score >= 0.6 ? c[0].id : 'new'; };
 
+  /** Units to offer for a line: the canonical set, plus whatever the bill said
+   *  (an OCR'd "Drum" must stay selectable instead of silently becoming Pcs). */
+  const unitOptionsFor = (unit: string) => {
+    const u = unit.trim();
+    return u && !UNIT_OPTIONS.includes(u) ? [...UNIT_OPTIONS, u] : UNIT_OPTIONS;
+  };
+
   async function handleBill(file: File) {
     setFileName(file.name); setErr(null); setParseProg({ page: 0, pages: 0 }); billProgress.reset(); setStage('parsing');
     try {
@@ -153,7 +160,16 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       setBill(parsed);
       setLines(parsed.lineItems.map(li => {
         const name = (li.description || '').trim();
-        return { key: nextKey(), name, qty: li.quantity != null ? String(li.quantity) : '', unit: li.unit || '', amount: li.amount ?? null, choice: bestChoice(name) };
+        const choice = bestChoice(name);
+        const matchedUnit = choice !== 'new' ? stockForPlant.find(s => s.id === choice)?.unit : null;
+        return {
+          key: nextKey(),
+          name,
+          qty: li.quantity != null ? String(li.quantity) : '',
+          unit: normalizeUnit(li.unit || matchedUnit),
+          amount: li.amount ?? null,
+          choice,
+        };
       }));
       // Prefill the purchase header from the OCR'd bill (all editable).
       if (parsed.supplierName) setVendor(parsed.supplierName);
@@ -165,13 +181,19 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
     } catch (e) { setErr(errMsg(e)); setStage('error'); }
   }
 
-  function startManual() { setMode('manual'); setLines([{ key: nextKey(), name: '', qty: '', unit: '', amount: null, choice: 'new' }]); setStage('edit'); }
+  function startManual() { setMode('manual'); setLines([{ key: nextKey(), name: '', qty: '', unit: 'Pcs', amount: null, choice: 'new' }]); setStage('edit'); }
 
   function updateLine(key: string, patch: Partial<Line>) {
     setLines(ls => ls.map(l => l.key === key ? { ...l, ...patch } : l));
   }
   function setName(key: string, name: string) {
     updateLine(key, { name, choice: bestChoice(name) });
+  }
+  /** Picking an existing item adopts its unit — the register must not end up
+   *  holding the same item in two units. */
+  function chooseItem(key: string, choice: string) {
+    const itemUnit = choice !== 'new' ? stockForPlant.find(s => s.id === choice)?.unit : null;
+    updateLine(key, itemUnit ? { choice, unit: normalizeUnit(itemUnit) } : { choice });
   }
 
   /** Map RPC error strings to friendly, translated messages. */
@@ -360,15 +382,26 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
                     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                       <input value={ln.name} onChange={e => setName(ln.key, e.target.value)} placeholder={t('addPurchase.itemName', 'Item name')} style={{ ...inputStyle, flex: 1 }} />
                       <input type="number" value={ln.qty} onChange={e => updateLine(ln.key, { qty: e.target.value })} placeholder={t('addPurchase.qty', 'Qty')} style={{ ...inputStyle, width: 80 }} />
+                      <select
+                        value={normalizeUnit(ln.unit)}
+                        onChange={e => updateLine(ln.key, { unit: e.target.value })}
+                        disabled={!!chosen?.unit}
+                        title={chosen?.unit
+                          ? t('addPurchase.unitLocked', { defaultValue: 'Unit comes from {{item}} in the register.', item: chosen.item_name })
+                          : t('addPurchase.unit', 'Unit')}
+                        style={{ ...inputStyle, width: 92, background: chosen?.unit ? '#F8FAFC' : '#fff', color: chosen?.unit ? '#64748B' : 'inherit' }}
+                      >
+                        {unitOptionsFor(ln.unit).map(u => <option key={u} value={u}>{u}</option>)}
+                      </select>
                       {lines.length > 1 && <button onClick={() => setLines(ls => ls.filter(l => l.key !== ln.key))} style={{ border: 'none', background: 'none', color: '#DC2626', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}>×</button>}
                     </div>
                     {/* Match confirmation: top-3 candidates + create-new */}
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
                       <span style={{ fontSize: 10.5, color: '#94A3B8', textTransform: 'uppercase', fontWeight: 600 }}>{cands.length ? t('addPurchase.sameAs', 'Same as?') : t('addPurchase.noMatch', 'No match —')}</span>
                       {cands.map(c => (
-                        <button key={c.id} onClick={() => updateLine(ln.key, { choice: c.id })}
+                        <button key={c.id} onClick={() => chooseItem(ln.key, c.id)}
                           style={{ ...pill, borderColor: ln.choice === c.id ? '#16A34A' : '#E2E8F0', background: ln.choice === c.id ? '#F0FDF4' : '#fff', color: ln.choice === c.id ? '#16A34A' : '#475569' }}>
-                          {c.item_name} · {c.on_hand}
+                          {c.item_name} · {c.on_hand}{c.unit ? ` ${c.unit}` : ''}
                         </button>
                       ))}
                       <button onClick={() => updateLine(ln.key, { choice: 'new' })}
@@ -377,14 +410,14 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
                       </button>
                     </div>
                     <div style={{ fontSize: 11, color: '#64748B', marginTop: 6 }}>
-                      {chosen ? <>→ <strong>{chosen.item_name}</strong>: {chosen.on_hand} + {qtyN} = <strong style={{ color: '#16A34A' }}>{chosen.on_hand + qtyN}</strong></>
-                        : <>→ {t('addPurchase.newItemWith', 'new item')} <strong>{ln.name || '—'}</strong> {t('addPurchase.withQty', 'with qty')} <strong style={{ color: '#7C3AED' }}>{qtyN}</strong></>}
+                      {chosen ? <>→ <strong>{chosen.item_name}</strong>: {chosen.on_hand} + {qtyN} = <strong style={{ color: '#16A34A' }}>{chosen.on_hand + qtyN}</strong> {normalizeUnit(ln.unit)}</>
+                        : <>→ {t('addPurchase.newItemWith', 'new item')} <strong>{ln.name || '—'}</strong> {t('addPurchase.withQty', 'with qty')} <strong style={{ color: '#7C3AED' }}>{qtyN}</strong> {normalizeUnit(ln.unit)}</>}
                     </div>
                   </div>
                 );
               })}
             </div>
-            <button onClick={() => setLines(ls => [...ls, { key: nextKey(), name: '', qty: '', unit: '', amount: null, choice: 'new' }])}
+            <button onClick={() => setLines(ls => [...ls, { key: nextKey(), name: '', qty: '', unit: 'Pcs', amount: null, choice: 'new' }])}
               style={{ width: '100%', padding: '8px', borderRadius: 10, border: '1.5px dashed #CBD5E1', background: '#fff', color: '#475569', cursor: 'pointer', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit', margin: '10px 0' }}>+ {t('addPurchase.addLine', 'Add line')}</button>
             {fieldErr && (
               <div style={{ fontSize: 12.5, color: '#DC2626', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '8px 10px', marginBottom: 10 }}>{fieldErr}</div>

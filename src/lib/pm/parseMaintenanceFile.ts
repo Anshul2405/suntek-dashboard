@@ -44,6 +44,63 @@ const hasMark = (s: string) => /\([^)]+\)\s*$/.test((s || '').trim());
 const clean = (v: unknown) => (v == null ? '' : String(v).trim());
 const isHeaderLabel = (s: string) => /^(activity|equipment name|s\.?no|date|due date|done by|verified by|verfide by|remarks|picture)$/i.test(s.trim());
 
+/** Ganjam Daily sheets are filled-in logs (13.06.2026, …) — not task lists. */
+export function isDateLikeActivity(value: unknown): boolean {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return true;
+  const s = clean(value);
+  if (!s) return false;
+  if (/^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/.test(s)) return true;
+  if (/^\d{4}[./-]\d{1,2}[./-]\d{1,2}$/.test(s)) return true;
+  // Excel serial (XLSX without cellDates) — ~1982–2119.
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    if (n >= 30000 && n <= 80000) return true;
+  }
+  return false;
+}
+
+export function isDateOnlyChecklist(items: { activity?: string | null }[] | null | undefined): boolean {
+  if (!items?.length) return false;
+  const acts = items.map(i => (i.activity || '').trim()).filter(Boolean);
+  return acts.length > 0 && acts.every(isDateLikeActivity);
+}
+
+/** Collapse "Reactor - 01" / "Reactor No.-01" to the same key. */
+export function equipmentMatchKey(name: string): string {
+  return (name || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\bno\.?\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, '')
+    .replace(/0+(\d)/g, '$1');
+}
+
+const SIBLING_FREQ = ['monthly', 'weekly', 'fortnightly', 'bimonthly', 'quarterly', 'biannual', 'annual'] as const;
+
+export type ChecklistPair = { component: string; activity: string };
+
+export function pickReplacementChecklist(
+  current: { equipment: string; plant_id?: string | null; checklist: ChecklistPair[] | null },
+  candidates: { equipment: string; plant_id?: string | null; frequency: string; checklist: ChecklistPair[] | null }[],
+): ChecklistPair[] | null {
+  if (!isDateOnlyChecklist(current.checklist)) return null;
+  const key = equipmentMatchKey(current.equipment);
+  if (!key) return null;
+  const siblings = candidates.filter(c =>
+    c.plant_id === current.plant_id
+    && equipmentMatchKey(c.equipment) === key
+    && !isDateOnlyChecklist(c.checklist)
+    && (c.checklist?.length ?? 0) > 0,
+  );
+  siblings.sort((a, b) => {
+    const ai = SIBLING_FREQ.indexOf(a.frequency as typeof SIBLING_FREQ[number]);
+    const bi = SIBLING_FREQ.indexOf(b.frequency as typeof SIBLING_FREQ[number]);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  return siblings[0]?.checklist ?? null;
+}
+
 function parseSheet(ws: XLSX.WorkSheet, frequency: string, sheetName: string): PMTemplate[] {
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '', blankrows: false });
   if (!rows.length) return [];
@@ -65,7 +122,8 @@ function parseSheet(ws: XLSX.WorkSheet, frequency: string, sheetName: string): P
   let current: PMTemplate | null = null;
   const addItem = (t: PMTemplate, component: string, activity: string) => {
     const c = component.trim(), a = activity.trim();
-    if (!c || isHeaderLabel(c)) return;
+    if (!c || isHeaderLabel(c) || isDateLikeActivity(c)) return;
+    if (!a || isHeaderLabel(a) || isDateLikeActivity(a)) return;
     if (t.checklist.some(x => x.component.toLowerCase() === c.toLowerCase() && x.activity.toLowerCase() === a.toLowerCase())) return;
     t.checklist.push({ component: c, activity: a });
   };
