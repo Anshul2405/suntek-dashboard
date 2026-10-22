@@ -85,6 +85,9 @@ export function useDirectory(): TaggablePerson[] {
     const seen = new Set<string>();
     const out: TaggablePerson[] = [];
     for (const p of allProfiles) {
+      // Role slugs (factory_operator, …) are not people. Tagging those made
+      // unexpected names appear and picked chips vanish on reload.
+      if (!p.id.startsWith('db_') && !p.authUserId) continue;
       const key = p.name.trim().toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

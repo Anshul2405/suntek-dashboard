@@ -17,6 +17,7 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
@@ -88,7 +89,7 @@ export function StoreRequisitions() {
   };
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
-  const { scopeQuery, allowedPlants } = usePlantScope();
+  const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   const canDecideReq =
     isAdminProfile(activeProfile) ||
     activeProfile.id === 'unit_head' ||
@@ -103,6 +104,7 @@ export function StoreRequisitions() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState('');
+  const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
@@ -118,8 +120,12 @@ export function StoreRequisitions() {
   const listed = useMemo(() => {
     const from = searchParams.get('fromDate') || '';
     const to = searchParams.get('toDate') || '';
-    return items.filter(r => (!queuePending || isWaitingReq(r.status)) && inIstDayRange(r.created_at, from, to));
-  }, [items, queuePending, searchParams]);
+    return items.filter(r => {
+      if (queuePending && !isWaitingReq(r.status)) return false;
+      if (approvalView === 'mine' && (r.raised_by || '') !== activeProfile.name) return false;
+      return inIstDayRange(r.created_at, from, to);
+    });
+  }, [items, queuePending, searchParams, approvalView, activeProfile.name]);
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
@@ -159,8 +165,8 @@ export function StoreRequisitions() {
   // fallback: after a rename it would offer names that no longer exist. The
   // form stores the plant ID, so a rename cannot orphan an in-flight request.
   const plantOptions = useMemo(
-    () => [...(allowedPlants.length > 0 ? allowedPlants : dbPlants)].sort((a, b) => a.name.localeCompare(b.name)),
-    [allowedPlants, dbPlants],
+    () => [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name)),
+    [allowedPlants, scopeReady],
   );
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
@@ -285,22 +291,22 @@ export function StoreRequisitions() {
       {/* Summary tiles */}
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
-          label={t('storereq.stat_total', 'Total Requirements')} value={String(items.length).padStart(2, '0')}
+          label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length).padStart(2, '0')}
           caption={t('storereq.stat_total_sub', 'Open requests')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
-          label={t('storereq.stat_pending', 'Pending Approval')} value={String(pendingCount).padStart(2, '0')}
+          label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount).padStart(2, '0')}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
           onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
-          label={t('storereq.stat_ready', 'Ready to Fulfil')} value={String(readyCount).padStart(2, '0')}
+          label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount).padStart(2, '0')}
           caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
-          label={t('storereq.stat_urgent', 'Urgent')} value={String(urgentCount).padStart(2, '0')}
+          label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount).padStart(2, '0')}
           caption={t('storereq.stat_urgent_sub', 'High priority requests')}
           onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewUrgent', 'See urgent')} />
@@ -328,7 +334,13 @@ export function StoreRequisitions() {
           <div className="px-5 pb-5"><SkeletonRows rows={6} /></div>
         ) : (
         <>
-          <div className="px-5 pb-4"><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} /></div>
+          <div className="px-5 pb-4 flex flex-wrap items-center gap-2">
+            <div className="flex-1 min-w-[180px]"><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} /></div>
+            <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold">
+              <button type="button" onClick={() => setApprovalView('mine')} style={{ padding: '7px 10px', background: approvalView === 'mine' ? '#0F172A' : '#fff', color: approvalView === 'mine' ? '#fff' : '#475569', border: 'none' }}>{t('storereq.myApprovals', 'My approvals')}</button>
+              <button type="button" onClick={() => setApprovalView('all')} style={{ padding: '7px 10px', background: approvalView === 'all' ? '#0F172A' : '#fff', color: approvalView === 'all' ? '#fff' : '#475569', border: 'none' }}>{t('storereq.allApprovals', 'All approvals')}</button>
+            </div>
+          </div>
           {filtered.length === 0 ? (
             <div className="px-5 pb-5"><EmptyState title={t('storereq.open_req_empty')} message={search ? t('common.noMatches', 'No rows match your search.') : undefined} /></div>
           ) : (

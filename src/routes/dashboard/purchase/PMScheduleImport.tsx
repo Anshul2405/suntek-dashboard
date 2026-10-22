@@ -7,6 +7,7 @@ import { fetchActivePlants } from '../../../lib/plants';
 import { insertRows } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import { parseMaintenanceFile, type PMTemplate } from '../../../lib/pm/parseMaintenanceFile';
@@ -29,7 +30,7 @@ const btnGhost: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, 
 export function PMScheduleImport({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const { allowedPlants } = usePlantScope();
+  const { allowedPlants, ready: scopeReady } = usePlantScope();
   const { addNotification } = useNotifications();
 
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -54,7 +55,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
     let alive = true;
     (async () => {
       const { data: pl } = await fetchActivePlants<Plant>('id, name');
-      const base = allowedPlants.length ? (allowedPlants as Plant[]) : (pl || []);
+      const base = plantsForPicker(allowedPlants as Plant[], scopeReady);
       const { data: fa } = await supabase.from('fixed_assets').select('id, name, identification_mark, plant_id').returns<(AssetLite & { plant_id: string | null })[]>();
       const { data: sc } = await supabase.from('maintenance_schedules').select('equipment_mark, frequency, plant_id').returns<{ equipment_mark: string | null; frequency: string; plant_id: string | null }[]>();
       // Technicians (for the default assignee) with their plant.

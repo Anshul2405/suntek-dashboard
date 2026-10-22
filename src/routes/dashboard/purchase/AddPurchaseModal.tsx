@@ -7,6 +7,7 @@ import { fetchActivePlants } from '../../../lib/plants';
 import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
 import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../../../lib/store/purchaseParse';
@@ -47,7 +48,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
 }) {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const { storeQuery, allowedPlants } = usePlantScope();
+  const { storeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   const actorName = activeProfile.name;
 
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -89,7 +90,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
     let alive = true;
     (async () => {
       const { data: pl } = await fetchActivePlants<Plant>('id, name');
-      const base = allowedPlants.length ? (allowedPlants as Plant[]) : (pl || []);
+      const base = plantsForPicker(allowedPlants as Plant[], scopeReady);
       // store_id comes along so the item list can be narrowed to the register
       // the selected factory actually draws from — at Rehla that is the one
       // shared store, not a per-factory slice.

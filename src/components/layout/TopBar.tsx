@@ -177,7 +177,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
               </React.Fragment>
             ))}
           </div>
-          <h1 className="font-heading font-semibold text-[22px] md:text-[26px] leading-[1.12] mt-0.5 truncate tracking-tight">{title}</h1>
+          <h1 className="font-heading font-semibold text-[22px] md:text-[26px] leading-[1.12] mt-0.5 tracking-tight whitespace-normal break-words">{title}</h1>
           {subtitle && <div className="text-[12.5px] text-slate-500 mt-0.5 max-w-[52ch]">{subtitle}</div>}
         </div>
       </div>

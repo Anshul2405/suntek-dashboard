@@ -20,6 +20,7 @@ import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary';
 import * as XLSX from 'xlsx';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { groupAssetsByType, normMark, matchAsset } from '../../../lib/far/assets';
 import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
@@ -618,7 +619,7 @@ export function FAR() {
       if (!rows.length) throw new Error(t('far.errNoRows'));
       setParsedRows(rows);
       // Pre-select the factory only when there's exactly one option; else force a choice.
-      const opts = allowedPlants.length ? allowedPlants : dbPlants;
+      const opts = plantsForPicker(allowedPlants, scopeReady);
       setImportPlantId(opts.length === 1 ? opts[0].id : '');
       setImportStage('review');
     } catch (e) {
@@ -921,7 +922,7 @@ export function FAR() {
                 <div style={{ border: '1px solid #FDE68A', background: '#FFFDF5', borderRadius: 10, padding: 12, marginBottom: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: '#92400E', textTransform: 'uppercase', marginBottom: 6 }}>{t('far.factoryBelongsTo', 'Factory this FAR belongs to *')}</div>
                   <div className="flex gap-2 flex-wrap">
-                    {(allowedPlants.length ? allowedPlants : dbPlants).map(p => {
+                    {plantsForPicker(allowedPlants, scopeReady).map(p => {
                       const on = importPlantId === p.id;
                       return (
                         <button key={p.id} onClick={() => setImportPlantId(p.id)}

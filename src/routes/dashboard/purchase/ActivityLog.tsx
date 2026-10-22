@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
@@ -26,6 +26,8 @@ import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
 import { inIstDayRange } from '../../../lib/utils/formatting';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
+import { displayLocationName } from '../../../lib/plantLabels';
 
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
@@ -173,7 +175,7 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
         key: `${tk.id}:done`, equipment: tk.equipment,
         type: tk.type === 'emergency' ? t('activity.evtRepairCompleted', 'Repair completed') : t('activity.evtPeriodicCheckCompleted', 'Periodic check completed'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null,
-        verifiedBy: tk.raised_role || null,
+        verifiedBy: null,
         plant, hasPhoto: donePhotos.length > 0, photos: donePhotos,
         ticketRef: ref, ticketId: tk.id, source: 'maintenance',
       });
@@ -308,10 +310,11 @@ function ActivityRoleAccessCard() {
 export function ActivityLog() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
-  const { scopeQuery } = usePlantScope();
+  const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   const { addNotification } = useNotifications();
   const screenBlacklist = useBlacklistGuard();
   const [open, setOpen] = useState(false);
@@ -322,13 +325,25 @@ export function ActivityLog() {
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [showManualOnly, setShowManualOnly] = useState(false);
+  const [showManualOnly, setShowManualOnly] = useState(searchParams.get('manual') === '1');
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
-  const [search, setSearch] = useState('');
-  const [plantFilter, setPlantFilter] = useState('');
-  const [kpi, setKpi] = useState<'all' | 'verified' | 'pending' | 'photo' | 'maint'>('all');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const search = searchParams.get('q') || '';
+  const plantFilter = searchParams.get('plant') || '';
+  const kpi = (searchParams.get('kpi') as 'all' | 'verified' | 'pending' | 'photo' | 'maint') || 'all';
+  const fromDate = searchParams.get('from') || '';
+  const toDate = searchParams.get('to') || '';
+  const srcFilter = searchParams.get('src') || '';
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(searchParams);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) next.set(k, v); else next.delete(k);
+    }
+    setSearchParams(next, { replace: true });
+  }
+  const setSearch = (v: string) => patchParams({ q: v });
+  const setPlantFilter = (v: string) => patchParams({ plant: v });
+  const setKpi = (v: 'all' | 'verified' | 'pending' | 'photo' | 'maint') => patchParams({ kpi: v === 'all' ? '' : v });
+  const setFromTo = (from: string, to: string) => patchParams({ from, to });
   const [incidents, setIncidents] = useState<{ id: string; what_text: string; who_text: string | null; occurred_at: string; reported_by: string | null; plants?: { name: string } | null }[]>([]);
   const today = new Date().toISOString().split('T')[0];
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
@@ -364,7 +379,7 @@ export function ActivityLog() {
       }
       try {
         const db = supabase as unknown as { from: (table: string) => any };
-        const { data: incidentRows } = await db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)').order('occurred_at', { ascending: false });
+        const { data: incidentRows } = await scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)')).order('occurred_at', { ascending: false });
         setIncidents(incidentRows || []);
       } catch { setIncidents([]); }
       setLoadError(false);
@@ -410,34 +425,40 @@ export function ActivityLog() {
       source: 'incident',
     }));
     const all = showManualOnly ? manual : [...manual, ...derived, ...incidentRows];
-    return all.sort((a, b) => toMs(b.date) - toMs(a.date));
+    return all.sort((a, b) => {
+      if (a.source === 'manual' && b.source !== 'manual') return -1;
+      if (b.source === 'manual' && a.source !== 'manual') return 1;
+      return toMs(b.date) - toMs(a.date);
+    });
   }, [logs, tickets, storeReqs, incidents, showManualOnly, t]);
 
   const fromMaintenance = rows.filter(r => r.source === 'maintenance').length;
-  const verified = rows.filter(r => r.verifiedBy).length;
+  const verified = rows.filter(r => r.source === 'manual' && r.verifiedBy).length;
+  const pendingVerify = rows.filter(r => r.source === 'manual' && !r.verifiedBy).length;
   const withPhoto = rows.length ? Math.round((rows.filter(r => r.hasPhoto).length / rows.length) * 100) : 0;
 
   // Factory names come from the DB only — a hard-coded fallback would keep
   // offering names that no longer exist after a rename. The filter compares
   // display names on both sides (rows carry the same live join), so it stays
   // consistent; the entry form below keys off the plant ID.
-  const plantNames = dbPlants.map(p => p.name);
-  const plantOptions = [...dbPlants].sort((a, b) => a.name.localeCompare(b.name));
+  const plantOptions = [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name));
+  const plantNames = plantOptions.map(p => p.name);
 
   // Search + plant filter, then paginate — Activity Log grows unbounded over time.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter(r =>
       (!plantFilter || r.plant === plantFilter) &&
+      (!srcFilter || r.source === srcFilter) &&
       inIstDayRange(r.date, fromDate, toDate) &&
       (kpi === 'all'
-        || (kpi === 'verified' && !!r.verifiedBy)
-        || (kpi === 'pending' && !r.verifiedBy)
+        || (kpi === 'verified' && r.source === 'manual' && !!r.verifiedBy)
+        || (kpi === 'pending' && r.source === 'manual' && !r.verifiedBy)
         || (kpi === 'photo' && r.hasPhoto)
         || (kpi === 'maint' && r.source === 'maintenance')) &&
       (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef].some(f => (f || '').toLowerCase().includes(q))),
     );
-  }, [rows, search, plantFilter, fromDate, toDate, kpi]);
+  }, [rows, search, plantFilter, fromDate, toDate, kpi, srcFilter]);
   const actSort = useSortable(filtered, {
     equipment: r => r.equipment,
     activity: r => r.type,
@@ -447,13 +468,13 @@ export function ActivityLog() {
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${actSort.sort.key}|${actSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${srcFilter}|${fromDate}|${toDate}|${kpi}|${actSort.sort.key}|${actSort.sort.dir}` });
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
     if (!form.equipment.trim() || !form.doneBy.trim()) return;
-    const plant = dbPlants.find(p => p.id === form.plant);
+    const plant = plantOptions.find(p => p.id === form.plant) || allowedPlants.find(p => p.id === form.plant);
     const { data, error } = await insertRows('activity_logs', {
       equipment: form.equipment,
       type: form.type.toLowerCase(),
@@ -506,34 +527,41 @@ export function ActivityLog() {
   return (
     <>
       <ActivityRoleAccessCard />
+      <div className="flex justify-end mb-3">
+        <button className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm" onClick={() => setOpen(true)}>
+          + {t('activity.logActivityBtn')}
+        </button>
+      </div>
       {/* KPI row */}
       <div className="grid grid-cols-12 gap-5 mb-5">
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'All activity events', what: 'Every activity across all plants — manual log entries PLUS milestones auto-fed from the maintenance workflow (raised, procured, handed over, completed, defective decided). The single overall record.', source: 'Derived', note: 'Manual activity_logs + maintenance_tickets / maintenance_store_requests milestones.' }} />
-          <button type="button" className="text-left w-full" onClick={() => setKpi(k => k === 'maint' ? 'all' : 'all')}>
+          <button type="button" className="text-left w-full" onClick={() => setKpi('all')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiTotal')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">{rows.length}</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : rows.length}</div>
           <div className="text-[11px] text-slate-500 mt-1">{t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
           </button>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Verified', what: 'Activity events that carry a verifier (supervisor / unit head sign-off, or the raising role on a completed maintenance ticket).', source: 'Derived' }} />
-          <button type="button" className="text-left w-full" onClick={() => setKpi(k => k === 'verified' ? 'all' : 'verified')}>
+          <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'verified' ? 'all' : 'verified')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiVerified')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num text-green-600">{verified}</div>
+          <div className="text-[28px] font-extrabold mt-1 num text-green-600">{loading ? '…' : verified}</div>
           </button>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Pending verification', what: 'Events with no verifier yet. These need supervisor sign-off.', source: 'Derived' }} />
-          <button type="button" className="text-left w-full" onClick={() => setKpi(k => k === 'pending' ? 'all' : 'pending')}>
+          <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'pending' ? 'all' : 'pending')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPending')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{rows.filter(r => !r.verifiedBy).length}</div>
+          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{loading ? '…' : pendingVerify}</div>
           </button>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Photo proof coverage', what: 'Percentage of activity events that carry photo proof — manual uploads plus the completion / handover / defective-part photos captured through the maintenance workflow.', source: 'Derived' }} />
+          <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'photo' ? 'all' : 'photo')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPhotoProof')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">{withPhoto}%</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : `${withPhoto}%`}</div>
+          </button>
         </div>
       </div>
 
@@ -565,8 +593,15 @@ export function ActivityLog() {
           </div>
           <select value={plantFilter} onChange={e => setPlantFilter(e.target.value)} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
             <option value="">{t('activity.allPlants', 'All plants')}</option>
-            {plantNames.map(p => <option key={p} value={p}>{p}</option>)}
+            {plantNames.map(p => <option key={p} value={p}>{displayLocationName(p)}</option>)}
           </select>
+          <select value={srcFilter} onChange={e => patchParams({ src: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
+            <option value="">{t('activity.allModules', 'All modules')}</option>
+            <option value="manual">{t('activity.srcManual', 'Manual log')}</option>
+            <option value="maintenance">{t('activity.srcMaint', 'Maintenance')}</option>
+            <option value="incident">{t('activity.srcIncident', 'Incidents')}</option>
+          </select>
+          <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => setFromTo(from, to)} />
         </div>
         {loadError ? (
           <ErrorState title={t('activity.errorTitle')} message={t('activity.errorMessage')}
@@ -586,7 +621,7 @@ export function ActivityLog() {
             </thead>
             <tbody>
               {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: 'pointer' }} onClick={() => {
+                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: /delet/i.test(a.type) || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined }} onClick={() => {
                   if (a.source === 'maintenance' && a.ticketId) navigate(`/dashboard/purchase/maint?ticket=${a.ticketId}&from=/dashboard/purchase/activity`);
                   else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&from=/dashboard/purchase/activity`);
                   else if (a.photos.length) setLightbox(a.photos);

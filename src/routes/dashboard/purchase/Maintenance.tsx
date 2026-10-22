@@ -29,6 +29,8 @@ import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { similarity } from '../../../lib/blacklist/similarity';
 import { PMScheduleImport } from './PMScheduleImport';
 import { suggestAssets } from '../../../lib/far/assets';
+import { plantsForPicker } from '../../../lib/access/pickerPlants';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { IncidentReports } from './IncidentReports';
@@ -88,11 +90,12 @@ type FarAssetLite = { id: string; name: string; identification_mark: string | nu
 
 /** Equipment field backed by the FAR — pick a registered asset (links it) or type
  *  free text (allowed, flagged as not-in-FAR). */
-function FarEquipField({ value, assets, onChange, onPick }: {
+function FarEquipField({ value, assets, onChange, onPick, requirePick }: {
   value: string;
   assets: FarAssetLite[];
   onChange: (v: string) => void;
   onPick: (asset: FarAssetLite | null) => void;
+  requirePick?: boolean;
 }) {
   const { t } = useTranslation();
   const [focus, setFocus] = React.useState(false);
@@ -504,7 +507,7 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
 
 export function Maintenance() {
   const { activeProfile, allProfiles, roles, can } = useRoleContext();
-  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor } = usePlantScope();
+  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor, ready: scopeReady } = usePlantScope();
   const { isPersonBlacklisted, notifyActivity, tableReady: blacklistReady } = useBlacklist();
   const toast = useToast();
   const { markTicketRead } = useNotifications();
@@ -602,6 +605,7 @@ export function Maintenance() {
   // Data
   const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule' | 'incidents'>('periodic');
   const [tickets, setTickets] = useState<TicketRow[]>([]);
+  const [ticketsWithNotes, setTicketsWithNotes] = useState<Set<string>>(() => new Set());
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -759,6 +763,13 @@ export function Maintenance() {
       schedulesData = sRes.data;
       setTickets(ticketsData || []);
       setSchedules(schedulesData || []);
+      const noteIds = (ticketsData || []).map(x => x.id);
+      if (noteIds.length) {
+        const { data: noteRows } = await supabase.from('entity_notes').select('entity_id').eq('entity_type', 'maintenance_ticket').in('entity_id', noteIds.slice(0, 800)).returns<{ entity_id: string }[]>();
+        setTicketsWithNotes(new Set((noteRows || []).map(n => n.entity_id)));
+      } else {
+        setTicketsWithNotes(new Set());
+      }
       if (pRes.data?.length) setDbPlants(pRes.data);
       setLoadError(false);
     } catch (err) {
@@ -1028,9 +1039,8 @@ export function Maintenance() {
   // Rehla three factories sit at one site, so matching on a label is both
   // fragile and ambiguous. The ID is the only thing that is neither.
   const plantOptions = useMemo(() => {
-    const src = allowedPlants.length > 0 ? allowedPlants : dbPlants;
-    return [...src].sort((a, b) => a.name.localeCompare(b.name));
-  }, [allowedPlants, dbPlants]);
+    return [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name));
+  }, [allowedPlants, scopeReady]);
 
   const plantNameById = useMemo(
     () => new Map(dbPlants.map(p => [p.id, p.name] as const)),
@@ -1208,6 +1218,7 @@ export function Maintenance() {
 
   async function handleRaiseTicket() {
     if (!raiseForm.equipment.trim() || raising) return;
+    if (!raiseForm.farAssetId) { toast.error(t('maint.pickFarRequired', 'Pick the equipment from the FAR list. Free-text names are not allowed.')); return; }
     setRaising(true);
     try {
     const plant = dbPlants.find(p => p.id === raiseForm.plant);
@@ -3597,20 +3608,20 @@ export function Maintenance() {
         <>
           <div className="grid grid-cols-12 gap-4 mb-4">
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
-              label={t('maint.openTickets')} value={openEmergency}
+              label={t('maint.openTickets')} value={loading ? '…' : openEmergency}
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
               onView={() => setFltStatus('all')}
               viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
-              label={t('maint.pendingStoreApproval')} value={pendingStore}
+              label={t('maint.pendingStoreApproval')} value={loading ? '…' : pendingStore}
               onView={() => setFltStatus('pending_store')}
               viewLabel={t('maint.viewPendingStore', 'See store queue')} />
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
-              label={t('maint.purchaseHandover')} value={pendingPurchase}
+              label={t('maint.purchaseHandover')} value={loading ? '…' : pendingPurchase}
               onView={() => setFltStatus('pending_purchase')}
               viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
             <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
-              label={t('maint.closedMtd')} value={closedMTD}
+              label={t('maint.closedMtd')} value={loading ? '…' : closedMTD}
               caption={t('maint.completedThisMonth')}
               onView={() => setFltStatus('closed')}
               viewLabel={t('maint.viewClosed', 'See closed')} />
@@ -3662,7 +3673,7 @@ export function Maintenance() {
                   )}
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
-                      <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}</td>
+                      <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}{ticketsWithNotes.has(tk.id) ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>Notes</span> : null}</td>
                       <td className="font-semibold">{tk.equipment}</td>
                       <td>{tk.plants?.name || '—'}</td>
                       <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
@@ -3787,6 +3798,7 @@ export function Maintenance() {
       <SlidePanel open={showRaisePanel} onClose={() => { setShowRaisePanel(false); setRaiseSaved(false); }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
         <PanelField label={t('maint.equipmentAsset')}>
           <FarEquipField
+            requirePick
             value={raiseForm.equipment}
             assets={raiseFarAssets}
             onChange={v => setRaiseForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
@@ -3794,7 +3806,7 @@ export function Maintenance() {
           />
           {raiseForm.equipment.trim().length > 1 && (raiseForm.farAssetId
             ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{raiseForm.equipmentMark ? ` · ${raiseForm.equipmentMark}` : ''}.</div>
-            : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.manualEntryNotInFar', '✎ Manual entry — not in the FAR (allowed; the notification flags it).')}</div>)}
+            : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.pickFromFarHint', 'Type the job number or name, then pick the matching FAR row. Tickets cannot be raised on free text.')}</div>)}
         </PanelField>
         {/* No procurement-unit selector.
             Chlorides and Plasticiser were sub-units of a single 'Rehla' plant,
@@ -3805,7 +3817,7 @@ export function Maintenance() {
         <PanelField label={t('common.plant')}>
           <PanelSelect value={raiseForm.plant} onChange={e => setRaiseForm(f => ({ ...f, plant: e.target.value, unit: '' }))}>
             <option value="">{t('maint.selectPlant')}</option>
-            {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
           </PanelSelect>
         </PanelField>
         <PanelField label={t('maint.issueDescription')}>
@@ -3820,7 +3832,7 @@ export function Maintenance() {
         <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
         {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
-        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || raising} requiredHint={t('maint.raiseRequiredHint')} />
+        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || !raiseForm.farAssetId || raising} requiredHint={t('maint.raiseRequiredHint')} />
       </SlidePanel>
 
       {/* ── PANEL: Complete periodic ─────────────────────────────────────── */}
@@ -4022,7 +4034,7 @@ export function Maintenance() {
                   <PanelField label={t('common.plant')}>
                     <PanelSelect value={editForm.plant} onChange={e => setEditForm(f => ({ ...f, plant: e.target.value }))}>
                       <option value="">{t('maint.selectPlant')}</option>
-                      {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
                     </PanelSelect>
                   </PanelField>
                   <PanelField label={t('maint.colStatus')}>
@@ -4078,7 +4090,7 @@ export function Maintenance() {
                   <PanelField label={t('common.plant')}>
                     <PanelSelect value={resubmitForm.plant} onChange={e => setResubmitForm(f => ({ ...f, plant: e.target.value }))}>
                       <option value="">{t('maint.selectPlant')}</option>
-                      {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
                     </PanelSelect>
                   </PanelField>
                   <PanelField label={t('maint.assessmentLabel', 'Assessment')}>
@@ -4241,7 +4253,7 @@ export function Maintenance() {
           <PanelField label={scheduleForm.farAssetId ? t('maint.plantSetByFar', 'Plant (set by FAR asset)') : t('common.plant')}>
             <PanelSelect value={scheduleForm.plant} disabled={!!scheduleForm.farAssetId} onChange={e => setScheduleForm(f => ({ ...f, plant: e.target.value }))}>
               <option value="">{t('maint.allPlantsOption', '— All plants —')}</option>
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
             {scheduleForm.farAssetId && <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>{t('maint.lockedToFarPlant', "🔒 Locked to the FAR asset's plant.")}</div>}
           </PanelField>

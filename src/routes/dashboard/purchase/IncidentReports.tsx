@@ -5,6 +5,43 @@ import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary
 import { useDirectory } from '../../../lib/mentions';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
+import { usePlantScope } from '../../../contexts/PlantScopeContext';
+
+
+function TagPeople({
+  people, selected, onChange, query, setQuery,
+}: {
+  people: { id: string; name: string; roleLabel: string }[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  query: string;
+  setQuery: (v: string) => void;
+}) {
+  const picked = selected.map(id => people.find(p => p.id === id)).filter(Boolean) as { id: string; name: string }[];
+  const q = query.trim().toLowerCase();
+  const hits = q
+    ? people.filter(p => !selected.includes(p.id) && (p.name.toLowerCase().includes(q) || p.roleLabel.toLowerCase().includes(q))).slice(0, 24)
+    : [];
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        {picked.map(p => (
+          <span key={p.id} style={{ ...chip, background: '#0F172A', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {p.name}
+            <button type="button" onClick={() => onChange(selected.filter(id => id !== p.id))} style={{ border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', fontWeight: 700, padding: 0 }} aria-label={`Remove ${p.name}`}>×</button>
+          </span>
+        ))}
+        {picked.length === 0 && <span style={{ fontSize: 12, color: '#94A3B8' }}>No one tagged yet</span>}
+      </div>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search a person to add" style={inputStyle} />
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {hits.map(p => (
+          <button key={p.id} type="button" onClick={() => { onChange([...selected, p.id]); setQuery(''); }} style={chip}>{p.name}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function incidents() {
   return (supabase as unknown as { from: (table: string) => any }).from('incident_reports');
@@ -61,6 +98,7 @@ export function IncidentReports({
 }) {
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
+  const { scopeQuery } = usePlantScope();
   const { addNotification } = useNotifications();
   const [rows, setRows] = useState<IncidentRow[]>([]);
   const [q, setQ] = useState('');
@@ -81,14 +119,13 @@ export function IncidentReports({
   const nameOf = (id: string | null | undefined) => people.find(p => p.id === id)?.name || id || '';
 
   async function load() {
-    const { data, error } = await incidents()
-      .select('*, plants(name)')
+    const { data, error } = await scopeQuery(incidents().select('*, plants(name)'))
       .order('occurred_at', { ascending: false });
     if (error) setErr(error.message);
     else { setErr(null); setRows(data || []); }
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [scopeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!focusId || rows.length === 0) return;
@@ -235,12 +272,6 @@ export function IncidentReports({
       .some((v) => (v || '').toLowerCase().includes(needle));
   }), [rows, plantFilter, fromDate, toDate, needle, people]);
 
-  const tagChoices = people.filter(p => {
-    const n = tagQ.trim().toLowerCase();
-    if (!n) return true;
-    return p.name.toLowerCase().includes(n) || p.roleLabel.toLowerCase().includes(n);
-  }).slice(0, 8);
-
   const field = (label: string, key: keyof typeof blank, area = false) => (
     <label style={{ display: 'block', marginBottom: 10 }}>
       <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{label}</div>
@@ -318,14 +349,7 @@ export function IncidentReports({
           {field('Solution', 'solution', true)}
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Tag people</div>
-            <input value={tagQ} onChange={(e) => setTagQ(e.target.value)} placeholder="Search a person" style={inputStyle} />
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {tagChoices.map(p => (
-                <button key={p.id} type="button" onClick={() => setTagIds(ids => ids.includes(p.id) ? ids.filter(x => x !== p.id) : [...ids, p.id])} style={{ ...chip, background: tagIds.includes(p.id) ? '#0F172A' : '#fff', color: tagIds.includes(p.id) ? '#fff' : '#0F172A' }}>
-                  {p.name}
-                </button>
-              ))}
-            </div>
+            <TagPeople people={people} selected={tagIds} onChange={setTagIds} query={tagQ} setQuery={setTagQ} />
           </div>
           <label style={{ display: 'block', marginBottom: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Photos</div>
@@ -365,26 +389,7 @@ export function IncidentReports({
           </div>
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>Tagged people</div>
-            <input value={detailTagQ} onChange={(e) => setDetailTagQ(e.target.value)} placeholder="Search a person to tag" style={{ ...inputStyle, marginBottom: 8 }} />
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {people.filter(p => {
-                const on = (selected.tagged_people || []).includes(p.id);
-                const n = detailTagQ.trim().toLowerCase();
-                if (on) return true;
-                if (!n) return false;
-                return p.name.toLowerCase().includes(n) || p.roleLabel.toLowerCase().includes(n);
-              }).slice(0, 12).map(p => {
-                const on = (selected.tagged_people || []).includes(p.id);
-                return (
-                  <button key={p.id} type="button" onClick={() => {
-                    const cur = selected.tagged_people || [];
-                    void setTags(selected, on ? cur.filter(id => id !== p.id) : [...cur, p.id]);
-                  }} style={{ ...chip, background: on ? '#0F172A' : '#fff', color: on ? '#fff' : '#0F172A' }}>
-                    {p.name}
-                  </button>
-                );
-              })}
-            </div>
+            <TagPeople people={people} selected={selected.tagged_people || []} onChange={(ids) => void setTags(selected, ids)} query={detailTagQ} setQuery={setDetailTagQ} />
           </div>
           <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {(selected.photo_urls || []).map(url => (

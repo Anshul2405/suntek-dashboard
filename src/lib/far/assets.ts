@@ -6,6 +6,7 @@
  * normMark() collapses those so they compare equal.
  */
 import { similarity } from '../blacklist/similarity';
+import { canonEquipName } from './equipName';
 import { jobNoFar, isPlaceholderMark } from '../jobNo';
 
 export interface AssetLite {
@@ -64,7 +65,7 @@ export function suggestAssets<T extends AssetLite>(query: string, assets: T[], t
         (am && (am.includes(nm) || nm.includes(am)))
         || (job && (job.includes(nm) || job.includes(qNorm) || qNorm.includes(job.slice(-8))))
       ) ? 0.8 : 0;
-      const score = markHit ? 1 : Math.max(similarity(name, a.name), markPartial);
+      const score = markHit ? 1 : Math.max(similarity(canonEquipName(name), canonEquipName(a.name)), markPartial);
       return { asset: a, score, via: (markHit || markPartial ? 'mark' : 'name') as 'mark' | 'name' };
     })
     .filter(x => x.score > 0.34)

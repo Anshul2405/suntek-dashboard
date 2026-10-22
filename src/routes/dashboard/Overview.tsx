@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../contexts/RoleContext';
 import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE } from '../../lib/store/requisitionQueue';
 import { reqNoLabel } from '../../lib/ticketNo';
 import { formatDateTime } from '../../lib/utils/formatting';
@@ -132,6 +133,11 @@ export function Overview() {
   // ?queue=pending view, and a real count (the old count was the length of an
   // 8-row page of 'pending' only — capped at 8 and blind to the other stages).
   const { scopeQuery, ready: scopeReady } = usePlantScope();
+  const { activeProfile } = useRoleContext();
+  const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
+  const shownPending = approvalView === 'mine'
+    ? pendingReqs.filter(r => (r.raised_by || '') === activeProfile.name)
+    : pendingReqs;
   useEffect(() => {
     if (!scopeReady) return;
     let alive = true;
@@ -391,14 +397,20 @@ export function Overview() {
             title={t('overview.pendingApprovals', 'Pending Approvals')}
             sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
             right={
-              <button
-                type="button"
-                className="ops-link"
-                onClick={() => navigate(STORE_REQ_QUEUE_ROUTE)}
-                data-testid="overview-pending-viewall"
-              >
-                {t('common.viewAll', 'View all')}
-              </button>
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold">
+                  <button type="button" onClick={() => setApprovalView('mine')} style={{ padding: '6px 10px', background: approvalView === 'mine' ? '#0F172A' : '#fff', color: approvalView === 'mine' ? '#fff' : '#475569', border: 'none' }}>{t('overview.myApprovals', 'My approvals')}</button>
+                  <button type="button" onClick={() => setApprovalView('all')} style={{ padding: '6px 10px', background: approvalView === 'all' ? '#0F172A' : '#fff', color: approvalView === 'all' ? '#fff' : '#475569', border: 'none' }}>{t('overview.allApprovals', 'All approvals')}</button>
+                </div>
+                <button
+                  type="button"
+                  className="ops-link"
+                  onClick={() => navigate(STORE_REQ_QUEUE_ROUTE)}
+                  data-testid="overview-pending-viewall"
+                >
+                  {t('common.viewAll', 'View all')}
+                </button>
+              </div>
             }
           />
         </div>
@@ -416,7 +428,7 @@ export function Overview() {
               </tr>
             </thead>
             <tbody>
-              {pendingReqs.length === 0 && (
+              {shownPending.length === 0 && (
                 <tr>
                   <td colSpan={7} className="!p-0">
                     <div className="ops-empty">
@@ -426,7 +438,7 @@ export function Overview() {
                   </td>
                 </tr>
               )}
-              {pendingReqs.map(r => (
+              {shownPending.map(r => (
                 <tr key={r.id} onClick={() => navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`)} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
@@ -456,9 +468,9 @@ export function Overview() {
             </tbody>
           </table>
         </div>
-        {pendingReqs.length > 0 && (
+        {shownPending.length > 0 && (
           <div className="px-5 py-3 text-[12px] text-slate-400 border-t border-slate-100">
-            {t('overview.showingOfTotal', { n: pendingReqs.length, total: pendingStoreReq ?? pendingReqs.length, defaultValue: 'Showing {{n}} of {{total}}' })}
+            {t('overview.showingOfTotal', { n: shownPending.length, total: pendingStoreReq ?? shownPending.length, defaultValue: 'Showing {{n}} of {{total}}' })}
           </div>
         )}
       </SectionCard>
