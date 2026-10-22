@@ -45,11 +45,16 @@ function toDate(date: string | Date | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** "22 Oct 2026" in IST. Empty / invalid input → '—'. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "22 Oct 2026" in IST. Empty / invalid input → '—'.
+ *  Built from the IST calendar day rather than toLocaleDateString: browsers
+ *  disagree on short months ("Sep" vs "Sept"), and one format is the point. */
 export function formatDate(date: string | Date | null | undefined): string {
   const d = toDate(date);
   if (!d) return '—';
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: IST_TZ });
+  const [y, m, day] = istDayKey(d).split('-');
+  return `${day} ${MONTHS[Number(m) - 1]} ${y}`;
 }
 
 /** "22 Oct 2026, 3:05 pm" in IST. Empty / invalid input → '—'. */

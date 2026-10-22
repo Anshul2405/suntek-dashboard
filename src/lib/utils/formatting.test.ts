@@ -5,6 +5,7 @@ describe('IST date formatting', () => {
   it('formats as 22 Oct 2026', () => {
     expect(formatDate('2026-10-22T06:00:00Z')).toBe('22 Oct 2026');
     expect(formatDate('2026-10-22')).toBe('22 Oct 2026');
+    expect(formatDate('2026-09-05')).toBe('05 Sep 2026'); // never "Sept"
   });
   it('uses the IST calendar day, not UTC', () => {
     // 20:00 UTC on the 21st is 01:30 IST on the 22nd.

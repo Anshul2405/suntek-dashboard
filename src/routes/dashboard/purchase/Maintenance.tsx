@@ -1405,6 +1405,9 @@ export function Maintenance() {
       assigned_to: (isTechnician || role === 'factory_operator') ? activeProfile.name : null,
     }).select('*, plants(name)').single();
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
+    // The DB assigned ticket_no on insert — cache it so the notification below
+    // carries MT-0042 rather than the pre-number fallback.
+    if (newTicket) primeTicketNos([newTicket]);
 
     // Optional: photo of the broken/defective item(s) attached at raise time.
     if (newTicket && raisePhotoBlob) {
@@ -2032,7 +2035,7 @@ export function Maintenance() {
       setVerifyingTicket(null);
       // Leave the pile at once — don't wait for the refetch.
       setTickets(prev => prev.map(x => (x.id === ticket.id ? { ...x, status: approve ? 'closed' : 'open' } as TicketRow : x)));
-      if (selectedTicket?.id === ticket.id) setSelectedTicket(null);
+      if (selectedTicket?.id === ticket.id) { setSelectedTicket(null); returnToOrigin(); }
       await loadData();
     } catch (e) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: e instanceof Error ? e.message : String(e) })); }
     finally { actionBusyRef.current = false; }
