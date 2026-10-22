@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
@@ -229,7 +230,7 @@ function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic
               <td className="num text-xs">{a.capacity || '—'}</td>
               <td className="num text-xs">{a.year || '—'}</td>
               <td className="num text-xs font-semibold">{a.value ? `₹ ${Number(a.value).toLocaleString('en-IN')}` : '—'}</td>
-              {showPlant && <td className="text-slate-500 text-xs">{a.plants?.name || '—'}</td>}
+              {showPlant && <td className="text-slate-500 text-xs">{displayLocationName(a.plants?.name) || '—'}</td>}
               <td className="num">
                 {repairs.length === 0 ? (
                   <span className="text-slate-300 text-xs">—</span>
@@ -1147,7 +1148,7 @@ export function FAR() {
           <PanelField label={t('far.fldPlant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
               {!form.plant && <option value="">{t('far.selectFactory', 'Select factory…')}</option>}
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
           </PanelField>
         </PanelRow>

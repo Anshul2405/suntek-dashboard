@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap } from 'lucide-react';
@@ -126,7 +127,7 @@ export function StoreRequisitions() {
       return inIstDayRange(r.created_at, from, to);
     });
   }, [items, queuePending, searchParams, approvalView, activeProfile.name]);
-  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
+  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
     ticket: r => r.ticket_id ?? null,
@@ -370,7 +371,7 @@ export function StoreRequisitions() {
                             : <span className="text-slate-300">—</span>}
                         </td>
                         <td>{r.item}</td>
-                        <td>{r.plants?.name || '—'}</td>
+                        <td>{displayLocationName(r.plants?.name) || '—'}</td>
                         <td className="num">{r.qty}</td>
                         <td>
                           <span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>
@@ -403,7 +404,7 @@ export function StoreRequisitions() {
           <PanelField label={t('storereq.field_plant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
               {!form.plant && <option value="">{t('storereq.selectPlant', 'Select factory…')}</option>}
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
           </PanelField>
           <PanelField label={t('storereq.field_priority')}>
@@ -467,7 +468,7 @@ export function StoreRequisitions() {
         open={!!detailReq}
         onClose={() => setDetailReq(null)}
         title={detailReq?.item || t('storereq.detail_title', 'Requisition')}
-        subtitle={detailReq ? `#${reqNoLabel(detailReq)} · ${detailReq.plants?.name || '—'}` : ''}
+        subtitle={detailReq ? `#${reqNoLabel(detailReq)} · ${displayLocationName(detailReq.plants?.name) || '—'}` : ''}
       >
         {detailReq && (() => {
           const s = STATUS_STAGE[detailReq.status] || STATUS_STAGE.pending;
@@ -482,7 +483,7 @@ export function StoreRequisitions() {
             <div>
               <Row k={t('storereq.col_req_no')} v={`#${reqNoLabel(detailReq)}`} />
               <Row k={t('storereq.col_item')} v={detailReq.item} />
-              <Row k={t('storereq.col_plant')} v={detailReq.plants?.name || '—'} />
+              <Row k={t('storereq.col_plant')} v={displayLocationName(detailReq.plants?.name) || '—'} />
               <Row k={t('storereq.col_qty')} v={String(detailReq.qty)} />
               <Row k={t('storereq.field_priority')} v={detailReq.urgency === 'high' || detailReq.urgency === 'plant_stopper' ? t('storereq.opt_urgent') : t('storereq.opt_normal')} />
               <Row k={t('storereq.col_stage')} v={<span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>} />

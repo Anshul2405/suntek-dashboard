@@ -1120,10 +1120,10 @@ export function Maintenance() {
     const id = t.id.toLowerCase();
     const linked = t.far_asset_id ? farAssets.find(a => a.id === t.far_asset_id) : undefined;
     const job = t.far_asset_id ? jobNoFar(t.far_asset_id, linked?.identification_mark, linked?.job_no) : '';
-    return [t.equipment, t.title, t.description, t.plants?.name, t.raised_by, t.assigned_to, id, id.slice(0, 8), id.replace(/-/g, ''), job];
+    return [t.equipment, t.title, t.description, t.plants?.name, displayLocationName(t.plants?.name), t.raised_by, t.assigned_to, id, id.slice(0, 8), id.replace(/-/g, ''), job];
   };
   const fltPeriodic = schedules.filter(s =>
-    matchQ(s.title, s.equipment, s.plants?.name, s.equipment_mark, s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : '')
+    matchQ(s.title, s.equipment, s.plants?.name, displayLocationName(s.plants?.name), s.equipment_mark, s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : '')
     && (fltPlant === 'all' || s.plant_id === fltPlant)
     && (fltStatus === 'all' || schedStatusOf(s) === fltStatus));
   const dueTodaySchedules = fltPeriodic.filter(s => daysFromNow(s.next_due_at) === 0);
@@ -1133,7 +1133,7 @@ export function Maintenance() {
   const upcomingSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d > 7 && d <= 30; });
   const dueScopeLabel = (() => {
     if (fltPlant !== 'all') return displayLocationName(dbPlants.find(p => p.id === fltPlant)?.name) || t('common.allPlants');
-    const names = [...new Set(fltPeriodic.map(s => s.plants?.name).filter(Boolean))];
+    const names = [...new Set(fltPeriodic.map(s => displayLocationName(s.plants?.name)).filter(Boolean))];
     if (names.length === 1) return names[0];
     if (names.length > 1) return t('maint.nPlantsScope', { defaultValue: '{{n}} plants', n: names.length });
     return t('common.allPlants');
@@ -3367,7 +3367,7 @@ export function Maintenance() {
             <div>{stripPlaceholderParen(s.equipment)}</div>
             {job ? <div className="text-[11px] font-mono text-slate-400">{job}</div> : null}
           </td>
-          <td>{s.plants?.name || '—'}</td>
+          <td>{displayLocationName(s.plants?.name) || '—'}</td>
           <td className="text-slate-500">{t('maint.freq_' + s.frequency, FREQ_LABEL[s.frequency] || s.frequency)}</td>
           <td className="text-slate-500 text-xs">{s.last_completed_at ? formatDate(s.last_completed_at) : '—'}</td>
           <td style={{ color: due.color, fontWeight: 600, fontSize: 12 }}>{due.text}</td>
@@ -3691,7 +3691,7 @@ export function Maintenance() {
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
                       <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}{ticketsWithNotes.has(tk.id) ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>Notes</span> : null}</td>
                       <td className="font-semibold">{tk.equipment}</td>
-                      <td>{tk.plants?.name || '—'}</td>
+                      <td>{displayLocationName(tk.plants?.name) || '—'}</td>
                       <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
                       <td>{statusBadge(tk.status, t)}</td>
                       <td className="text-slate-500 text-xs">{tk.raised_by || '—'}</td>
@@ -3780,7 +3780,7 @@ export function Maintenance() {
                     <tr key={s.id} style={paused ? { opacity: 0.6 } : undefined}>
                       <td className="font-semibold">{s.title}</td>
                       <td>{s.equipment}</td>
-                      <td>{s.plants?.name || '—'}</td>
+                      <td>{displayLocationName(s.plants?.name) || '—'}</td>
                       <td>{t('maint.freq_' + s.frequency, FREQ_LABEL[s.frequency] || s.frequency)}</td>
                       <td>{s.assigned_to || <span className="text-slate-400">{t('maint.unassigned')}</span>}</td>
                       <td style={{ color: paused ? '#94A3B8' : due.color, fontWeight: 600 }}>{paused ? t('maint.paused') : due.text}</td>
@@ -3859,7 +3859,7 @@ export function Maintenance() {
             <>
             <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               <div style={{ fontWeight: 700, fontSize: 14 }}>{completingSchedule.equipment}</div>
-              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('maint.freqMaintenanceLine', { defaultValue: '{{freq}} maintenance', freq: t('maint.freq_' + completingSchedule.frequency, FREQ_LABEL[completingSchedule.frequency] || completingSchedule.frequency) })} · {completingSchedule.plants?.name || '—'}</div>
+              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('maint.freqMaintenanceLine', { defaultValue: '{{freq}} maintenance', freq: t('maint.freq_' + completingSchedule.frequency, FREQ_LABEL[completingSchedule.frequency] || completingSchedule.frequency) })} · {displayLocationName(completingSchedule.plants?.name) || '—'}</div>
               {completingSchedule.description && <div style={{ fontSize: 12, color: '#475569', marginTop: 6 }}>{completingSchedule.description}</div>}
               <div style={{ fontSize: 11.5, color: ra ? '#B45309' : '#16A34A', marginTop: 6, fontWeight: 600 }}>{ra ? t('maint.needsUnitHeadVerification', '🔎 Needs unit-head verification after you submit.') : t('maint.dailyTaskAutoCloses', '✓ Daily task — closes automatically on submit.')}</div>
             </div>
@@ -3914,7 +3914,7 @@ export function Maintenance() {
           <>
             <div style={{ background: '#F1F5F9', border: '1px solid #DDD6FE', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               <div style={{ fontWeight: 700, fontSize: 14 }}>{verifyingTicket.title}</div>
-              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{verifyingTicket.equipment} · {verifyingTicket.plants?.name || '—'} · {t('maint.completedBy', { defaultValue: 'completed by {{name}}', name: verifyingTicket.assigned_to || '—' })}</div>
+              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{verifyingTicket.equipment} · {displayLocationName(verifyingTicket.plants?.name) || '—'} · {t('maint.completedBy', { defaultValue: 'completed by {{name}}', name: verifyingTicket.assigned_to || '—' })}</div>
             </div>
             {Array.isArray(verifyingTicket.checklist) && verifyingTicket.checklist.length > 0 && (
               <div style={{ marginBottom: 16 }}>
@@ -3955,7 +3955,7 @@ export function Maintenance() {
         open={!!selectedTicket}
         onClose={() => { setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
         title={selectedTicket?.equipment || t('maint.ticketDetail', 'Ticket detail')}
-        subtitle={`${t('maint.emergency')} · ${selectedTicket?.plants?.name || t('nav.maintenance')}`}
+        subtitle={`${t('maint.emergency')} · ${displayLocationName(selectedTicket?.plants?.name) || t('nav.maintenance')}`}
         locked={uploading}
       >
         {selectedTicket && (

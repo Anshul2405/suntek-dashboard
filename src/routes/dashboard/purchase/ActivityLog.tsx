@@ -667,7 +667,7 @@ export function ActivityLog() {
           <PanelField label={t('activity.fieldPlant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
               {!form.plant && <option value="">{t('activity.selectPlant', 'Select factory…')}</option>}
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
           </PanelField>
         </PanelRow>

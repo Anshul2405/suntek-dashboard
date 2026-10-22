@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
@@ -289,7 +290,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
           <div style={{ marginBottom: 14 }}>
             <div style={label}>{t('addPurchase.plant', 'Plant')}</div>
             <select value={plantId} onChange={e => setPlantId(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
-              {plants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </select>
           </div>
         )}

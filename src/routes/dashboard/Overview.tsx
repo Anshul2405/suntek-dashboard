@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displayLocationName } from '../../lib/plantLabels';
 import { VoiceSearch } from '../../components/search/VoiceSearch';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -447,7 +448,7 @@ export function Overview() {
                   </td>
                   <td className="font-mono text-xs text-slate-500">{reqNoLabel(r)}</td>
                   <td className="font-semibold text-slate-700">{r.item}</td>
-                  <td>{r.plants?.name || '—'}</td>
+                  <td>{displayLocationName(r.plants?.name) || '—'}</td>
                   <td className="num">{r.qty}</td>
                   <td className="text-slate-500">{fmtDT(r.created_at)}</td>
                   <td>
