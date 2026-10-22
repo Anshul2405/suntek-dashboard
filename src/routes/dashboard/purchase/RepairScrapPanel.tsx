@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { formatDate } from '../../../lib/utils/formatting';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Wrench, Trash2, PackageCheck } from 'lucide-react';
@@ -29,7 +30,7 @@ type ReceiptRow = Database['public']['Tables']['repair_return_receipts']['Row'] 
 type AllocRow = Database['public']['Tables']['repair_return_allocations']['Row'];
 
 const fmtDate = (d: string | null | undefined) =>
-  d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  d ? formatDate(d) : '—';
 
 /** Units of THIS part line still awaiting return from the vendor. */
 function partPending(p: DefectivePartRow): number {

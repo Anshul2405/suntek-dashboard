@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { formatDateTime } from '../../../lib/utils/formatting';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -121,7 +122,7 @@ function fyOf(d: string | null | undefined): string {
 }
 
 function fmtDT(d: string | null | undefined): string {
-  return d ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  return d ? formatDateTime(d) : '—';
 }
 function inr(n: number): string { return `₹ ${Math.round(n).toLocaleString('en-IN')}`; }
 

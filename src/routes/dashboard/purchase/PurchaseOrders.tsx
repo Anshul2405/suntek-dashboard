@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatDate } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Download, ShoppingCart, Package, Truck, Hourglass } from 'lucide-react';
@@ -377,7 +378,7 @@ export function PurchaseOrders() {
                   <td className="num font-semibold">{totalCost != null ? `₹ ${Number(totalCost).toLocaleString('en-IN')}` : '—'}</td>
                   <td className="text-slate-500 text-xs">{m.busyRef || '—'}</td>
                   <td>{m.billUrl ? <button type="button" onClick={() => setBillLightbox([{ url: m.billUrl as string, label: t('po.bill_lightbox_label', { defaultValue: 'Supplier bill · #{{ref}}', ref: m.ticketRef }) }])} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, textDecoration: 'underline' }}>{t('common.view', 'View')}</button> : <span className="text-slate-300 text-xs">—</span>}</td>
-                  <td className="text-slate-500 text-xs">{m.date ? new Date(m.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
+                  <td className="text-slate-500 text-xs">{m.date ? formatDate(m.date) : '—'}</td>
                 </tr>
                 );
               })}

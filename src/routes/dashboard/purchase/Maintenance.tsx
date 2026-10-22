@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { formatDateTime } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -211,7 +212,7 @@ function PartNameField({ value, stock, onChange, onPick }: {
 
 // Full date+time for report cells (locale, IST).
 function fmtDT(d: string | null | undefined): string {
-  return d ? new Date(d).toLocaleString('en-IN') : '';
+  return d ? formatDateTime(d) : '';
 }
 // Map a stored role id (e.g. 'technician_shd') to its human label using the
 // role catalog (from RoleContext). Falls back to the raw id when unknown.

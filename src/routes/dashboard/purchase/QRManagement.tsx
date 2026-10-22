@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { formatDateTime } from '../../../lib/utils/formatting';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Eye, Plus, Check, Building2 } from 'lucide-react';
@@ -16,7 +17,7 @@ type SortKey = 'name' | 'mark' | 'plant' | 'status' | 'generated';
 
 function fmtDT(d: string | null | undefined) {
   return d
-    ? new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    ? formatDateTime(d)
     : '—';
 }
 

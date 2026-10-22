@@ -25,7 +25,7 @@ import { useNotifications } from '../../../contexts/NotificationsContext';
 import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
-import { inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
 
@@ -58,7 +58,7 @@ const photoList = (pairs: [string | null | undefined, string][]): LightboxImage[
   pairs.filter(([u]) => !!u).map(([u, label]) => ({ url: u as string, label }));
 const toMs = (ts: string | null | undefined) => (ts ? new Date(ts).getTime() : 0);
 const fmtDate = (d: string | null | undefined) =>
-  d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  d ? formatDate(d) : '—';
 
 const CameraSvg = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

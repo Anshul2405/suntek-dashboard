@@ -26,7 +26,7 @@ import { StockRegister } from './StockRegister';
 import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq } from '../../../lib/store/requisitionQueue';
 import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
-import { inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
 
@@ -488,7 +488,7 @@ export function StoreRequisitions() {
               <Row k={t('storereq.col_stage')} v={<span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>} />
               <Row k={t('storereq.col_decision')} v={t('storereq.decision_' + (isWaitingReq(stageKey) ? 'pending' : stageKey))} />
               {detailReq.remarks && <Row k={t('storereq.field_reason')} v={detailReq.remarks} />}
-              <Row k={t('storereq.detail_requested', 'Requested on')} v={detailReq.created_at ? new Date(detailReq.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'} />
+              <Row k={t('storereq.detail_requested', 'Requested on')} v={detailReq.created_at ? formatDateTime(detailReq.created_at) : '—'} />
               {detailReq.photo_url && (
                 <button
                   type="button"

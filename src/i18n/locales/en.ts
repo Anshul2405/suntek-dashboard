@@ -3130,6 +3130,7 @@ const en = {
 
   // ── Add Purchase to Stock modal (shared by Purchase Orders + Stock Register) ──
   addPurchase: {
+    unitFeet: "Feet",
     title: "Add purchase to stock",
     subtitle: "New stock bought is added to the register — matched items increment, new items are created.",
     plant: "Plant",

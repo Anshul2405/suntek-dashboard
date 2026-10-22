@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { formatDate } from '../../../lib/utils/formatting';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { QRCodeCanvas, QRCodeSVG } from 'qrcode.react';
@@ -19,7 +20,7 @@ import type { Database } from '../../../lib/database.types';
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 
 function fmtDate(d: string | null | undefined) {
-  return d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  return d ? formatDate(d) : '—';
 }
 
 /** One "Asset Details" row — icon + gray label left, value right (per mockup). */

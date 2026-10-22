@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { formatDate, istDayKey } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -38,16 +39,14 @@ interface MergedRow {
   jobNo: string; ticketNos: string[]; entryAt: string;
 }
 
+// IST calendar day + the one app-wide date format (browsers print "Sept").
 function dayKey(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-CA');
+  return istDayKey(iso);
 }
 
 function fmtDay(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const out = formatDate(iso);
+  return out === '—' ? iso : out;
 }
 
 const CHUNK = 500;

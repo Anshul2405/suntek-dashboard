@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { formatDateTime } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
@@ -226,7 +227,7 @@ export function AnomalyReviewModal({ item, onClose, onSaved }: {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
               {history.map(h => (
                 <div key={h.id} style={{ fontSize: 11.5, color: '#64748B', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 8px' }}>
-                  <strong style={{ color: '#334155' }}>{h.action}</strong> · {h.from_status || '—'} → {h.to_status} · {h.actor_name || '—'} · {new Date(h.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  <strong style={{ color: '#334155' }}>{h.action}</strong> · {h.from_status || '—'} → {h.to_status} · {h.actor_name || '—'} · {formatDateTime(h.created_at)}
                   {h.corrected_value != null && <> · {t('stockAnomaly.correctedTo', 'corrected to')} {h.corrected_value}</>}
                   <div>“{h.comment}”</div>
                 </div>

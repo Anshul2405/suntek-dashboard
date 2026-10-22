@@ -3129,6 +3129,7 @@ const hi: Translations = {
   },
   // ── Add Purchase to Stock modal (shared by Purchase Orders + Stock Register) ──
   addPurchase: {
+    unitFeet: "फ़ीट",
     title: "ऐड परचेज़ टु स्टॉक",
     subtitle: "न्यू स्टॉक बॉट इज़ ऐडेड टु द रजिस्टर — मैच्ड आइटम्स इंक्रीमेंट, न्यू आइटम्स आर क्रिएटेड।",
     plant: "प्लांट",

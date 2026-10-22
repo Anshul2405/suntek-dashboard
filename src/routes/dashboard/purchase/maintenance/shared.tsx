@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { formatDate as formatIstDate } from '../../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 
 /** Loose translator signature so callers can pass react-i18next's `t` without type friction. */
@@ -104,7 +105,7 @@ export function statusBadge(status: string, t?: TFn) {
 
 export function formatDate(d: string | null | undefined) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return formatIstDate(d);
 }
 
 export function daysFromNow(d: string | null | undefined): number | null {

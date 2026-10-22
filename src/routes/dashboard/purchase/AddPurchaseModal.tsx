@@ -283,7 +283,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
         {stage === 'choose' && plants.length === 1 && (
           <div style={{ marginBottom: 14 }}>
             <div style={label}>{t('addPurchase.plant', 'Plant')}</div>
-            <span className="chip active" style={{ cursor: 'default', display: 'inline-block' }}>{plants[0].name}</span>
+            <span className="chip active" style={{ cursor: 'default', display: 'inline-block' }}>{displayLocationName(plants[0].name)}</span>
           </div>
         )}
         {stage === 'choose' && plants.length > 1 && (
@@ -393,7 +393,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
                           : t('addPurchase.unit', 'Unit')}
                         style={{ ...inputStyle, width: 92, background: chosen?.unit ? '#F8FAFC' : '#fff', color: chosen?.unit ? '#64748B' : 'inherit' }}
                       >
-                        {unitOptionsFor(ln.unit).map(u => <option key={u} value={u}>{u}</option>)}
+                        {unitOptionsFor(ln.unit).map(u => <option key={u} value={u}>{u === 'Ft' ? t('addPurchase.unitFeet', 'Feet') : u}</option>)}
                       </select>
                       {lines.length > 1 && <button onClick={() => setLines(ls => ls.filter(l => l.key !== ln.key))} style={{ border: 'none', background: 'none', color: '#DC2626', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}>×</button>}
                     </div>
