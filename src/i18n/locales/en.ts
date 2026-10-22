@@ -582,6 +582,7 @@ const en = {
     noSearchMatch: 'No batch sheets match that search.',
   },
   maint: {
+    editTicket: "Edit ticket",
     scrapped: "scrapped",
     toRepair: "to repair",
     splitHeading: "How many of each removed part go to Repair vs Scrap?",
@@ -1021,7 +1022,7 @@ const en = {
     raising: 'Raising…',
     ticketRaised: 'Ticket raised',
     ticketRaisedSub: 'Store manager, admin and unit head notified',
-    raiseRequiredHint: 'Fill in equipment name to raise ticket',
+    raiseRequiredHint: 'Pick the equipment from the FAR list to raise the ticket',
     dueToday: 'Due today',
     dueThisWeek: 'Due this week',
     overdue: 'Overdue',

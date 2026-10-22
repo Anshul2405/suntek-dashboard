@@ -716,7 +716,7 @@ export function Maintenance() {
 
   // Admin edit + report
   const [editingTicket, setEditingTicket] = useState(false);
-  const [editForm, setEditForm] = useState({ equipment: '', description: '', plant: '', status: '' });
+  const [editForm, setEditForm] = useState({ equipment: '', description: '', plant: '', status: '', farAssetId: '' });
 
   // Request Changes (reviewer) + Revise & Resubmit (technician) — the same ticket
   // loops back for correction instead of forcing a new one.
@@ -1339,7 +1339,7 @@ export function Maintenance() {
       toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
       return;
     }
-    setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status });
+    setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status, farAssetId: tk.far_asset_id || '' });
     setEditingTicket(true);
   }
 
@@ -1348,19 +1348,28 @@ export function Maintenance() {
       toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
       return;
     }
+    // Same FAR-only rule as Raise: a changed equipment name must be a FAR pick.
+    // An untouched legacy free-text name can stay so old tickets remain editable.
+    const equipChanged = (selectedTicket.equipment || '').trim() !== editForm.equipment.trim();
+    if (equipChanged && !editForm.farAssetId) {
+      toast.error(t('maint.pickFarRequired', 'Pick the equipment from the FAR list. Free-text names are not allowed.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === editForm.plant);
     const changes: string[] = [];
     if ((selectedTicket.equipment || '').trim() !== editForm.equipment.trim()) changes.push(`equipment: ${selectedTicket.equipment || '—'} → ${editForm.equipment || '—'}`);
     if ((selectedTicket.description || '').trim() !== (editForm.description || '').trim()) changes.push(`description: ${(selectedTicket.description || '—').slice(0, 40)} → ${(editForm.description || '—').slice(0, 40)}`);
-    await updateRows('maintenance_tickets', {
+    const { error: editErr } = await updateRows('maintenance_tickets', {
       equipment: editForm.equipment,
       description: editForm.description || null,
       plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
+      far_asset_id: editForm.farAssetId || null,
     }).eq('id', selectedTicket.id);
+    if (editErr) { toast.error(editErr.message); return; }
     if (changes.length) {
       await auditNote(selectedTicket, `✎ ${isAdmin ? 'Admin edit' : 'Edited'} by ${activeProfile.name} · ${changes.join('; ')}`);
     }
-    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, plants: plant ? { name: plant.name } : t.plants } : t);
+    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, far_asset_id: editForm.farAssetId || null, plants: plant ? { name: plant.name } : t.plants } : t);
     await notifyMentions(editForm.description, {
       entityType: 'maintenance_ticket', entityId: selectedTicket.id,
       entityLabel: editForm.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
@@ -1489,6 +1498,10 @@ export function Maintenance() {
   async function submitResubmit() {
     if (!selectedTicket || savingRevision) return;
     if (!resubmitForm.equipment.trim()) { toast.error(t('maint.equipmentRequired', 'Equipment is required')); return; }
+    if ((selectedTicket.equipment || '').trim() !== resubmitForm.equipment.trim() && !resubmitForm.farAssetId) {
+      toast.error(t('maint.pickFarRequired', 'Pick the equipment from the FAR list. Free-text names are not allowed.'));
+      return;
+    }
     const needsPart = resubmitForm.assessment === 'needs_part';
     const partItems = needsPart
       ? storeItems.map(it => ({ ...it, partName: it.partName.trim() })).filter(it => it.partName)
@@ -4029,9 +4042,17 @@ export function Maintenance() {
 
             {editingTicket ? (
               <div style={{ border: '1px solid #E2E8F0', borderRadius: 14, padding: 16 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>{t('maint.editTicketAdmin', 'Edit ticket (admin)')}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>{isAdmin ? t('maint.editTicketAdmin', 'Edit ticket (admin)') : t('maint.editTicket', 'Edit ticket')}</div>
                 <PanelField label={t('maint.equipmentAssetPlain', 'Equipment / asset')}>
-                  <PanelInput value={editForm.equipment} onChange={e => setEditForm(f => ({ ...f, equipment: e.target.value }))} />
+                  <FarEquipField
+                    value={editForm.equipment}
+                    assets={editForm.plant ? farAssets.filter(a => a.plant_id === editForm.plant) : farAssets}
+                    onChange={v => setEditForm(f => ({ ...f, equipment: v, farAssetId: '' }))}
+                    onPick={a => setEditForm(f => ({ ...f, farAssetId: a?.id ?? '', plant: a?.plant_id ?? f.plant }))}
+                  />
+                  {selectedTicket && (selectedTicket.equipment || '').trim() !== editForm.equipment.trim() && !editForm.farAssetId && (
+                    <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.pickFromFarHint', 'Type the job number or name, then pick the matching FAR row. Tickets cannot be raised on free text.')}</div>
+                  )}
                 </PanelField>
                 <PanelRow>
                   <PanelField label={t('common.plant')}>
@@ -4087,7 +4108,7 @@ export function Maintenance() {
                   />
                   {resubmitForm.equipment.trim().length > 1 && (resubmitForm.farAssetId
                     ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{resubmitForm.equipmentMark ? ` · ${resubmitForm.equipmentMark}` : ''}.</div>
-                    : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.manualEntryNotInFar', '✎ Manual entry — not in the FAR (allowed; the notification flags it).')}</div>)}
+                    : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.pickFromFarHint', 'Type the job number or name, then pick the matching FAR row. Tickets cannot be raised on free text.')}</div>)}
                 </PanelField>
                 <PanelRow>
                   <PanelField label={t('common.plant')}>

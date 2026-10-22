@@ -586,6 +586,7 @@ const hi: Translations = {
     noSearchMatch: 'इस सर्च से कोई बैच शीट नहीं मिली।',
   },
   maint: {
+    editTicket: "एडिट टिकट",
     scrapped: "स्क्रैप्ड",
     toRepair: "टु रिपेयर",
     splitHeading: "हाउ मेनी ऑफ ईच रिमूव्ड पार्ट गो टु रिपेयर वर्सेस स्क्रैप?",
@@ -1025,7 +1026,7 @@ const hi: Translations = {
     raising: 'रेज़िंग…',
     ticketRaised: 'टिकट रेज़्ड',
     ticketRaisedSub: 'स्टोर मैनेजर, एडमिन एंड यूनिट हेड नोटिफाइड',
-    raiseRequiredHint: 'फिल इन इक्विपमेंट नेम टु रेज़ टिकट',
+    raiseRequiredHint: 'टिकट रेज़ करने के लिए FAR लिस्ट से इक्विपमेंट पिक करें',
     dueToday: 'ड्यू टुडे',
     dueThisWeek: 'ड्यू दिस वीक',
     overdue: 'ओवरड्यू',
