@@ -236,6 +236,8 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
           ref={btnRef}
           className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}`}
           onClick={() => setOpen(v => !v)}
+          aria-label={t('topbar.notifications', 'Notifications')}
+          title={t('topbar.notifications', 'Notifications')}
         >
           <IconBell />
           {unread > 0 && (
