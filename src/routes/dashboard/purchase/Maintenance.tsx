@@ -14,6 +14,7 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { fetchAllRows } from '../../../lib/fetchAll';
 import { isAdminProfile, canSeeScheduleSetup, type RoleRow } from '../../../lib/profiles';
 import { issueLineValue, storeIssueNeedsPhoto } from '../../../lib/store/issuePhoto';
+import { fetchPurchaseFacts, type PurchaseFact } from '../../../lib/store/purchaseFacts';
 import { canEditRaisedTicket, ticketEditMinutesLeft } from '../../../lib/ticketEditWindow';
 import { useBlacklist } from '../../../contexts/BlacklistContext';
 import { uploadMaintenancePhoto } from '../../../lib/cloudinary';
@@ -628,6 +629,7 @@ export function Maintenance() {
   // All store-request rows (items) for the selected ticket. A ticket can need
   // several parts at once; each row is one item with its own per-item lifecycle.
   const [storeReqs, setStoreReqs] = useState<StoreReqRow[]>([]);
+  const [issuePrices, setIssuePrices] = useState<Map<string, PurchaseFact>>(() => new Map());
   const patchDefectiveLine = (i: number, patch: Partial<DefectiveSplitLine>) =>
     setDefectiveLines(prev => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const selectedStoreReq = storeReqs[0] ?? null; // kept for the read-only timeline detail
@@ -915,6 +917,20 @@ export function Maintenance() {
     next.delete('raise'); next.delete('far'); next.delete('equip'); next.delete('plant');
     setSearchParams(next, { replace: true });
   }, [searchParams, farAssets, setSearchParams]);
+
+  // Own-store lines carry no price, so value them at the item's last purchase
+  // price; without one the value stays unknown and the photo stays required.
+  useEffect(() => {
+    const ids = [...new Set(storeReqs.map(r => r.store_item_id).filter(Boolean) as string[])];
+    if (!ids.length) { setIssuePrices(new Map()); return; }
+    let alive = true;
+    fetchPurchaseFacts(ids).then(m => { if (alive) setIssuePrices(m); });
+    return () => { alive = false; };
+  }, [storeReqs]);
+  const issueValueOf = (req: StoreReqRow): number | null => {
+    const lastPrice = req.store_item_id ? issuePrices.get(req.store_item_id)?.lastUnitPrice ?? null : null;
+    return issueLineValue(req.total_price, req.unit_price ?? lastPrice, req.quantity);
+  };
 
   const loadStoreReqs = useCallback(async (ticketId: string) => {
     const { data } = await supabase.from('maintenance_store_requests')
@@ -2264,7 +2280,7 @@ export function Maintenance() {
     if (!selectedTicket) return;
     const fromOwnStore = req.store_decision === 'available';
     if (fromOwnStore) {
-      const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
+      const issueValue = issueValueOf(req);
       if (storeIssueNeedsPhoto(issueValue) && !handoverPhotoBlob) {
         toast.error(t('maint.handoverNeedPhotoOver1k', 'Photo is required for store issues worth more than ₹1,000.'));
         return;
@@ -2985,7 +3001,7 @@ export function Maintenance() {
           const badge = STAGE_BADGE[s];
           // Available-from-store items skip procurement → no bill; procured items carry one.
           const fromOwnStore = req.store_decision === 'available';
-          const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
+          const issueValue = issueValueOf(req);
           const needIssuePhoto = fromOwnStore && storeIssueNeedsPhoto(issueValue);
           const canConfirmHandover = fromOwnStore
             ? ((needIssuePhoto ? !!handoverPhotoBlob : true) && (!!handoverNotes.trim() || !!handoverPhotoBlob))
@@ -3128,7 +3144,10 @@ export function Maintenance() {
                   ) : (
                     <PhotoUploader onBlobReady={setHandoverInvoiceBlob} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
                   )}
-                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={needIssuePhoto ? t('maint.issuePhotoHint', 'Required if this material is worth more than ₹1,000.') : t('maint.partPhotoHint', 'Photo of the part being handed over')} />
+                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={!fromOwnStore ? t('maint.partPhotoHint', 'Photo of the part being handed over')
+                    : issueValue == null ? t('maint.issueValueUnknown', 'Value unknown (no purchase price on record) — part photo required.')
+                    : needIssuePhoto ? t('maint.issueValueOver', { defaultValue: 'Issue worth ₹{{v}} (over ₹1,000) — part photo required.', v: Math.round(issueValue).toLocaleString('en-IN') })
+                    : t('maint.issueValueUnder', { defaultValue: 'Issue worth ₹{{v}} (₹1,000 or less) — photo optional.', v: Math.round(issueValue).toLocaleString('en-IN') })} />
                   {uploading && <UploadBar pct={uploadPct} color="#9333EA" />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button onClick={() => { setActingReqId(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>

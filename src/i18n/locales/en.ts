@@ -582,6 +582,9 @@ const en = {
     noSearchMatch: 'No batch sheets match that search.',
   },
   maint: {
+    issueValueUnder: "Issue worth ₹{{v}} (₹1,000 or less) — photo optional.",
+    issueValueOver: "Issue worth ₹{{v}} (over ₹1,000) — part photo required.",
+    issueValueUnknown: "Value unknown (no purchase price on record) — part photo required.",
     editTicket: "Edit ticket",
     scrapped: "scrapped",
     toRepair: "to repair",
