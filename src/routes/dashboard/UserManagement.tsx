@@ -1090,6 +1090,7 @@ export function UserManagement() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600 }}>{t('userMgmt.cap.manage_schedules.title', 'Add or delete schedule setup')}</div>
                 <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{t('userMgmt.importRoleNote', { defaultValue: 'Saved on the {{role}} role, so everyone with that role gets it.', role: selectedRole.label })}</div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{t('userMgmt.schedulePerPersonHint', 'For one person only (e.g. Sanju Pal): create a small role with just this allowance and add it to that person as an extra role.')}</div>
               </div>
               <button
                 type="button"

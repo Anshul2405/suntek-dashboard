@@ -2840,6 +2840,7 @@ const en = {
     "entity_label": "Store req · {{item}}",
   },
   "userMgmt": {
+    schedulePerPersonHint: "For one person only (e.g. Sanju Pal): create a small role with just this allowance and add it to that person as an extra role.",
     sec_overview: "Overview",
     sec_batchSheets: "Batch Sheets",
     sec_cpmStock: "CPM Stock",

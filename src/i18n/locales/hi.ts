@@ -2840,6 +2840,7 @@ const hi: Translations = {
     "entity_label": "स्टोर रेक · {{item}}",
   },
   "userMgmt": {
+    schedulePerPersonHint: "सिर्फ़ एक पर्सन के लिए (जैसे संजू पाल): सिर्फ़ इस अलाउंस वाला एक छोटा रोल बनाएँ और उस पर्सन को एक्स्ट्रा रोल के रूप में ऐड करें।",
     sec_overview: "ओवरव्यू",
     sec_batchSheets: "बैच शीट्स",
     sec_cpmStock: "CPM स्टॉक",
