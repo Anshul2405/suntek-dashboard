@@ -1,0 +1,39 @@
+SUNTEK BUSY PUSH - READ ONLY
+============================
+
+What this does
+  Reads Busy on this PC and sends a copy to the Suntek dashboard every 3 minutes.
+  It never writes to Busy. The SQL login it uses is denied every write.
+  Nothing listens to the internet. No tunnel, no AnyDesk needed after this.
+
+Install (one time, about 5 minutes)
+  1. Delete the old suntek-busy folder from the desktop if it is still there.
+  2. Right-click suntek-busy-kit.zip, choose Properties, tick Unblock if it is
+     there, and click OK. Then right-click it again, choose Extract All, and
+     extract it anywhere.
+  3. Open the extracted suntek-busy folder and double-click INSTALL.cmd.
+  4. Click Yes when Windows asks. If a blue "Windows protected your PC" box
+     appears, click More info, then Run anyway.
+  5. Wait for the green line that starts with DONE. Take a photo of the window.
+
+The installer copies everything to C:\SuntekBusy, so the desktop folder can be
+deleted afterwards. Node is included, so nothing is downloaded.
+
+After that
+  It starts by itself after a reboot, after Windows Update, and if it ever stops
+  (checked every 10 minutes). Nothing needs to stay open.
+  On 1 April it moves to the new year's Busy files by itself.
+  Companies: Suntek Chlorides, Suntek Plasticizer, NKG Plastochem, Madan Chemicals.
+  Chlorides already includes Delhi, Ganjam and Rehla.
+  Includes overview, sales, customers, movements, purchase invoices, analytics
+  and anomaly charts.
+
+Check it
+  Double-click C:\SuntekBusy\CHECK.cmd
+  Good: task Running, status connected, four OK lines, and "pushed ... screens".
+
+Stop it
+  Double-click C:\SuntekBusy\UNINSTALL.cmd. Busy is not touched.
+
+Do not send this zip to a group. It holds the read-only Busy password and the
+dashboard link key. It is only for the Busy PC.

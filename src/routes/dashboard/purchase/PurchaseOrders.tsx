@@ -20,6 +20,7 @@ import { useTextFilter } from '../../../components/ui/TableSearch';
 import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2, InfoBanner } from '../../../components/v2';
 import { AddPurchaseModal } from './AddPurchaseModal';
+import { BusyPurchasesCard } from '../../../components/BusyPurchasesCard';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
 
@@ -255,6 +256,8 @@ export function PurchaseOrders() {
             value={orders.reduce((s, r) => s + (r.pending_qty || 0), 0).toFixed(0)} />
         </div>
       </div>
+
+      <BusyPurchasesCard />
 
       {/* Search / filters */}
       <FilterBar

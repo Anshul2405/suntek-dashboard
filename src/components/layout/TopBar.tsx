@@ -13,6 +13,8 @@ import { profileCanAccess } from '../../lib/profiles';
 import { dropdownStyle } from '../../lib/uiPosition';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 import { IconBell, IconChecklist, IconMenu, IconSearch, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
+import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
+import { useBusyHeartbeat } from '../../hooks/useBusyData';
 
 type NType = 'critical' | 'urgent' | 'warning' | 'info';
 
@@ -61,6 +63,41 @@ interface TopBarProps {
   onMenu?: () => void;
 }
 
+
+function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
+  const { t } = useTranslation();
+  const { data: beat, isLoading } = useBusyHeartbeat();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  if (isLoading) return null;
+  const ageMin = beat?.at ? (now - Date.parse(beat.at)) / 60000 : Infinity;
+  const waiting = beat?.status === 'waiting';
+  const dot = !beat || ageMin > 120 ? 'bg-rose-500'
+    : waiting || ageMin > 15 ? 'bg-amber-500'
+    : 'bg-teal-600';
+  const label = !beat
+    ? t('topbar.busyNoFeed', { defaultValue: 'Busy not connected' })
+    : waiting
+      ? t('topbar.busyWaiting', { defaultValue: 'Busy PC waiting · {{age}}', age: formatAge(beat.at) })
+      : t('topbar.busySync', { defaultValue: 'Busy · {{age}}', age: formatAge(beat.at) });
+  const title = beat
+    ? t('topbar.busySyncTitle', {
+        defaultValue: 'Last push from the Busy PC {{computer}} at {{time}}. Read only.',
+        computer: beat.computer ?? '',
+        time: new Date(beat.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }),
+      })
+    : label;
+  return (
+    <div title={title} className="flex items-center gap-1.5 px-1.5 lg:px-2.5 py-1.5 text-[11px] text-slate-500 tabular-nums whitespace-nowrap">
+      <span className={`w-2 h-2 lg:w-1.5 lg:h-1.5 rounded-full ${dot}`} aria-hidden />
+      <span className="sr-only lg:not-sr-only">{label}</span>
+    </div>
+  );
+}
+
 export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -68,6 +105,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const { activeProfile } = useRoleContext();
   const { notifications, unreadCount, markRead, markAllRead, clearAll, tableReady, isNotificationCompleted } = useNotifications();
   const { totalCount: todoCount } = useTodo();
+  const { code: busyCompany, setCode: setBusyCompany } = useBusyCompany();
   const canSeeTodo = profileCanAccess(activeProfile, '/dashboard/todo');
   const [open, setOpen] = useState(false);
   const [photoView, setPhotoView] = useState<string | null>(null);
@@ -145,11 +183,21 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
 
       {/* Right: sync + actions + profile */}
       <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
-        {/* Quiet sync stamp — not a SaaS “live” pill */}
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-slate-500 tabular-nums">
-          <span className="w-1.5 h-1.5 rounded-full bg-teal-600" aria-hidden />
-          <span>{t('topbar.lastSync')}</span>
-        </div>
+        <label className="min-w-0">
+          <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
+          <select
+            value={busyCompany}
+            onChange={(e) => setBusyCompany(e.target.value as typeof busyCompany)}
+            aria-label={t('topbar.busyCompany', { defaultValue: 'Busy company' })}
+            className="h-8 max-w-[9.5rem] sm:max-w-[11rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] font-medium text-slate-700"
+          >
+            <option value="all">{t('topbar.busyAll', { defaultValue: 'All companies' })}</option>
+            {BUSY_COMPANIES.map((company) => (
+              <option key={company.code} value={company.code}>{company.short}</option>
+            ))}
+          </select>
+        </label>
+        <BusySyncStamp formatAge={formatAge} />
 
         {/* Global quick-search (Cmd/Ctrl+K) */}
         <button

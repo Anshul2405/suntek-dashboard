@@ -7,6 +7,8 @@ import { NotificationsProvider } from './contexts/NotificationsContext';
 import { TodoProvider } from './contexts/TodoContext';
 import { BlacklistProvider } from './contexts/BlacklistContext';
 import { AnomalyProvider } from './contexts/AnomalyContext';
+import { BusyCompanyProvider } from './contexts/BusyCompanyContext';
+import { BusyFeedSync } from './components/BusyFeedSync';
 import { OcrJobsProvider } from './contexts/OcrJobsContext';
 import { BrandLoader } from './components/brand/BrandLoader';
 
@@ -74,6 +76,8 @@ function App() {
       <NotificationsProvider>
       <TodoProvider>
       <BlacklistProvider>
+      <BusyCompanyProvider>
+        <BusyFeedSync />
       <AnomalyProvider>
       <OcrJobsProvider>
       <BrowserRouter>
@@ -149,6 +153,7 @@ function App() {
       </BrowserRouter>
       </OcrJobsProvider>
       </AnomalyProvider>
+      </BusyCompanyProvider>
       </BlacklistProvider>
       </TodoProvider>
       </NotificationsProvider>
