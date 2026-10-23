@@ -212,6 +212,16 @@ describe('canSeeScheduleSetup', () => {
     expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'unit_head' }))).toBe(true);
     expect(canSeeScheduleSetup(mk(['*'], { id: 'db_owner', baseRoleId: 'admin' }))).toBe(true);
   });
+
+  it('hides Schedule Setup from technicians and operators unless granted', () => {
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_tech', baseRoleId: 'technician_shd' }))).toBe(false);
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'factory_operator' }))).toBe(false);
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_tech', baseRoleId: 'technician_shd', capabilities: ['manage_schedules'] }))).toBe(true);
+  });
+
+  it('keeps Schedule Setup for a unit head who also holds perform_maintenance', () => {
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_uh', baseRoleId: 'unit_head', capabilities: ['perform_maintenance'] }))).toBe(true);
+  });
 });
 
 describe('unionRoleAccess', () => {

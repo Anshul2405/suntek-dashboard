@@ -575,11 +575,9 @@ export function Maintenance() {
   // Admin is excluded so the capability (which admins hold implicitly) doesn't
   // demote them into a technician view and hide Schedule Setup from them.
   const isTechnician = role === 'technician_shd' || (!isAdmin && can('perform_maintenance'));
-  const isUnitHead = role === 'unit_head';
+  const isUnitHead = role === 'unit_head' || activeProfile.baseRoleId === 'unit_head';
   const isStoreManager = [role, activeProfile.baseRoleId].some(id => !!id && ALL_STORE_MANAGER_IDS.includes(id));
-  // Technicians never had Schedule Setup on live; the manage_schedules
-  // allowance is the only way in for them, same as for store managers.
-  const showScheduleSetup = canSeeScheduleSetup(activeProfile) && (!isTechnician || can('manage_schedules'));
+  const showScheduleSetup = canSeeScheduleSetup(activeProfile);
   const isPurchaseManager = role === 'purchase_manager';
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.

@@ -36,5 +36,5 @@ export function isMyApproval(
   me: { name: string; canDecide: boolean },
 ): boolean {
   if ((row.raised_by || '') === me.name) return true;
-  return me.canDecide && row.status === 'pending';
+  return me.canDecide && isWaitingReq(row.status);
 }

@@ -14,6 +14,7 @@ describe('isMyApproval', () => {
   it('gives a decider the requests waiting on them, not just their own', () => {
     const uh = { name: 'Unit Head Madan', canDecide: true };
     expect(isMyApproval({ status: 'pending', raised_by: 'Madan Tech' }, uh)).toBe(true);
+    expect(isMyApproval({ status: 'pending_approval', raised_by: 'Madan Tech' }, uh)).toBe(true);
     expect(isMyApproval({ status: 'approved', raised_by: 'Madan Tech' }, uh)).toBe(false);
   });
   it('gives a requester only what they raised', () => {
