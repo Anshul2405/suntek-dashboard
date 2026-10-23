@@ -48,13 +48,26 @@ type UnifiedRow = {
   hasPhoto: boolean;
   photos: LightboxImage[];    // actual evidence images for this row (opens the lightbox)
   ticketRef: string | null;   // short maintenance ticket id, e.g. "f855d730"
-  source: 'manual' | 'maintenance' | 'incident';
+  source: 'manual' | 'maintenance' | 'incident' | 'system';
   ticketId?: string | null;
+  /** A deletion / reversal kept in the log: shaded and labelled, never hidden. */
+  deleted?: boolean;
 };
 
 const MANUAL_TYPE_KEYS: Record<string, string> = {
   regular: 'activity.typeRegular', repair: 'activity.typeRepair', scrap: 'activity.typeScrap',
   inspection: 'activity.typeInspection', calibration: 'activity.typeCalibration',
+};
+/** activity_logs rows written by database functions (stock, repair, import),
+ *  not by a person through + Log activity: never verified, labelled, and
+ *  deletions/reversals marked. */
+const SYSTEM_TYPE_KEYS: Record<string, [string, string]> = {
+  stock_purchase: ['activity.sysStockPurchase', 'Stock purchase added'],
+  stock_anomaly: ['activity.sysStockAnomaly', 'Stock anomaly resolved'],
+  repair_return: ['activity.sysRepairReturn', 'Repaired part returned'],
+  repair_return_reversed: ['activity.sysRepairReturnReversed', 'Repair return reversed (deleted)'],
+  defective_disposition: ['activity.sysDefective', 'Defective part decided'],
+  import_deleted: ['activity.sysImportDeleted', 'Upload deleted'],
 };
 const ticketRef = (tk: { id: string; ticket_no?: string | number | null }) => ticketNoLabel(tk);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
@@ -405,21 +418,26 @@ export function ActivityLog() {
 
   // Merge manual entries + derived maintenance events into one sorted timeline.
   const rows = useMemo<UnifiedRow[]>(() => {
-    const manual: UnifiedRow[] = logs.map((a, i) => ({
+    const manual: UnifiedRow[] = logs.map((a, i) => {
+      const kind = (a.type || '').toLowerCase();
+      const sys = SYSTEM_TYPE_KEYS[kind];
+      return {
       key: a.id || `manual-${i}`,
       equipment: a.equipment || '—',
       // Saved lower-case ('regular'); show the same label the form offers.
-      type: MANUAL_TYPE_KEYS[(a.type || '').toLowerCase()] ? t(MANUAL_TYPE_KEYS[(a.type || '').toLowerCase()]) : a.type,
+      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : a.type,
       date: a.date,
       doneBy: a.done_by,
-      verifiedBy: a.verified_by,
+      verifiedBy: sys ? null : a.verified_by,
       plant: a.plants?.name ?? null,
       hasPhoto: !!a.photo_url,
       photos: a.photo_url ? [{ url: a.photo_url, label: t('activity.photoActivity', 'Activity photo') }] : [],
       ticketRef: null,
       ticketId: null,
-      source: 'manual',
-    }));
+      source: sys ? 'system' as const : 'manual' as const,
+      deleted: kind === 'import_deleted' || kind === 'repair_return_reversed' || /delet/.test(kind),
+      };
+    });
     const derived = deriveMaintenanceEvents(tickets, storeReqs, t);
     const incidentRows: UnifiedRow[] = incidents.map((r) => ({
       key: `incident-${r.id}`,
@@ -658,6 +676,7 @@ export function ActivityLog() {
             <option value="manual">{t('activity.srcManual', 'Manual log')}</option>
             <option value="maintenance">{t('activity.srcMaint', 'Maintenance')}</option>
             <option value="incident">{t('activity.srcIncident', 'Incidents')}</option>
+            <option value="system">{t('activity.srcSystem', 'Store & system')}</option>
           </select>
           {stateOptions.length > 1 && (
             <select value={stateFilter} onChange={e => patchParams({ state: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
@@ -691,7 +710,7 @@ export function ActivityLog() {
             </thead>
             <tbody>
               {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: a.key === justAdded ? '#FFF7ED' : /delet/i.test(a.type) || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined, boxShadow: a.key === justAdded ? 'inset 3px 0 0 #EA580C' : undefined }} onClick={() => {
+                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: a.key === justAdded ? '#FFF7ED' : a.deleted || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined, boxShadow: a.key === justAdded ? 'inset 3px 0 0 #EA580C' : undefined }} onClick={() => {
                   const back = encodeURIComponent(location.pathname + location.search);
                   if (a.source === 'maintenance' && a.ticketId) navigate(`/dashboard/purchase/maint?ticket=${a.ticketId}&back=${back}`);
                   else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&back=${back}`);
@@ -700,7 +719,10 @@ export function ActivityLog() {
                   <td className="font-semibold">{a.equipment || '—'}</td>
                   <td className="text-slate-600">
                     {a.type}
-                    {a.source === 'maintenance' && (
+                    {a.deleted && (
+                      <span className="badge" style={{ marginLeft: 6, background: '#FEE2E2', color: '#B91C1C', fontWeight: 700, fontSize: 10 }}>{t('activity.deletedBadge', 'Deleted')}</span>
+                    )}
+                    {(a.source === 'maintenance' || a.source === 'system') && (
                       <span className="badge" style={{ marginLeft: 6, background: '#E0F2FE', color: '#0369A1', fontWeight: 700, fontSize: 10 }}>{t('activity.autoBadge')}</span>
                     )}
                   </td>

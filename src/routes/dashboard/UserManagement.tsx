@@ -1502,13 +1502,13 @@ export function UserManagement() {
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="badge" style={{ background: lvl.bg, color: lvl.color, fontSize: 11, fontWeight: 700 }}>{r.level}</span>
-                      <span className="font-semibold text-slate-800 text-sm">{r.label}</span>
+                      <span className="font-semibold text-slate-800 text-sm" title={r.id}>{r.label}</span>
                       {locked && (
                         <span className="badge" style={{ background: '#FFF7ED', color: '#EA580C', fontSize: 9.5, padding: '1px 6px' }}>🔒 {t('userMgmt.locked', 'Locked')}</span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-1">
-                      {r.id} · {access} · {t('userMgmt.userCount', { defaultValue: '{{count}} users', count: userCount })}
+                      {access} · {t('userMgmt.userCount', { defaultValue: '{{count}} users', count: userCount })}
                     </div>
                   </div>
                   <div className="flex gap-2">
