@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { useRoleContext } from '../contexts/RoleContext';
+import { profileCanAccess } from '../lib/profiles';
 import { Navigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
@@ -25,4 +27,17 @@ export function RequireLogin({ children }: { children: React.ReactNode }) {
     return <Navigate to={to} replace />;
   }
   return <>{children}</>;
+}
+
+/**
+ * A standalone L1 screen (no sidebar) for one kind of user. It used to need only
+ * a login, so anyone could open /warehouse by URL and edit another plant's tank
+ * levels. Allowed when the person can open one of the matching dashboard
+ * sections; everyone else goes to their own home.
+ */
+export function RequireSection({ anyOf, children }: { anyOf: string[]; children: React.ReactNode }) {
+  const { activeProfile, authResolved } = useRoleContext();
+  if (!authResolved) return null;
+  if (anyOf.some(p => profileCanAccess(activeProfile, p))) return <>{children}</>;
+  return <Navigate to={activeProfile.homeRoute || '/dashboard'} replace />;
 }

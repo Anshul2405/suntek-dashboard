@@ -1,7 +1,11 @@
 import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { RoleProvider } from './contexts/RoleContext';
-import { RequireLogin } from './components/RequireLogin';
+import { RequireLogin, RequireSection } from './components/RequireLogin';
+
+// Standalone shop-floor screens follow the matching dashboard section's grant.
+const WAREHOUSE_SECTIONS = ['/dashboard/warehouse-entry'];
+const BATCH_SECTIONS = ['/dashboard/batch-entry'];
 import { PlantScopeProvider } from './contexts/PlantScopeContext';
 import { NotificationsProvider } from './contexts/NotificationsContext';
 import { TodoProvider } from './contexts/TodoContext';
@@ -136,10 +140,10 @@ function App() {
           {/* L1 Operator apps — standalone, no sidebar. Phase 2b: require a login
               so writes are attributed + plant-scoped. */}
           <Route path="/night-manager/check-in" element={<RequireLogin><CheckIn /></RequireLogin>} />
-          <Route path="/warehouse"              element={<RequireLogin><Warehouse /></RequireLogin>} />
-          <Route path="/warehouse/stock-entry"  element={<RequireLogin><Warehouse /></RequireLogin>} />
-          <Route path="/warehouse/requisition"  element={<RequireLogin><Warehouse /></RequireLogin>} />
-          <Route path="/operator/batch-logger"  element={<RequireLogin><BatchLogger /></RequireLogin>} />
+          <Route path="/warehouse"              element={<RequireLogin><RequireSection anyOf={WAREHOUSE_SECTIONS}><Warehouse /></RequireSection></RequireLogin>} />
+          <Route path="/warehouse/stock-entry"  element={<RequireLogin><RequireSection anyOf={WAREHOUSE_SECTIONS}><Warehouse /></RequireSection></RequireLogin>} />
+          <Route path="/warehouse/requisition"  element={<RequireLogin><RequireSection anyOf={WAREHOUSE_SECTIONS}><Warehouse /></RequireSection></RequireLogin>} />
+          <Route path="/operator/batch-logger"  element={<RequireLogin><RequireSection anyOf={BATCH_SECTIONS}><BatchLogger /></RequireSection></RequireLogin>} />
 
           {/* Asset profile — QR landing page. Standalone + login-gated; the QR
               encodes /asset/<token>. Must be above the catch-all. */}
