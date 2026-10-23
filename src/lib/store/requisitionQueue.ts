@@ -27,14 +27,27 @@ export function canDecideStoreReq(profile: { id: string; baseRoleId?: string | n
 }
 
 /**
- * "My approvals": what is waiting on MY decision (for someone who decides) plus
- * the requests I raised. Filtering only on raised_by left a Unit Head's own
- * queue empty.
+ * Owner/Admin can override-approve, but plant Unit Head / Store is the actual
+ * queue. Do not dump every pending row into the owner's "My approvals".
+ */
+export function waitingCountsAsMyQueue(
+  profile: { id: string; baseRoleId?: string | null; capabilities?: string[] | null },
+  isAdmin: boolean,
+): boolean {
+  if (isAdmin) return false;
+  return canDecideStoreReq(profile, false);
+}
+
+/**
+ * "My approvals": requests I raised, plus (for a plant decider) what is waiting
+ * on that role. Owner/admin pass waitingIsMine: false so they only see rows they
+ * personally raised.
  */
 export function isMyApproval(
   row: { status: string | null | undefined; raised_by?: string | null },
-  me: { name: string; canDecide: boolean },
+  me: { name: string; canDecide: boolean; waitingIsMine?: boolean },
 ): boolean {
   if ((row.raised_by || '') === me.name) return true;
+  if (me.waitingIsMine === false) return false;
   return me.canDecide && isWaitingReq(row.status);
 }

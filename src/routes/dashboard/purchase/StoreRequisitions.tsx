@@ -23,7 +23,7 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
-import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq } from '../../../lib/store/requisitionQueue';
+import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../../lib/store/requisitionQueue';
 import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
 import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
@@ -95,7 +95,9 @@ export function StoreRequisitions() {
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
-  const canDecideReq = canDecideStoreReq(activeProfile, isAdminProfile(activeProfile));
+  const isAdmin = isAdminProfile(activeProfile);
+  const canDecideReq = canDecideStoreReq(activeProfile, isAdmin);
+  const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [items, setItems] = useState<ReqRow[]>([]);
@@ -104,6 +106,7 @@ export function StoreRequisitions() {
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState('');
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
+  useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
@@ -121,10 +124,10 @@ export function StoreRequisitions() {
     const to = searchParams.get('toDate') || '';
     return items.filter(r => {
       if (queuePending && !isWaitingReq(r.status)) return false;
-      if (approvalView === 'mine' && !isMyApproval(r, { name: activeProfile.name, canDecide: canDecideReq })) return false;
+      if (approvalView === 'mine' && !isMyApproval(r, { name: activeProfile.name, canDecide: canDecideReq, waitingIsMine })) return false;
       return inIstDayRange(r.created_at, from, to);
     });
-  }, [items, queuePending, searchParams, approvalView, activeProfile.name, canDecideReq]);
+  }, [items, queuePending, searchParams, approvalView, activeProfile.name, canDecideReq, waitingIsMine]);
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
@@ -336,10 +339,12 @@ export function StoreRequisitions() {
         <>
           <div className="px-5 pb-4 flex flex-wrap items-center gap-2">
             <div className="flex-1 min-w-[180px]"><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} /></div>
+            {!isAdmin ? (
             <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold">
               <button type="button" onClick={() => setApprovalView('mine')} style={{ padding: '7px 10px', background: approvalView === 'mine' ? '#0F172A' : '#fff', color: approvalView === 'mine' ? '#fff' : '#475569', border: 'none' }}>{t('storereq.myApprovals', 'My approvals')}</button>
               <button type="button" onClick={() => setApprovalView('all')} style={{ padding: '7px 10px', background: approvalView === 'all' ? '#0F172A' : '#fff', color: approvalView === 'all' ? '#fff' : '#475569', border: 'none' }}>{t('storereq.allApprovals', 'All approvals')}</button>
             </div>
+            ) : null}
           </div>
           {filtered.length === 0 ? (
             <div className="px-5 pb-5"><EmptyState title={t('storereq.open_req_empty')} message={search ? t('common.noMatches', 'No rows match your search.') : undefined} /></div>

@@ -11,7 +11,7 @@ import {
 import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
-import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE, isMyApproval, canDecideStoreReq } from '../../lib/store/requisitionQueue';
+import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../lib/store/requisitionQueue';
 import { isAdminProfile } from '../../lib/profiles';
 import { reqNoLabel } from '../../lib/ticketNo';
 import { formatDateTime } from '../../lib/utils/formatting';
@@ -138,9 +138,12 @@ export function Overview() {
   const { scopeQuery, ready: scopeReady, allowedPlants } = usePlantScope();
   const { activeProfile } = useRoleContext();
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
-  const canDecide = canDecideStoreReq(activeProfile, isAdminProfile(activeProfile));
+  const isAdmin = isAdminProfile(activeProfile);
+  useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
+  const canDecide = canDecideStoreReq(activeProfile, isAdmin);
+  const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const shownPending = approvalView === 'mine'
-    ? pendingReqs.filter(r => isMyApproval(r, { name: activeProfile.name, canDecide }))
+    ? pendingReqs.filter(r => isMyApproval(r, { name: activeProfile.name, canDecide, waitingIsMine }))
     : pendingReqs;
   useEffect(() => {
     if (!scopeReady) return;
@@ -405,10 +408,12 @@ export function Overview() {
             sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
             right={
               <div className="flex items-center gap-2">
+                {!isAdmin ? (
                 <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold">
                   <button type="button" onClick={() => setApprovalView('mine')} style={{ padding: '6px 10px', background: approvalView === 'mine' ? '#0F172A' : '#fff', color: approvalView === 'mine' ? '#fff' : '#475569', border: 'none' }}>{t('overview.myApprovals', 'My approvals')}</button>
                   <button type="button" onClick={() => setApprovalView('all')} style={{ padding: '6px 10px', background: approvalView === 'all' ? '#0F172A' : '#fff', color: approvalView === 'all' ? '#fff' : '#475569', border: 'none' }}>{t('overview.allApprovals', 'All approvals')}</button>
                 </div>
+                ) : null}
                 <button
                   type="button"
                   className="ops-link"
