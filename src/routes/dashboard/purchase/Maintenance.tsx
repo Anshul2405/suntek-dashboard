@@ -3784,7 +3784,7 @@ export function Maintenance() {
                     <tr><td colSpan={isAdmin ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noEmergencyTickets')}</td></tr>
                   )}
                   {emergencyPg.pageRows.map(tk => (
-                    <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
+                    <tr key={tk.id} onClick={() => setSelectedTicket(tk)} aria-selected={selectedTicket?.id === tk.id} style={{ cursor: 'pointer', ...(selectedTicket?.id === tk.id ? { background: '#FFF7ED', boxShadow: 'inset 3px 0 0 #EA580C' } : null) }}>
                       <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}{ticketsWithNotes.has(tk.id) ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>Notes</span> : null}</td>
                       <td className="font-semibold">{tk.equipment}</td>
                       <td>{displayLocationName(tk.plants?.name) || '—'}</td>
