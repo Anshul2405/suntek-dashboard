@@ -23,3 +23,18 @@ export function displayLocationName(name: string | null | undefined): string {
   if (n === 'hq') return 'HQ';
   return raw;
 }
+
+/**
+ * Does a free-text stock location ("Rehla", "SHD", "Bawana") belong to one of
+ * these plants? Tanks and CPM drum stock carry a location name, not a plant id,
+ * so plant-scoped users are matched on the name. Depots and ports that are not
+ * a plant (Bawana, Kandla) match nothing.
+ */
+export function locationInPlants(location: string | null | undefined, plants: { name: string }[]): boolean {
+  const loc = (location || '').trim().toLowerCase();
+  if (!loc) return false;
+  return plants.some(p => {
+    const names = [p.name, displayLocationName(p.name)].map(x => x.toLowerCase());
+    return names.some(n => n === loc || n.split(/[^a-z0-9()]+/).includes(loc));
+  });
+}

@@ -7,6 +7,8 @@ import { insertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../components/ui/states';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../lib/access/pickerPlants';
+import { displayLocationName, locationInPlants } from '../../lib/plantLabels';
 import { withEmbedFallback } from '../../lib/scopedList';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2 } from '../../components/v2';
@@ -26,7 +28,7 @@ interface BulkRow {
 export function CPMStock() {
   const { t } = useTranslation();
   const toast = useToast();
-  const { scopeQuery } = usePlantScope();
+  const { scopeQuery, isGlobal, allowedPlants, ready: scopeReady } = usePlantScope();
   const [storeSearch, setStoreSearch] = useState('');
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkRows, setBulkRows] = useState<BulkRow[]>([
@@ -34,10 +36,17 @@ export function CPMStock() {
   ]);
   const [bulkSaved, setBulkSaved] = useState(false);
   const [stockItems, setStockItems] = useState<StockRow[]>([]);
-  const [tanks, setTanks] = useState<TankRow[]>([]);
-  const [drumRows, setDrumRows] = useState<DrumRow[]>([]);
+  const [allTanks, setTanks] = useState<TankRow[]>([]);
+  const [allDrumRows, setDrumRows] = useState<DrumRow[]>([]);
+  // Tanks / drum stock carry a location name, not a plant id: plant-scoped
+  // users see only their own plants' locations.
+  const tanks = isGlobal ? allTanks : allTanks.filter(tk => locationInPlants(tk.location, allowedPlants));
+  const drumRows = isGlobal ? allDrumRows : allDrumRows.filter(r => locationInPlants(r.location, allowedPlants));
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [bulkPlant, setBulkPlant] = useState('');
+  // Bulk adjustments only into a plant the user holds (fail closed, never all plants).
+  const activeIds = new Set(dbPlants.map(p => p.id));
+  const pickerPlants = plantsForPicker(allowedPlants, scopeReady).filter(p => !dbPlants.length || activeIds.has(p.id));
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
@@ -54,10 +63,7 @@ export function CPMStock() {
         supabase.from('cpm_drum_stock').select('*').returns<DrumRow[]>(),
       ]);
       if (stockRes.error) throw stockRes.error;
-      if (plantsRes.data && plantsRes.data.length > 0) {
-        setDbPlants(plantsRes.data);
-        setBulkPlant(plantsRes.data[0].id);
-      }
+      if (plantsRes.data && plantsRes.data.length > 0) setDbPlants(plantsRes.data);
       setStockItems(stockRes.data || []);
       setTanks(tanksRes.data || []);
       setDrumRows(drumsRes.data || []);
@@ -112,7 +118,7 @@ export function CPMStock() {
     const filled = bulkRows.filter(r => r.item.trim() && r.adjustment);
     if (filled.length === 0) return;
     const today = new Date().toISOString().split('T')[0];
-    const plantId = bulkPlant || dbPlants[0]?.id;
+    const plantId = bulkPlant || pickerPlants[0]?.id;
     if (!plantId) { toast.error(t('cpmStock.noPlantSelected')); return; }
     const inserts = filled.map(r => ({
       product: r.item,
@@ -323,7 +329,7 @@ export function CPMStock() {
               </button>
             </div>
 
-            {dbPlants.length > 0 && (
+            {pickerPlants.length > 0 && (
               <div className="mb-4">
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">{t('cpmStock.plant')}</label>
                 <select
@@ -331,7 +337,7 @@ export function CPMStock() {
                   onChange={e => setBulkPlant(e.target.value)}
                   className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition w-full"
                 >
-                  {dbPlants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {pickerPlants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
                 </select>
               </div>
             )}

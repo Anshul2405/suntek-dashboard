@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayLocationName } from '../../lib/plantLabels';
+import { displayLocationName, locationInPlants } from '../../lib/plantLabels';
 import { VoiceSearch } from '../../components/search/VoiceSearch';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -135,7 +135,7 @@ export function Overview() {
   // Pending approvals: SAME waiting set + SAME plant scope as Store Req's
   // ?queue=pending view, and a real count (the old count was the length of an
   // 8-row page of 'pending' only — capped at 8 and blind to the other stages).
-  const { scopeQuery, ready: scopeReady, allowedPlants } = usePlantScope();
+  const { scopeQuery, ready: scopeReady, allowedPlants, isGlobal } = usePlantScope();
   const { activeProfile } = useRoleContext();
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
   const isAdmin = isAdminProfile(activeProfile);
@@ -188,10 +188,14 @@ export function Overview() {
     })();
   }, []);
 
+  // Tanks and drum stock carry a location name, not a plant id: a plant-scoped
+  // user only sees the locations of their own plants (none for Madan).
+  const scopedDrums = isGlobal ? drumRows : drumRows.filter(r => locationInPlants(r.location, allowedPlants));
+  const scopedTanks = isGlobal ? tanks : tanks.filter(tk => locationInPlants(tk.location, allowedPlants));
   // Pivot drum rows into the density×location matrix (same shape as CPMStock).
-  const densities = [...new Set(drumRows.map(r => r.density))].sort((a, b) => a - b);
-  const locations = [...new Set(drumRows.map(r => r.location))];
-  const drumLookup = new Map(drumRows.map(r => [`${r.location}|${r.density}`, r.drums]));
+  const densities = [...new Set(scopedDrums.map(r => r.density))].sort((a, b) => a - b);
+  const locations = [...new Set(scopedDrums.map(r => r.location))];
+  const drumLookup = new Map(scopedDrums.map(r => [`${r.location}|${r.density}`, r.drums]));
   const matrix: Record<string, number[]> = Object.fromEntries(
     locations.map(loc => [loc, densities.map(d => drumLookup.get(`${loc}|${d}`) ?? 0)]),
   );
@@ -717,13 +721,15 @@ export function Overview() {
         </div>
       </div>
 
-      <StockSnapshot
-        densities={densities}
-        locations={locations}
-        matrix={matrix}
-        tanks={tanks}
-        onOpenStock={() => navigate('/dashboard/stock')}
-      />
+      {(isGlobal || scopedDrums.length > 0 || scopedTanks.length > 0) && (
+        <StockSnapshot
+          densities={densities}
+          locations={locations}
+          matrix={matrix}
+          tanks={scopedTanks}
+          onOpenStock={() => navigate('/dashboard/stock')}
+        />
+      )}
 
       <VoiceSearch open={voiceOpen} onClose={() => setVoiceOpen(false)} />
     </div>
