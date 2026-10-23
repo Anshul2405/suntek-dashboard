@@ -20,7 +20,7 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
   const { t } = useTranslation();
   // Escape closes the panel (same as the × and the backdrop), never mid-upload.
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => { onCloseRef.current = onClose; });
   useEffect(() => {
     if (!open || locked) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current(); };

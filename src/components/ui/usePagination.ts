@@ -77,7 +77,7 @@ export function usePagination<T>(
 
   const onChange = opts?.onChange;
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  useEffect(() => { onChangeRef.current = onChange; });
   useEffect(() => { onChangeRef.current?.(page, pageSize); }, [page, pageSize]);
 
   const current = Math.min(page, pageCount);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 import { useRoleContext } from '../contexts/RoleContext';
 
@@ -16,6 +16,6 @@ export function useMyIdentity(): { name: string; ids: string[]; authUserId: stri
     return () => { alive = false; };
   }, []);
   const authUserId = activeProfile.authUserId ?? (isViewingAs ? null : sessionUid);
-  const ids = [activeProfile.name, authUserId].filter((v): v is string => !!v);
+  const ids = useMemo(() => [activeProfile.name, authUserId].filter((v): v is string => !!v), [activeProfile.name, authUserId]);
   return { name: activeProfile.name, ids, authUserId };
 }

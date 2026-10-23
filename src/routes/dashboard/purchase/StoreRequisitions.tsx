@@ -136,7 +136,7 @@ export function StoreRequisitions() {
       if (approvalView === 'mine' && !isMyApproval(r, { ids: me.ids, canDecide: canDecideReq, waitingIsMine })) return false;
       return inIstDayRange(r.created_at, from, to);
     });
-  }, [items, queuePending, searchParams, approvalView, me.ids.join('|'), canDecideReq, waitingIsMine]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, queuePending, searchParams, approvalView, me.ids, canDecideReq, waitingIsMine]);
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
