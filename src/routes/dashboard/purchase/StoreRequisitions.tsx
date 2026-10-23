@@ -61,15 +61,15 @@ const URGENCY_MAP: Record<string, 'low' | 'medium' | 'high' | 'plant_stopper'> =
 };
 
 const STATUS_STAGE: Record<string, { bg: string; color: string; label: string }> = {
-  pending:    { bg: '#FEF3C7', color: '#D97706', label: 'UNIT HEAD' },
-  pending_store:    { bg: '#FEF3C7', color: '#D97706', label: 'STORE' },
-  pending_approval: { bg: '#FEF3C7', color: '#D97706', label: 'APPROVAL' },
-  pending_buyer:    { bg: '#FEF3C7', color: '#D97706', label: 'BUYER' },
-  pending_vijay:    { bg: '#FEF3C7', color: '#D97706', label: 'VIJAY' },
-  approved:   { bg: '#DCFCE7', color: '#16A34A', label: 'APPROVED' },
-  dispatched: { bg: '#DBEAFE', color: '#2563EB', label: 'DISPATCHED' },
-  received:   { bg: '#DCFCE7', color: '#16A34A', label: 'RECEIVED' },
-  rejected:   { bg: '#FEE2E2', color: '#DC2626', label: 'REJECTED' },
+  pending:    { bg: '#FEF3C7', color: '#D97706', label: 'Unit head' },
+  pending_store:    { bg: '#FEF3C7', color: '#D97706', label: 'Store' },
+  pending_approval: { bg: '#FEF3C7', color: '#D97706', label: 'Unit head' },
+  pending_buyer:    { bg: '#FEF3C7', color: '#D97706', label: 'Buyer' },
+  pending_vijay:    { bg: '#FEF3C7', color: '#D97706', label: 'Vijay' },
+  approved:   { bg: '#DCFCE7', color: '#16A34A', label: 'Approved' },
+  dispatched: { bg: '#DBEAFE', color: '#2563EB', label: 'Dispatched' },
+  received:   { bg: '#DCFCE7', color: '#16A34A', label: 'Received' },
+  rejected:   { bg: '#FEE2E2', color: '#DC2626', label: 'Rejected' },
 };
 
 type StoreTab = 'requirements' | 'stock' | 'scrap';
@@ -291,22 +291,22 @@ export function StoreRequisitions() {
       {/* Summary tiles */}
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
-          label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length).padStart(2, '0')}
+          label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length)}
           caption={t('storereq.stat_total_sub', 'Open requests')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
-          label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount).padStart(2, '0')}
+          label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount)}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
           onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
-          label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount).padStart(2, '0')}
+          label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount)}
           caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
-          label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount).padStart(2, '0')}
+          label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount)}
           caption={t('storereq.stat_urgent_sub', 'High priority requests')}
           onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewUrgent', 'See urgent')} />
@@ -367,7 +367,7 @@ export function StoreRequisitions() {
                         <td>
                           {r.ticket_id
                             ? <span className="num text-xs text-blue-600 font-semibold">#{ticketNoForId(r.ticket_id)}</span>
-                            : <span className="text-slate-300">—</span>}
+                            : <span className="text-xs text-slate-400" title={t('storereq.direct_req_hint', 'Raised from Store Req, not from a maintenance ticket')}>{t('storereq.direct_req', 'Direct')}</span>}
                         </td>
                         <td>{r.item}</td>
                         <td>{displayLocationName(r.plants?.name) || '—'}</td>

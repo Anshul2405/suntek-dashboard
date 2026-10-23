@@ -14,6 +14,6 @@ describe('ticketNoLabel', () => {
     expect(terms.some(t => t.includes('0001') || t.includes('1'))).toBe(true);
   });
   it('shows a requisition id until req_no exists', () => {
-    expect(reqNoLabel({ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' })).toBe('aaaaaaaa');
+    expect(reqNoLabel({ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' })).toBe('SR-AAAAAAAA');
   });
 });

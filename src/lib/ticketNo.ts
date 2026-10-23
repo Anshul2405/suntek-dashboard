@@ -81,7 +81,7 @@ export function reqNoLabel(r: { id: string; req_no?: number | string | null }): 
   if (typeof raw === 'string' && raw.trim()) return raw.trim();
   const n = typeof raw === 'number' ? raw : Number(raw);
   if (Number.isFinite(n) && n > 0) return `SR-${String(n).padStart(4, '0')}`;
-  return r.id.slice(0, 8);
+  return `SR-${r.id.slice(0, 8).toUpperCase()}`;
 }
 
 /**
