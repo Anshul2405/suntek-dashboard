@@ -146,7 +146,8 @@ export function PhotoUploader({ onBlobReady, label, hint }: {
   const labelTxt = label ?? t('maint.attachPhotoProof', 'Attach photo proof');
   const hintTxt = hint ?? t('maint.takeOrUploadPhoto', 'Take or upload a photo');
   const [preview, setPreview] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -158,8 +159,14 @@ export function PhotoUploader({ onBlobReady, label, hint }: {
   function clear() {
     setPreview(null);
     onBlobReady(null);
-    if (inputRef.current) inputRef.current.value = '';
+    if (cameraRef.current) cameraRef.current.value = '';
+    if (galleryRef.current) galleryRef.current.value = '';
   }
+
+  const pickBtn: React.CSSProperties = {
+    flex: 1, border: '1px solid #E2E8F0', background: '#fff', borderRadius: 10,
+    padding: '10px 8px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: '#334155',
+  };
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -171,16 +178,21 @@ export function PhotoUploader({ onBlobReady, label, hint }: {
           <button onClick={clear} style={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', background: 'rgba(0,0,0,0.55)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
         </div>
       ) : (
-        <div onClick={() => inputRef.current?.click()} style={{ border: '2px dashed #CBD5E1', borderRadius: 12, padding: '20px 16px', textAlign: 'center', cursor: 'pointer', background: '#F8FAFC' }}>
+        <div style={{ border: '2px dashed #CBD5E1', borderRadius: 12, padding: '16px 12px', textAlign: 'center', background: '#F8FAFC' }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="1.5" style={{ margin: '0 auto 6px' }}>
             <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
             <circle cx="12" cy="13" r="4"/>
           </svg>
-          <div style={{ fontSize: 12, color: '#64748B', fontWeight: 500 }}>{t('maint.tapToUploadPhoto', 'Tap to upload a photo')}</div>
-          <div style={{ fontSize: 11, color: '#CBD5E1', marginTop: 2 }}>{t('maint.jpgPngCameraHint', 'JPG / PNG · opens camera on mobile')}</div>
+          <div style={{ fontSize: 12, color: '#64748B', fontWeight: 500, marginBottom: 10 }}>{t('maint.tapToUploadPhoto', 'Tap to upload a photo')}</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={() => cameraRef.current?.click()} style={pickBtn}>{t('maint.takePhoto', 'Camera')}</button>
+            <button type="button" onClick={() => galleryRef.current?.click()} style={pickBtn}>{t('maint.chooseGallery', 'Gallery')}</button>
+          </div>
+          <div style={{ fontSize: 11, color: '#CBD5E1', marginTop: 8 }}>{t('maint.jpgPngCameraHint', 'JPG / PNG · camera or gallery')}</div>
         </div>
       )}
-      <input ref={inputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFile} />
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFile} />
+      <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
     </div>
   );
 }
