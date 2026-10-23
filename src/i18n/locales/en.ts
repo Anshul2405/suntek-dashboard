@@ -97,6 +97,7 @@ const en = {
     userManagement: 'User Management',
     blacklist: 'Blacklist',
     uploadHistory: 'Upload History',
+    accessBackup: 'Access & backup',
   },
   section: {
     workspace: 'Workspace',

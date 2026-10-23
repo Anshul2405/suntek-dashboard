@@ -9,6 +9,8 @@ import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
+import { ensureLateApproval, useOpsSettings, loadMyLateRequests, type LateRequest } from '../../../lib/opsControls';
+import { billBufferDays } from '../../../lib/datePolicy';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
 import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../../../lib/store/purchaseParse';
@@ -50,6 +52,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
   const { storeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
+  const ops = useOpsSettings();
   const actorName = activeProfile.name;
 
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -76,6 +79,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
   const [notes, setNotes] = useState('');
   const [knownVendors, setKnownVendors] = useState<string[]>([]);
   const [dupInvoice, setDupInvoice] = useState(false);
+  const [myLate, setMyLate] = useState<LateRequest[]>([]);
   // Idempotency key: generated once per editing session, reused across retries,
   // so a network retry can never double-apply the same purchase.
   const [receiptId, setReceiptId] = useState<string>(() => crypto.randomUUID());
@@ -99,6 +103,10 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       if (!alive) return;
       setPlants(base);
       setPlantId(prev => prev || base[0]?.id || '');
+      try {
+        const late = await loadMyLateRequests('purchase', actorName);
+        if (alive) setMyLate(late);
+      } catch { /* banner only */ }
       setStock(si || []);
       // Vendor suggestions from past receipts (best-effort — table may predate migration 53).
       try {
@@ -224,6 +232,16 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       setFieldErr(t('addPurchase.errGst', 'That GST number does not look valid (expected 15 characters like 22AAAAA0000A1Z5).')); return;
     }
     setFieldErr(null);
+    const allowed = await ensureLateApproval({
+      module: 'purchase',
+      entryDate: purchaseDate,
+      profile: activeProfile,
+      bufferDays: billBufferDays([plantId], ops.bufferDaysByPlant, ops.bufferDays),
+    });
+    if (!allowed) {
+      setFieldErr(t('addPurchase.lateBlocked', 'Not saved. This bill date is older than allowed. A request has gone to Management; once approved, open Add purchase again and use the same date.'));
+      return;
+    }
     setStage('saving');
     try {
       const payload = {
@@ -292,6 +310,33 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
             <select value={plantId} onChange={e => setPlantId(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
               {plants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </select>
+          </div>
+        )}
+
+        {myLate.length > 0 && (stage === 'choose' || stage === 'edit') && (
+          <div style={{ fontSize: 12, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, padding: '8px 10px', marginBottom: 12, color: '#166534' }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>{t('addPurchase.lateTitle', 'Your late bill dates')}</div>
+            {myLate.map(r => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '3px 0' }}>
+                <span>
+                  {fmtLateDate(r.entry_date)} · {r.status === 'approved'
+                    ? t('addPurchase.lateApproved', { defaultValue: 'approved by {{who}}', who: r.reviewed_by || 'Management' })
+                    : t('addPurchase.latePending', 'waiting for Management')}
+                </span>
+                {r.status === 'approved' && r.entry_date && (
+                  <button
+                    type="button"
+                    onClick={() => { setPurchaseDate(r.entry_date!.slice(0, 10)); if (stage === 'choose') startManual(); }}
+                    style={{ ...btnGhost, padding: '4px 10px', fontSize: 12, borderColor: '#86EFAC', color: '#166534' }}
+                  >
+                    {stage === 'edit' && purchaseDate === r.entry_date.slice(0, 10)
+                      ? t('addPurchase.lateInUse', 'Date set')
+                      : t('addPurchase.lateUse', 'Use this date')}
+                  </button>
+                )}
+              </div>
+            ))}
+            <div style={{ color: '#15803D', marginTop: 4 }}>{t('addPurchase.lateHint', 'Upload the bill or enter it manually, then keep this purchase date and save.')}</div>
           </div>
         )}
 
@@ -461,3 +506,9 @@ const inputStyle: React.CSSProperties = { boxSizing: 'border-box', border: '1px 
 const pill: React.CSSProperties = { border: '1px solid #E2E8F0', borderRadius: 20, padding: '3px 10px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' };
 const btnPrimary: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, border: 'none', background: '#F47651', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' };
 const btnGhost: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' };
+
+function fmtLateDate(iso: string | null) {
+  if (!iso) return '—';
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}

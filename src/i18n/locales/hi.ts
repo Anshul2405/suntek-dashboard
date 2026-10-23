@@ -101,6 +101,7 @@ const hi: Translations = {
     userManagement: 'यूज़र मैनेजमेंट',
     blacklist: 'ब्लैकलिस्ट',
     uploadHistory: 'अपलोड हिस्ट्री',
+    accessBackup: 'एक्सेस एंड बैकअप',
   },
   section: {
     workspace: 'वर्कस्पेस',

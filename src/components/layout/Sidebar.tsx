@@ -6,7 +6,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { useAnomalies } from '../../contexts/AnomalyContext';
 import { useTodo } from '../../contexts/TodoContext';
 import { useSearchPalette } from '../../contexts/SearchPaletteContext';
-import { canViewBatchFacet, canViewBatchRegister, hasBatchFacetCaps, isAdminProfile, profileCanAccess } from '../../lib/profiles';
+import { canViewBatchFacet, canViewBatchRegister, hasBatchFacetCaps, isAdminProfile, isManagementProfile, profileCanAccess } from '../../lib/profiles';
 import { SuntekLogo } from '../brand/SuntekLogo';
 
 interface SidebarProps {
@@ -339,6 +339,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // whoever holds the capability; the RPC checks it again server-side, so this
   // only controls whether the link appears.
   const showUploads = can('delete_import_batch');
+  const showAccess = isAdminProfile(activeProfile) || isManagementProfile(activeProfile);
 
   const isActive = (path: string) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
@@ -777,10 +778,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       )}
 
       {/* ── ADMIN (dropdown) — expanded by default ────────────────────────── */}
-      {(showAdmin || showBlacklist || showUploads) && (
+      {(showAdmin || showBlacklist || showUploads || showAccess) && (
       <nav className="flex flex-col gap-1">
         <a
-          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads')) ? ' active' : ''}`}
+          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/access') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads')) ? ' active' : ''}`}
           onClick={() => {
             setAdminOpen((o) => !o);
             if (!adminOpen) navTo(showAdmin ? '/dashboard/users' : showBlacklist ? '/dashboard/blacklist' : '/dashboard/admin/uploads');
@@ -800,6 +801,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showBlacklist && (
               <a className={`nav-link${isActive('/dashboard/blacklist') ? ' active' : ''}`} onClick={() => navTo('/dashboard/blacklist')}>
                 <span>{t('nav.blacklist')}</span>
+              </a>
+            )}
+            {showAccess && (
+              <a className={`nav-link${isActive('/dashboard/access') ? ' active' : ''}`} onClick={() => navTo('/dashboard/access')}>
+                <span>{t('nav.accessBackup', 'Access & backup')}</span>
               </a>
             )}
             {showUploads && (

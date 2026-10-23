@@ -7,13 +7,14 @@ import { Footer } from './Footer';
 import { RestrictedAccess } from './RestrictedAccess';
 import { useAuth } from '../../hooks/useAuth';
 import { useRoleContext } from '../../contexts/RoleContext';
-import { profileCanAccess } from '../../lib/profiles';
+import { isAdminProfile, isManagementProfile, profileCanAccess } from '../../lib/profiles';
 import { useBlacklist } from '../../contexts/BlacklistContext';
 import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { SearchPaletteProvider } from '../../contexts/SearchPaletteContext';
 import { BrandLoader } from '../brand/BrandLoader';
 import { BatchFlowTourHost } from '../tour/BatchFlowTourHost';
+import { LateEntryHost } from '../LateEntryHost';
 
 // ── Blacklisted overlay ───────────────────────────────────────────────────────
 
@@ -96,6 +97,7 @@ const PAGE_TITLES: Record<string, L> = {
   '/dashboard/blacklist':       ['nav.blacklist', 'Blacklist'],
   '/dashboard/admin/uploads':   ['nav.uploadHistory', 'Upload History'],
   '/dashboard/users':           ['nav.userManagement', 'User Management'],
+  '/dashboard/access':          ['nav.accessBackup', 'Access & backup'],
   '/dashboard/daily-log':       ['nav.dailyUnitLog', 'Daily Unit Log'],
 };
 
@@ -125,6 +127,7 @@ const BREADCRUMBS: Record<string, readonly L[]> = {
   '/dashboard/working-capital': [C_MONITORING, ['nav.workingCapital', 'Working Capital']],
   '/dashboard/owner': [C_MONITORING, ['nav.ownerIntelligence', 'Owner Intelligence']],
   '/dashboard/users': [C_ADMIN, ['nav.userManagement', 'User Management']],
+  '/dashboard/access': [C_ADMIN, ['nav.accessBackup', 'Access & backup']],
   '/dashboard/blacklist': [C_ADMIN, ['nav.blacklist', 'Blacklist']],
   '/dashboard/admin/uploads': [C_ADMIN, ['nav.uploadHistory', 'Upload History']],
   '/dashboard/daily-log': [C_REFERENCE, ['nav.dailyUnitLog', 'Daily Unit Log']],
@@ -159,6 +162,7 @@ const PAGE_SUBTITLES: Record<string, L> = {
   '/dashboard/anomalies': ['nav.subAnomalies', 'Open risk flags across modules.'],
   '/dashboard/anomaly-center': ['nav.subAnomalyCenter', 'Investigate and close anomalies.'],
   '/dashboard/users': ['nav.subUsers', 'Staff directory, roles and plant access.'],
+  '/dashboard/access': ['nav.subAccess', 'Backup download and late bill approvals.'],
   '/dashboard/blacklist': ['nav.subBlacklist', 'Restricted persons, vehicles and vendors.'],
   '/dashboard/admin/uploads': ['nav.subUploadHistory', 'Bulk import history and rollbacks.'],
   '/dashboard/daily-log': ['nav.subDailyLog', 'Daily unit sheets by plant.'],
@@ -290,10 +294,12 @@ export function DashboardLayout() {
   // User Management is reachable by anyone with a user/role-management capability
   // (e.g. a delegated unit head), not only via an explicit route grant.
   const isUserMgmt = path === '/dashboard/users';
+  const isAccess = path === '/dashboard/access';
   const canAccessRoute =
     !activeProfile.standaloneOnly &&
     (isPurchaseRoot ? hasSomePurchaseAccess
       : isUserMgmt ? (can('manage_users') || can('manage_roles') || profileCanAccess(activeProfile, lookupPath))
+      : isAccess ? (isAdminProfile(activeProfile) || isManagementProfile(activeProfile) || profileCanAccess(activeProfile, lookupPath))
       : profileCanAccess(activeProfile, lookupPath));
 
   // Post-login landing: a locked user who hits the Overview ('/dashboard') they
@@ -403,6 +409,7 @@ export function DashboardLayout() {
                 // rather than blanking the whole shell.
                 <ErrorBoundary key={path} label={title}>
                   <Outlet />
+                  <LateEntryHost />
                 </ErrorBoundary>
               )
             : <RestrictedAccess />

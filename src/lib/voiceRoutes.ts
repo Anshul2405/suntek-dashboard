@@ -23,6 +23,7 @@ const VOICE_ROUTES: VoiceRoute[] = [
   { route: '/dashboard/batches', keywords: ['batch sheet', 'batches', 'batch', 'बैच'] },
   { route: '/dashboard/customers', keywords: ['customer history', 'customers', 'customer', 'ग्राहक'] },
   { route: '/dashboard/users', keywords: ['user management', 'users', 'user', 'उपयोगकर्ता'] },
+  { route: '/dashboard/access', keywords: ['access and backup', 'access backup', 'backup', 'late bill', 'एक्सेस', 'बैकअप'] },
   { route: '/dashboard/blacklist', keywords: ['blacklist', 'black list', 'ब्लैकलिस्ट'] },
   { route: '/dashboard/anomalies', keywords: ['anomaly detection', 'anomalies', 'anomaly', 'विसंगति'] },
   { route: '/dashboard/audit', keywords: ['audit log', 'audit', 'ऑडिट'] },
