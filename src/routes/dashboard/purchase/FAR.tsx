@@ -24,7 +24,7 @@ import * as XLSX from 'xlsx';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { withEmbedFallback } from '../../../lib/scopedList';
-import { groupAssetsByType, normMark, matchAsset } from '../../../lib/far/assets';
+import { groupAssetsByType, expandFarUnits, normMark, matchAsset } from '../../../lib/far/assets';
 import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
 import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
@@ -222,7 +222,7 @@ function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic
             const repairs = maintByAsset.get(a.id) ?? [];
             const openRepairs = repairs.filter(e => e.status !== 'closed').length;
             return (
-            <tr key={a.id}>
+            <tr key={`${a.id}::${a.identification_mark || ''}`}>
               <td className="font-mono text-xs font-semibold text-slate-700">{jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)}</td>
               <td className="text-slate-500 text-xs">{a.identification_mark || '—'}</td>
               <td className="text-slate-500 text-xs">{a.make || '—'}</td>
@@ -494,7 +494,7 @@ export function FAR() {
   // Equipment List — a derived, grouped view of the FAR (the PM master).
   const equipGroups = useMemo(() => {
     const q = equipSearch.trim().toLowerCase();
-    let filtered = assets;
+    let filtered = expandFarUnits(assets);
     if (equipPlantFilter.length) filtered = filtered.filter(a => a.plant_id && equipPlantFilter.includes(a.plant_id));
     if (q) filtered = filtered.filter(a => (a.name || '').toLowerCase().includes(q) || normMark(a.identification_mark).includes(normMark(q)) || (jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)).toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
     return groupAssetsByType(filtered);

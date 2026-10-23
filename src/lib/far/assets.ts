@@ -8,17 +8,16 @@
 import { similarity } from '../blacklist/similarity';
 import { canonEquipName } from './equipName';
 import { jobNoFar, isPlaceholderMark } from '../jobNo';
+import { expandFarUnits, isUnitMark, normMark } from './packedMarks';
+
+export type { PackedAssetLite } from './packedMarks';
+export { expandFarUnits, farHeadName, isUnitMark, normMark, packedUnitMarks } from './packedMarks';
 
 export interface AssetLite {
   id: string;
   name: string;
   identification_mark: string | null;
   job_no?: string | null;
-}
-
-/** Uppercase alphanumeric only — "GLC 1" → "GLC1", "HPT 1" → "HPT1", "CT-1" → "CT1". */
-export function normMark(s: string | null | undefined): string {
-  return (s ?? '').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
 /** Split a PM equipment label into its type + instance mark.
@@ -33,16 +32,22 @@ export interface AssetMatch<T extends AssetLite = AssetLite> { asset: T; score: 
 
 /** Best FAR asset for a PM equipment label: exact (normalised) mark first, else fuzzy name. */
 export function matchAsset<T extends AssetLite>(label: string, assets: T[]): AssetMatch<T> | null {
+  const list = expandFarUnits(assets);
   const { name, mark } = parseEquipmentLabel(label);
+  const typed = !isPlaceholderMark(label) && isUnitMark(label.trim()) ? normMark(label) : '';
+  if (typed) {
+    const hit = list.find(a => normMark(a.identification_mark) === typed);
+    if (hit) return { asset: hit, score: 1, via: 'mark' };
+  }
   if (mark && !isPlaceholderMark(mark)) {
     const nm = normMark(mark);
     if (nm) {
-      const hit = assets.find(a => normMark(a.identification_mark) === nm || jobNoFar(a.id, a.identification_mark, a.job_no).toUpperCase().replace(/[^A-Z0-9]/g, '') === nm);
+      const hit = list.find(a => normMark(a.identification_mark) === nm || jobNoFar(a.id, a.identification_mark, a.job_no).toUpperCase().replace(/[^A-Z0-9]/g, '') === nm);
       if (hit) return { asset: hit, score: 1, via: 'mark' };
     }
   }
   let best: AssetMatch<T> | null = null;
-  for (const a of assets) {
+  for (const a of list) {
     const sc = similarity(name, a.name);
     if (sc > 0.6 && (!best || sc > best.score)) best = { asset: a, score: sc, via: 'name' };
   }
@@ -55,7 +60,7 @@ export function suggestAssets<T extends AssetLite>(query: string, assets: T[], t
   if (q.length < 2) return [];
   const { name, mark } = parseEquipmentLabel(q);
   const nm = mark ? normMark(mark) : normMark(q);
-  return assets
+  return expandFarUnits(assets)
     .map(a => {
       const am = normMark(a.identification_mark);
       const job = jobNoFar(a.id, a.identification_mark, a.job_no).toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -78,7 +83,7 @@ export interface AssetTypeGroup<T extends AssetLite = AssetLite> { type: string;
 /** Group the flat FAR into type groups with counts — the "Equipment List" derived view. */
 export function groupAssetsByType<T extends AssetLite>(assets: T[]): AssetTypeGroup<T>[] {
   const map = new Map<string, T[]>();
-  for (const a of assets) {
+  for (const a of expandFarUnits(assets)) {
     const key = (a.name || 'Unnamed').trim();
     const arr = map.get(key);
     if (arr) arr.push(a); else map.set(key, [a]);

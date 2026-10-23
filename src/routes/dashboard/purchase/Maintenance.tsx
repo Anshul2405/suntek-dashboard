@@ -115,7 +115,7 @@ function FarEquipField({ value, assets, onChange, onPick, requirePick }: {
   const { t } = useTranslation();
   const [focus, setFocus] = React.useState(false);
   const [active, setActive] = React.useState(0);
-  const suggestions = React.useMemo(() => suggestAssets(value, assets), [value, assets]);
+  const suggestions = React.useMemo(() => suggestAssets(value, assets, 12), [value, assets]);
   React.useEffect(() => { setActive(0); }, [value]);
   const choose = (a: FarAssetLite) => {
     const markBit = !isPlaceholderMark(a.identification_mark) && a.identification_mark ? ` (${a.identification_mark})` : '';
@@ -142,7 +142,7 @@ function FarEquipField({ value, assets, onChange, onPick, requirePick }: {
       {focus && suggestions.length > 0 && (
         <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, background: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, marginTop: 4, boxShadow: '0 10px 30px rgba(0,0,0,0.15)', maxHeight: 240, overflowY: 'auto' }}>
           {suggestions.map((s, i) => (
-            <button key={s.asset.id} type="button"
+            <button key={`${s.asset.id}::${s.asset.identification_mark || ''}`} type="button"
               onMouseEnter={() => setActive(i)}
               onMouseDown={e => { e.preventDefault(); choose(s.asset); }}
               style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', border: 'none', borderBottom: '1px solid #F1F5F9', background: i === active ? '#F1F5F9' : '#fff', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
