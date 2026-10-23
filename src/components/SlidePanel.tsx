@@ -432,14 +432,18 @@ export function PanelFooter({
   // until onSave() settles — so rapid clicks can never fire duplicate writes.
   // Every panel form that uses PanelFooter inherits this for free.
   const [submitting, setSubmitting] = useState(false);
+  // State alone can let two clicks in the same frame through; the ref cannot.
+  const inFlight = useRef(false);
   const blocked = disabled || submitting;
 
   async function handleSave() {
-    if (blocked) return;
+    if (blocked || inFlight.current) return;
+    inFlight.current = true;
     setSubmitting(true);
     try {
       await onSave();
     } finally {
+      inFlight.current = false;
       setSubmitting(false);
     }
   }

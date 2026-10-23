@@ -730,6 +730,8 @@ export function FAR() {
   async function handleSave() {
     if (!form.mark.trim() || !form.model.trim()) return;
     const plantId = form.plant || plantOptions[0]?.id || null;
+    // An asset with no factory matches no grant: nobody could raise a ticket on it.
+    if (!plantId) { toast.error(t('far.pmNoFactories', 'No factories in your scope — ask an admin to assign a plant before importing PM.')); return; }
     const allocated = await allocateNextJobNos('FAR', 1);
     const jobNo = allocated[0] || nextJobNo(assets.map(a => a.job_no), 'FAR');
     const payload = {
