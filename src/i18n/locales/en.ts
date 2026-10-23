@@ -2920,7 +2920,7 @@ const en = {
     "save_label": "Submit request",
     "success_label": "Request raised",
     "success_sub": "Entering Unit Head approval queue",
-    "required_hint": "Fill in Item and Quantity to submit",
+    "required_hint": "Fill in Item, Plant and Quantity to submit",
     "pic_on_file": "Pic on file",
     "no_pic_yet": "No pic yet",
     "stock_out": "Out of stock",

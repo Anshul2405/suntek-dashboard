@@ -12,18 +12,19 @@ describe('store requisition waiting set', () => {
 
 describe('isMyApproval', () => {
   it('gives a decider the requests waiting on them, not just their own', () => {
-    const uh = { name: 'Unit Head Madan', canDecide: true };
+    const uh = { ids: ['Unit Head Madan', 'uh-uid'], canDecide: true };
     expect(isMyApproval({ status: 'pending', raised_by: 'Madan Tech' }, uh)).toBe(true);
     expect(isMyApproval({ status: 'pending_approval', raised_by: 'Madan Tech' }, uh)).toBe(true);
     expect(isMyApproval({ status: 'approved', raised_by: 'Madan Tech' }, uh)).toBe(false);
   });
   it('gives a requester only what they raised', () => {
-    const tech = { name: 'Madan Tech', canDecide: false };
+    const tech = { ids: ['Madan Tech', 'tech-uid'], canDecide: false };
     expect(isMyApproval({ status: 'pending', raised_by: 'Madan Tech' }, tech)).toBe(true);
+    expect(isMyApproval({ status: 'approved', raised_by: 'tech-uid' }, tech)).toBe(true);
     expect(isMyApproval({ status: 'pending', raised_by: 'Sanju Pal' }, tech)).toBe(false);
   });
   it('does not put every pending row on the owner just because they can override', () => {
-    const owner = { name: 'Owner', canDecide: true, waitingIsMine: false };
+    const owner = { ids: ['Owner', 'owner-uid'], canDecide: true, waitingIsMine: false };
     expect(isMyApproval({ status: 'pending', raised_by: 'Madan Tech' }, owner)).toBe(false);
     expect(isMyApproval({ status: 'pending', raised_by: 'Owner' }, owner)).toBe(true);
   });

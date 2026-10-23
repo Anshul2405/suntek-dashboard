@@ -24,6 +24,7 @@ import { isAdminProfile } from '../../../lib/profiles';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../../lib/store/requisitionQueue';
+import { useMyIdentity } from '../../../lib/useMyIdentity';
 import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
 import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
@@ -98,6 +99,7 @@ export function StoreRequisitions() {
   const isAdmin = isAdminProfile(activeProfile);
   const canDecideReq = canDecideStoreReq(activeProfile, isAdmin);
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
+  const me = useMyIdentity();
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [items, setItems] = useState<ReqRow[]>([]);
@@ -111,6 +113,7 @@ export function StoreRequisitions() {
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
   const [deciding, setDeciding] = useState(false);
+  const [savingReq, setSavingReq] = useState(false);
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
@@ -124,10 +127,10 @@ export function StoreRequisitions() {
     const to = searchParams.get('toDate') || '';
     return items.filter(r => {
       if (queuePending && !isWaitingReq(r.status)) return false;
-      if (approvalView === 'mine' && !isMyApproval(r, { name: activeProfile.name, canDecide: canDecideReq, waitingIsMine })) return false;
+      if (approvalView === 'mine' && !isMyApproval(r, { ids: me.ids, canDecide: canDecideReq, waitingIsMine })) return false;
       return inIstDayRange(r.created_at, from, to);
     });
-  }, [items, queuePending, searchParams, approvalView, activeProfile.name, canDecideReq, waitingIsMine]);
+  }, [items, queuePending, searchParams, approvalView, me.ids.join('|'), canDecideReq, waitingIsMine]); // eslint-disable-line react-hooks/exhaustive-deps
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
@@ -174,16 +177,27 @@ export function StoreRequisitions() {
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
-    if (!form.item.trim() || !form.qty) return;
-    const plant = dbPlants.find(p => p.id === form.plant);
-    const { data, error } = await insertRows('store_requisitions', {
+    // A plant-less request matches no plant grant, so no Unit Head would ever
+    // see it to approve: the plant is required (defaults to your only one).
+    const plantId = form.plant || (plantOptions.length === 1 ? plantOptions[0].id : '');
+    if (!form.item.trim() || !form.qty || !plantId || savingReq) return;
+    setSavingReq(true);
+    try {
+    const plant = dbPlants.find(p => p.id === plantId) ?? plantOptions.find(p => p.id === plantId);
+    const row = {
       item: form.item,
-      plant_id: plant?.id || null,
+      plant_id: plantId,
+      // raised_by is a uuid (auth user) on this table, not a name.
       qty: parseFloat(form.qty) || 0,
       urgency: URGENCY_MAP[form.priority] || 'medium',
-      status: 'pending',
+      status: 'pending' as const,
       remarks: [form.unit ? `Unit: ${form.unit}` : '', form.notes].filter(Boolean).join(' · ') || null,
-    }).select('*, plants(name)').single();
+    };
+    let { data, error } = await insertRows('store_requisitions', { ...row, raised_by: me.authUserId }).select('*, plants(name)').single();
+    // A database without the raised_by column still takes the request.
+    if (error && /raised_by/.test(error.message || '')) {
+      ({ data, error } = await insertRows('store_requisitions', row).select('*, plants(name)').single());
+    }
 
     if (error) {
       toast.error(t('storereq.save_failed', { message: error.message }));
@@ -218,6 +232,9 @@ export function StoreRequisitions() {
     }
     setSaved(true);
     setTimeout(() => { setOpen(false); setSaved(false); setForm({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' }); }, 1600);
+    } finally {
+      setSavingReq(false);
+    }
   }
 
   function handleClose() { setOpen(false); setSaved(false); }
@@ -229,7 +246,13 @@ export function StoreRequisitions() {
     }
     setDeciding(true);
     try {
-      const { error } = await updateRows('store_requisitions', { status }).eq('id', row.id);
+      // Record who decided (approved_by is a uuid); a database without the
+      // column still takes the decision.
+      const decidedBy = status === 'dispatched' ? {} : { approved_by: me.authUserId };
+      let { error } = await updateRows('store_requisitions', { status, ...decidedBy }).eq('id', row.id);
+      if (error && /approved_by/.test(error.message || '')) {
+        ({ error } = await updateRows('store_requisitions', { status }).eq('id', row.id));
+      }
       if (error) {
         toast.error(t('storereq.decide_failed', { message: error.message, defaultValue: 'Update failed: {{message}}' }));
         return;
@@ -323,7 +346,7 @@ export function StoreRequisitions() {
         title={t('storereq.open_req_title')}
         subtitle={t('storereq.open_req_subtitle')}
         actions={
-          <ButtonV2 variant="primary" icon={<Plus />} onClick={() => setOpen(true)}>
+          <ButtonV2 variant="primary" icon={<Plus />} onClick={() => { setForm(f => ({ ...f, plant: f.plant || (plantOptions.length === 1 ? plantOptions[0].id : '') })); setOpen(true); }}>
             {t('storereq.raise_request_btn')}
           </ButtonV2>
         }
@@ -462,7 +485,7 @@ export function StoreRequisitions() {
           saveLabel={t('storereq.save_label')}
           successLabel={t('storereq.success_label')}
           successSub={t('storereq.success_sub')}
-          disabled={!form.item.trim() || !form.qty}
+          disabled={!form.item.trim() || !form.qty || savingReq || !(form.plant || plantOptions.length === 1)}
           requiredHint={t('storereq.required_hint')}
         />
       </SlidePanel>

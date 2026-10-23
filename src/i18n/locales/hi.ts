@@ -2920,7 +2920,7 @@ const hi: Translations = {
     "save_label": "सबमिट रिक्वेस्ट",
     "success_label": "रिक्वेस्ट रेज़्ड",
     "success_sub": "एंटरिंग यूनिट हेड अप्रूवल क्यू",
-    "required_hint": "फिल इन आइटम एंड क्वांटिटी टु सबमिट",
+    "required_hint": "सबमिट के लिए आइटम, प्लांट और क्वांटिटी भरें",
     "pic_on_file": "पिक ऑन फाइल",
     "no_pic_yet": "नो पिक यट",
     "stock_out": "आउट ऑफ स्टॉक",

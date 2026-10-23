@@ -45,9 +45,10 @@ export function waitingCountsAsMyQueue(
  */
 export function isMyApproval(
   row: { status: string | null | undefined; raised_by?: string | null },
-  me: { name: string; canDecide: boolean; waitingIsMine?: boolean },
+  me: { ids: string[]; canDecide: boolean; waitingIsMine?: boolean },
 ): boolean {
-  if ((row.raised_by || '') === me.name) return true;
+  // raised_by is the raiser's auth user id (older rows: a name) — match either.
+  if (row.raised_by && me.ids.includes(row.raised_by)) return true;
   if (me.waitingIsMine === false) return false;
   return me.canDecide && isWaitingReq(row.status);
 }

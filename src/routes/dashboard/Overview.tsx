@@ -13,6 +13,7 @@ import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../lib/store/requisitionQueue';
 import { isAdminProfile } from '../../lib/profiles';
+import { useMyIdentity } from '../../lib/useMyIdentity';
 import { reqNoLabel } from '../../lib/ticketNo';
 import { formatDateTime } from '../../lib/utils/formatting';
 import type { Database } from '../../lib/database.types';
@@ -142,8 +143,9 @@ export function Overview() {
   useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
   const canDecide = canDecideStoreReq(activeProfile, isAdmin);
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
+  const me = useMyIdentity();
   const shownPending = approvalView === 'mine'
-    ? pendingReqs.filter(r => isMyApproval(r, { name: activeProfile.name, canDecide, waitingIsMine }))
+    ? pendingReqs.filter(r => isMyApproval(r, { ids: me.ids, canDecide, waitingIsMine }))
     : pendingReqs;
   useEffect(() => {
     if (!scopeReady) return;
