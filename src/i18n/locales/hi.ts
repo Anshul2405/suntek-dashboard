@@ -2457,6 +2457,7 @@ const hi: Translations = {
     "toSeeDiffs": "टु सी कोएफिशिएंट डिफरेंसेज़ फॉर d{{d}}।",
   },
   "overview": {
+    acrossFactories_one: "अक्रॉस {{count}} फैक्ट्री",
     noMovementsHint: "BUSY से सेल्स, परचेज़ और बैच क्लोज़ यहाँ स्ट्रीम होंगे।",
     noPendingApprovalsHint: "मेंटेनेंस से स्टोर इंडेंट रेज़ होने पर वह रिव्यू के लिए यहाँ आएगा।",
     allApprovals: "ऑल अप्रूवल्स",

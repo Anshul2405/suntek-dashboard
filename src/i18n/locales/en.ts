@@ -2457,6 +2457,7 @@ const en = {
     "toSeeDiffs": "to see coefficient differences for d{{d}}.",
   },
   "overview": {
+    acrossFactories_one: "Across {{count}} factory",
     noMovementsHint: "Sales, purchases, and batch closes from BUSY will stream here.",
     noPendingApprovalsHint: "When a store indent is raised from maintenance, it will queue here for review.",
     allApprovals: "All approvals",
