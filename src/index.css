@@ -432,7 +432,7 @@
     white-space: nowrap;
   }
   table.dt tbody tr { transition: background 120ms; }
-  table.dt tbody tr:hover { background: #F8FAFC; }
+  table.dt tbody tr:is([style*="cursor: pointer"], .cursor-pointer, [data-clickable]):hover { background: #F1F5F9; }
   table.dt .num { text-align: right; font-variant-numeric: tabular-nums; }
 
   .num { font-variant-numeric: tabular-nums; }
@@ -852,7 +852,10 @@
     white-space: nowrap;
   }
   table.dt2 tbody tr { transition: background 120ms; }
-  table.dt2 tbody tr:hover { background: #F8FAFC; }
+  /* Only rows that open something react to hover; a plain row must not look
+     like a link (meeting notes). Clickable rows mark themselves with a pointer
+     cursor (inline style or .cursor-pointer) or data-clickable. */
+  table.dt2 tbody tr:is([style*="cursor: pointer"], .cursor-pointer, [data-clickable]):hover { background: #F1F5F9; }
   table.dt2 tbody tr:last-child td { border-bottom: none; }
   table.dt2 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -931,3 +934,17 @@ html[lang="hi"] .truncate { padding-bottom: 0.12em; }
 /* Table headers and sidebar rows sit in tight fixed-height boxes. */
 html[lang="hi"] table.dt2 thead th { line-height: 1.5; }
 html[lang="hi"] .sidebar-v2 .nav-link { line-height: 1.45; }
+
+/* Keyboard focus — one visible ring for every control (mouse clicks do not
+   show it). Buttons, links, tabs, selects and inputs previously had none. */
+@layer base {
+  :where(button, a, [role="tab"], select, summary, [tabindex]):focus-visible {
+    outline: 2px solid #EA580C;
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+  :where(input, textarea):focus-visible {
+    outline: 2px solid #EA580C;
+    outline-offset: 1px;
+  }
+}

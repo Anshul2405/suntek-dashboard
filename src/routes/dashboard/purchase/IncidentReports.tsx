@@ -8,6 +8,8 @@ import { useDirectory } from '../../../lib/mentions';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { Building2, Plus } from 'lucide-react';
+import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard } from '../../../components/v2';
 
 
 function TagPeople({
@@ -330,43 +332,40 @@ export function IncidentReports({
   );
 
   return (
-    <div className="card2 p-5">
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-        <div>
-          <div style={{ fontWeight: 800 }}>{t('incidents.title')}</div>
-          <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('incidents.subtitle')}</div>
-        </div>
-        {!missing && (
-          <button
-            type="button"
-            onClick={() => { setForm(f => ({ ...f, plant: f.plant || defaultPlant })); setOpen(true); }}
-            disabled={scopeReady && plants.length === 0}
-            title={scopeReady && plants.length === 0 ? t('incidents.noPlantAccess') : undefined}
-            style={{ ...btn, ...(scopeReady && plants.length === 0 ? { opacity: 0.5, cursor: 'not-allowed' } : null) }}
-          >{t('incidents.new')}</button>
-        )}
-      </div>
+    <>
+    <FilterBar
+      className="mb-4"
+      search={q}
+      onSearch={setQ}
+      searchPlaceholder={t('incidents.search')}
+      onReset={() => { setQ(''); setPlantFilter(''); setFromDate(''); setToDate(''); }}
+    >
+      <FilterSelect
+        icon={<Building2 />}
+        value={plantFilter || 'all'}
+        onChange={(v) => setPlantFilter(v === 'all' ? '' : v)}
+        options={[{ value: 'all', label: t('common.allPlants') }, ...plants.map((p) => ({ value: p.id, label: displayLocationName(p.name) }))]}
+      />
+      <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => { setFromDate(from); setToDate(to); }} />
+    </FilterBar>
+    <SectionCard
+      title={t('incidents.title')}
+      subtitle={t('incidents.subtitle')}
+      actions={!missing ? (
+        <ButtonV2
+          variant="primary"
+          icon={<Plus />}
+          onClick={() => { setForm(f => ({ ...f, plant: f.plant || defaultPlant })); setOpen(true); }}
+          disabled={scopeReady && plants.length === 0}
+          title={scopeReady && plants.length === 0 ? t('incidents.noPlantAccess') : undefined}
+        >{t('incidents.new')}</ButtonV2>
+      ) : undefined}
+    >
       {missing && (
         <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '12px 14px', fontSize: 13, color: '#334155', marginBottom: 12 }}>
           {t('incidents.notSwitchedOn')}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('incidents.search')} style={{ ...inputStyle, flex: 1, minWidth: 180, marginBottom: 0 }} />
-        <select value={plantFilter} onChange={(e) => setPlantFilter(e.target.value)} style={{ ...inputStyle, width: 'auto', minWidth: 160, marginBottom: 0 }}>
-          <option value="">{t('common.allPlants')}</option>
-          {plants.map((p) => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
-        </select>
-        <label style={{ fontSize: 12, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('incidents.from')}
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={{ ...inputStyle, width: 'auto', marginBottom: 0 }} />
-        </label>
-        <label style={{ fontSize: 12, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('incidents.to')}
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={{ ...inputStyle, width: 'auto', marginBottom: 0 }} />
-        </label>
-      </div>
-      {range.swapped && <div style={{ fontSize: 12, color: '#B45309', marginBottom: 8 }}>{t('incidents.datesSwapped')}</div>}
       {err && <div style={{ color: '#B91C1C', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       <div className="overflow-x-auto">
         <table className="dt2">
@@ -419,8 +418,8 @@ export function IncidentReports({
             <input type="file" multiple onChange={(e) => setDocs(e.target.files ? [...e.target.files] : [])} />
           </label>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" onClick={() => void save()} disabled={saving || !form.what.trim() || (plants.length > 0 && !(form.plant || defaultPlant))} style={{ ...btn, ...((saving || !form.what.trim() || (plants.length > 0 && !(form.plant || defaultPlant))) ? { opacity: 0.5, cursor: 'not-allowed' } : null) }}>{saving ? t('incidents.saving') : t('incidents.save')}</button>
-            <button type="button" onClick={() => setOpen(false)} style={{ ...btn, background: '#fff', color: '#0F172A', border: '1px solid #E2E8F0' }}>{t('incidents.cancel')}</button>
+            <ButtonV2 variant="primary" onClick={() => void save()} disabled={saving || !form.what.trim() || (plants.length > 0 && !(form.plant || defaultPlant))}>{saving ? t('incidents.saving') : t('incidents.save')}</ButtonV2>
+            <ButtonV2 variant="outline" onClick={() => setOpen(false)}>{t('incidents.cancel')}</ButtonV2>
           </div>
         </div>
       )}
@@ -428,7 +427,7 @@ export function IncidentReports({
         <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ fontWeight: 800 }}>{selected.what_text}</div>
-            <button type="button" onClick={() => { const wasFocus = selected.id === focusId; setSelected(null); if (wasFocus) onCloseFocused?.(); }} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B' }}>{t('incidents.close')}</button>
+            <ButtonV2 variant="ghost" size="sm" onClick={() => { const wasFocus = selected.id === focusId; setSelected(null); if (wasFocus) onCloseFocused?.(); }}>{t('incidents.close')}</ButtonV2>
           </div>
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
             {formatDateTime(selected.occurred_at)}
@@ -452,7 +451,7 @@ export function IncidentReports({
             {selected.claimed_by ? (
               <div style={{ fontSize: 13, fontWeight: 700 }}>{t('incidents.takenBy', { name: nameOf(selected.claimed_by) })}</div>
             ) : (
-              <button type="button" onClick={() => void claim(selected)} style={btn}>{t('incidents.take')}</button>
+              <ButtonV2 variant="primary" onClick={() => void claim(selected)}>{t('incidents.take')}</ButtonV2>
             )}
           </div>
           <div style={{ marginTop: 12 }}>
@@ -483,15 +482,13 @@ export function IncidentReports({
           </div>
         </div>
       )}
-    </div>
+    </SectionCard>
+    </>
   );
 }
 
 const inputStyle: React.CSSProperties = {
   width: '100%', border: '1px solid #E2E8F0', borderRadius: 8, padding: '8px 10px', font: 'inherit', fontSize: 13, marginBottom: 0, boxSizing: 'border-box',
-};
-const btn: React.CSSProperties = {
-  background: '#0F172A', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 12px', fontWeight: 700, cursor: 'pointer',
 };
 const chip: React.CSSProperties = {
   border: '1px solid #E2E8F0', borderRadius: 999, padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
