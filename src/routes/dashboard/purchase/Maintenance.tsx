@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { formatDateTime } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
 import { freeQty } from '../../../lib/store/registers';
@@ -877,6 +877,13 @@ export function Maintenance() {
 
   // Deep-link: a notification's "?ticket=<id>" opens that ticket directly.
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  // Opened from another list (Activity Log) with ?back=<its full URL>: closing
+  // the ticket / incident returns there with its filters, page and sort.
+  const backTo = (() => {
+    const b = searchParams.get('back') || '';
+    return b.startsWith('/dashboard/') && !b.startsWith('//') ? b : '';
+  })();
   useEffect(() => {
     const rawTab = searchParams.get('tab');
     if (rawTab === 'schedule' && !showScheduleSetup) setTab('periodic');
@@ -3544,6 +3551,7 @@ export function Maintenance() {
           reporter={activeProfile.name}
           reporterRole={role}
           focusId={searchParams.get('incident')}
+          onCloseFocused={backTo ? () => navigate(backTo) : undefined}
         />
       )}
 
@@ -4092,7 +4100,7 @@ export function Maintenance() {
       {/* ── PANEL: Ticket detail ─────────────────────────────────────────── */}
       <SlidePanel
         open={!!selectedTicket}
-        onClose={() => { setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
+        onClose={() => { if (backTo) navigate(backTo); setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
         title={selectedTicket?.equipment || t('maint.ticketDetail', 'Ticket detail')}
         subtitle={`${t('maint.emergency')} · ${displayLocationName(selectedTicket?.plants?.name) || t('nav.maintenance')}`}
         locked={uploading}

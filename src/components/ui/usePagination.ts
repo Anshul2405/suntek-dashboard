@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Client-side pagination for the app's many bespoke `<table className="dt">` lists.
@@ -48,18 +48,37 @@ function windowedPages(page: number, pageCount: number): (number | 'gap')[] {
 
 export function usePagination<T>(
   rows: T[],
-  opts?: { initialPageSize?: number; resetKey?: unknown },
+  opts?: {
+    initialPageSize?: number;
+    resetKey?: unknown;
+    /** Restore a page (e.g. from the URL) — kept until the row set really changes. */
+    initialPage?: number;
+    /** Called when page or page size changes, so a screen can keep them in the URL. */
+    onChange?: (page: number, pageSize: number) => void;
+  },
 ): { pageRows: T[]; controls: PaginationControls } {
   const [pageSize, setPageSizeRaw] = useState(opts?.initialPageSize ?? 10);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(Math.max(1, opts?.initialPage ?? 1));
 
   const total = rows.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  // Snap to page 1 when the row set changes (new filter/search) or page size changes.
-  useEffect(() => { setPage(1); }, [opts?.resetKey, pageSize]);
-  // Keep the page in range if the list shrinks underneath us.
-  useEffect(() => { if (page > pageCount) setPage(pageCount); }, [page, pageCount]);
+  // Snap to page 1 when the row set changes (new filter/search) or page size
+  // changes — but not on mount, or a restored page would be thrown away.
+  const prevReset = useRef<{ key: unknown; size: number } | null>(null);
+  useEffect(() => {
+    const prev = prevReset.current;
+    prevReset.current = { key: opts?.resetKey, size: pageSize };
+    if (prev && (prev.key !== opts?.resetKey || prev.size !== pageSize)) setPage(1);
+  }, [opts?.resetKey, pageSize]);
+  // Keep the page in range if the list shrinks underneath us (not while it is
+  // still empty from loading — that would undo a restored page).
+  useEffect(() => { if (total > 0 && page > pageCount) setPage(pageCount); }, [page, pageCount, total]);
+
+  const onChange = opts?.onChange;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  useEffect(() => { onChangeRef.current?.(page, pageSize); }, [page, pageSize]);
 
   const current = Math.min(page, pageCount);
   const start = (current - 1) * pageSize;

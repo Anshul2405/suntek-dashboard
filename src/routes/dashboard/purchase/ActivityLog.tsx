@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
@@ -52,6 +52,10 @@ type UnifiedRow = {
   ticketId?: string | null;
 };
 
+const MANUAL_TYPE_KEYS: Record<string, string> = {
+  regular: 'activity.typeRegular', repair: 'activity.typeRepair', scrap: 'activity.typeScrap',
+  inspection: 'activity.typeInspection', calibration: 'activity.typeCalibration',
+};
 const ticketRef = (tk: { id: string; ticket_no?: string | number | null }) => ticketNoLabel(tk);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
 const photoList = (pairs: [string | null | undefined, string][]): LightboxImage[] =>
@@ -310,6 +314,10 @@ function ActivityRoleAccessCard() {
 export function ActivityLog() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
+  // The entry just saved through + Log activity: pinned to the top and
+  // highlighted until the page is left (its date may sort it lower otherwise).
+  const [justAdded, setJustAdded] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const people = useDirectory();
@@ -400,7 +408,8 @@ export function ActivityLog() {
     const manual: UnifiedRow[] = logs.map((a, i) => ({
       key: a.id || `manual-${i}`,
       equipment: a.equipment || '—',
-      type: a.type,
+      // Saved lower-case ('regular'); show the same label the form offers.
+      type: MANUAL_TYPE_KEYS[(a.type || '').toLowerCase()] ? t(MANUAL_TYPE_KEYS[(a.type || '').toLowerCase()]) : a.type,
       date: a.date,
       doneBy: a.done_by,
       verifiedBy: a.verified_by,
@@ -418,7 +427,7 @@ export function ActivityLog() {
       type: 'Incident report',
       date: r.occurred_at,
       doneBy: r.reported_by,
-      verifiedBy: r.who_text,
+      verifiedBy: null, // incidents are not verified; who_text is who was involved
       plant: r.plants?.name ?? null,
       hasPhoto: false,
       photos: [],
@@ -491,8 +500,33 @@ export function ActivityLog() {
     doneBy: r => r.doneBy,
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
-  }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${srcFilter}|${stateFilter}|${unitFilter}|${fromDate}|${toDate}|${kpi}|${actSort.sort.key}|${actSort.sort.dir}` });
+  }, {
+    // Sort survives Back/Cancel through the URL (?sort=&dir=).
+    key: searchParams.get('sort') || 'date',
+    dir: searchParams.get('dir') === 'asc' ? 'asc' : 'desc',
+  });
+  useEffect(() => {
+    const key = actSort.sort.key && !(actSort.sort.key === 'date' && actSort.sort.dir === 'desc') ? actSort.sort.key : '';
+    const dir = key ? actSort.sort.dir : '';
+    if ((searchParams.get('sort') || '') !== key || (searchParams.get('dir') || '') !== dir) patchParams({ sort: key, dir });
+  }, [actSort.sort.key, actSort.sort.dir]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ordered = useMemo(() => {
+    if (!justAdded) return actSort.sorted;
+    const key = justAdded;
+    const pinned = actSort.sorted.filter(r => r.key === key);
+    return pinned.length ? [...pinned, ...actSort.sorted.filter(r => r.key !== key)] : actSort.sorted;
+  }, [actSort.sorted, justAdded]);
+  const { pageRows, controls } = usePagination(ordered, {
+    resetKey: `${search}|${plantFilter}|${showManualOnly}|${srcFilter}|${stateFilter}|${unitFilter}|${fromDate}|${toDate}|${kpi}|${actSort.sort.key}|${actSort.sort.dir}|${justAdded}`,
+    // Page and page size survive Back/Cancel through the URL (?p=&ps=).
+    initialPage: Number(searchParams.get('p')) || 1,
+    initialPageSize: Number(searchParams.get('ps')) || 10,
+    onChange: (page, size) => {
+      const p = page > 1 ? String(page) : '';
+      const ps = size !== 10 ? String(size) : '';
+      if ((searchParams.get('p') || '') !== p || (searchParams.get('ps') || '') !== ps) patchParams({ p, ps });
+    },
+  });
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -512,7 +546,10 @@ export function ActivityLog() {
       toast.error(t('activity.saveFailed', { message: error.message }));
       return;
     }
-    if (data) setLogs(prev => [data as ActivityRow, ...prev]);
+    if (data) {
+      setLogs(prev => [data as ActivityRow, ...prev]);
+      if ((data as ActivityRow).id) setJustAdded((data as ActivityRow).id);
+    }
 
     // Notify anyone @-tagged in the notes (Teams-style heads-up).
     const mentionIds = extractMentionIds(form.notes, people).filter(id => id !== activeProfile.id);
@@ -654,9 +691,10 @@ export function ActivityLog() {
             </thead>
             <tbody>
               {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: /delet/i.test(a.type) || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined }} onClick={() => {
-                  if (a.source === 'maintenance' && a.ticketId) navigate(`/dashboard/purchase/maint?ticket=${a.ticketId}&from=/dashboard/purchase/activity`);
-                  else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&from=/dashboard/purchase/activity`);
+                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: a.key === justAdded ? '#FFF7ED' : /delet/i.test(a.type) || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined, boxShadow: a.key === justAdded ? 'inset 3px 0 0 #EA580C' : undefined }} onClick={() => {
+                  const back = encodeURIComponent(location.pathname + location.search);
+                  if (a.source === 'maintenance' && a.ticketId) navigate(`/dashboard/purchase/maint?ticket=${a.ticketId}&back=${back}`);
+                  else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&back=${back}`);
                   else if (a.photos.length) setLightbox(a.photos);
                 }} title={a.ticketId ? t('activity.openTicket', 'Open ticket') : undefined}>
                   <td className="font-semibold">{a.equipment || '—'}</td>

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { MentionTextarea } from './mentions/MentionTextarea';
@@ -18,6 +18,15 @@ interface SlidePanelProps {
 
 export function SlidePanel({ open, onClose, title, subtitle, children, locked = false }: SlidePanelProps) {
   const { t } = useTranslation();
+  // Escape closes the panel (same as the × and the backdrop), never mid-upload.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open || locked) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, locked]);
   return (
     <>
       {/* Backdrop */}
@@ -34,8 +43,13 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
         }}
       />
 
-      {/* Centered modal card */}
+      {/* Centered modal card — inert while closed so its fields are not
+          tabbable or read out behind the page. */}
       <div
+        role="dialog"
+        aria-modal={open || undefined}
+        aria-hidden={!open}
+        inert={!open}
         style={{
           position: 'fixed',
           top: '50%', left: '50%',
@@ -70,8 +84,10 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
             <div className="font-heading" style={{ fontSize: 18, fontWeight: 600, color: '#0F172A' }}>{title}</div>
           </div>
           <button
+            type="button"
             onClick={locked ? undefined : onClose}
             disabled={locked}
+            aria-label={t('common.close', 'Close')}
             title={locked ? t('common.uploadInProgress', 'Please wait — upload in progress') : undefined}
             style={{
               width: 36, height: 36, borderRadius: '50%',

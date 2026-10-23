@@ -85,11 +85,14 @@ export function IncidentReports({
   reporter,
   reporterRole,
   focusId,
+  onCloseFocused,
 }: {
   plants: { id: string; name: string }[];
   reporter: string;
   reporterRole: string;
   focusId?: string | null;
+  /** Closing the incident that was opened by deep link (e.g. back to Activity Log). */
+  onCloseFocused?: () => void;
 }) {
   const { t } = useTranslation();
   const people = useDirectory();
@@ -425,7 +428,7 @@ export function IncidentReports({
         <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ fontWeight: 800 }}>{selected.what_text}</div>
-            <button type="button" onClick={() => setSelected(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B' }}>{t('incidents.close')}</button>
+            <button type="button" onClick={() => { const wasFocus = selected.id === focusId; setSelected(null); if (wasFocus) onCloseFocused?.(); }} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B' }}>{t('incidents.close')}</button>
           </div>
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
             {formatDateTime(selected.occurred_at)}
