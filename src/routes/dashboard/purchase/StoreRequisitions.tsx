@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { patchUrlParams } from '../../../lib/urlParams';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -106,9 +107,14 @@ export function StoreRequisitions() {
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [search, setSearch] = useState('');
-  const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
+  // Search and My/All live in the URL (?q=&view=mine) so they survive Back,
+  // opening a linked ticket, or a refresh. Owner/admin stay on All.
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [approvalView, setApprovalView] = useState<'mine' | 'all'>(() => (searchParams.get('view') === 'mine' ? 'mine' : 'all'));
   useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
+  useEffect(() => {
+    patchUrlParams(setSearchParams, { q: search.trim(), view: approvalView === 'mine' ? 'mine' : '' });
+  }, [search, approvalView, setSearchParams]);
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
@@ -117,7 +123,7 @@ export function StoreRequisitions() {
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
-    if (r.ticket_id) navigate(`/dashboard/purchase/maint?ticket=${r.ticket_id}`);
+    if (r.ticket_id) navigate(`/dashboard/purchase/maint?ticket=${r.ticket_id}&back=${encodeURIComponent(window.location.pathname + window.location.search)}`);
     else setDetailReq(r);
   }
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { patchUrlParams } from '../../../lib/urlParams';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -357,11 +358,7 @@ export function ActivityLog() {
   const stateFilter = searchParams.get('state') || '';
   const unitFilter = searchParams.get('unit') || '';
   function patchParams(patch: Record<string, string>) {
-    const next = new URLSearchParams(searchParams);
-    for (const [k, v] of Object.entries(patch)) {
-      if (v) next.set(k, v); else next.delete(k);
-    }
-    setSearchParams(next, { replace: true });
+    patchUrlParams(setSearchParams, patch);
   }
   const setSearch = (v: string) => patchParams({ q: v });
   const setPlantFilter = (v: string) => patchParams({ plant: v });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { patchUrlParams } from '../../../lib/urlParams';
 import { formatDateTime } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -886,7 +887,7 @@ export function Maintenance() {
   })();
   useEffect(() => {
     const rawTab = searchParams.get('tab');
-    if (rawTab === 'schedule' && !showScheduleSetup) setTab('periodic');
+    if (rawTab === 'schedule' && !showScheduleSetup) { setTab('periodic'); patchUrlParams(setSearchParams, { tab: 'periodic' }); }
     else if (rawTab === 'periodic' || rawTab === 'emergency' || rawTab === 'schedule' || rawTab === 'incidents') setTab(rawTab);
     const tid = searchParams.get('ticket');
     if (!tid) return;
@@ -1151,10 +1152,18 @@ export function Maintenance() {
   const emergencyTickets = tickets.filter(t => t.type === 'emergency');
 
   // ── v2 filter bar (client-side; resets when switching tabs) ───────────────
-  const [fltQ, setFltQ] = useState('');
-  const [fltPlant, setFltPlant] = useState('all');
-  const [fltStatus, setFltStatus] = useState('all');
-  useEffect(() => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); }, [tab]);
+  // Kept in the URL (?q=&plant=&status=) so Back / opening a ticket and
+  // closing it / a refresh returns to the same filtered list.
+  const [fltQ, setFltQ] = useState(() => searchParams.get('q') || '');
+  const [fltPlant, setFltPlant] = useState(() => searchParams.get('plant') || 'all');
+  const [fltStatus, setFltStatus] = useState(() => searchParams.get('status') || 'all');
+  useEffect(() => {
+    patchUrlParams(setSearchParams, {
+      q: fltQ.trim(),
+      plant: fltPlant === 'all' ? '' : fltPlant,
+      status: fltStatus === 'all' ? '' : fltStatus,
+    });
+  }, [fltQ, fltPlant, fltStatus, setSearchParams]);
   const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); };
 
   /** Derived schedule state — same classification the periodic rows render. */
@@ -3531,7 +3540,15 @@ export function Maintenance() {
           { key: 'incidents', label: t('maint.incidents', 'Incidents'), icon: <AlertTriangle /> },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={(k) => {
+          // Keep ?tab in step with the tab bar, or a later URL change (filters,
+          // a closed ticket) would re-apply the stale tab from the deep link.
+          // Filters reset when the user switches tab (not when a deep link or
+          // Back restores the tab, which must keep ?q=&plant=&status=).
+          if (k !== tab) { setFltQ(''); setFltPlant('all'); setFltStatus('all'); }
+          setTab(k);
+          patchUrlParams(setSearchParams, { tab: k, q: '', plant: '', status: '', incident: '' });
+        }}
       />
 
       {loadError ? (
