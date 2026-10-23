@@ -30,7 +30,7 @@ import { useDirectory, useMentionNotifier, notifyWatchers, postNote, extractMent
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { similarity } from '../../../lib/blacklist/similarity';
 import { PMScheduleImport } from './PMScheduleImport';
-import { suggestAssets } from '../../../lib/far/assets';
+import { suggestAssets, matchAsset } from '../../../lib/far/assets';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
@@ -89,6 +89,18 @@ function suggestParts(query: string, stock: StoreStockItem[]): StoreStockItem[] 
 }
 
 type FarAssetLite = { id: string; name: string; identification_mark: string | null; plant_id: string | null };
+
+
+/** A consumable line that is really a FAR asset. High bar so a loose word does not flag. */
+function consumableFarMatch<T extends FarAssetLite>(text: string, assets: T[]): T | null {
+  const q = text.trim();
+  if (q.length < 2) return null;
+  const named = matchAsset(q, assets);
+  if (named && (named.via === 'mark' || named.score >= 0.8)) return named.asset;
+  const top = suggestAssets(q, assets, 1)[0];
+  if (top && top.score >= 0.85) return top.asset;
+  return null;
+}
 
 /** Equipment field backed by the FAR — pick a registered asset (links it) or type
  *  free text (allowed, flagged as not-in-FAR). */
@@ -650,7 +662,7 @@ export function Maintenance() {
   // unit is NOT seeded from the legacy plant_name (that mis-tagged non-Jharkhand users
   // with Plasticiser/Chlorides). Plant defaults from the real data scope; unit only
   // applies when the chosen plant is a Jharkhand plant.
-  const [raiseForm, setRaiseForm] = useState({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '' });
+  const [raiseForm, setRaiseForm] = useState({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '', materialKind: '' as '' | 'spare' | 'consumable' });
   const BLANK_CHECKPOINT = { component: '', activity: '' };
   const [scheduleForm, setScheduleForm] = useState({ title: '', equipment: '', plant: '', frequency: 'weekly', description: '', firstDue: today, assignedTo: '', farAssetId: '', equipmentMark: '', until: '', unmatchedReason: '', checklist: [{ ...BLANK_CHECKPOINT }] });
   const [farAssets, setFarAssets] = useState<{ id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null }[]>([]);
@@ -1257,8 +1269,17 @@ export function Maintenance() {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   async function handleRaiseTicket() {
-    if (!raiseForm.equipment.trim() || raising) return;
-    if (!raiseForm.farAssetId) { toast.error(t('maint.pickFarRequired', 'Pick the equipment from the FAR list. Free-text names are not allowed.')); return; }
+    if (raising) return;
+    if (raiseForm.materialKind === 'spare' && !raiseForm.farAssetId) {
+      toast.error(t('maint.spareNeedPick', 'Pick the equipment from the FAR list.'));
+      return;
+    }
+    if (raiseForm.materialKind !== 'spare' && raiseForm.materialKind !== 'consumable') {
+      toast.error(t('maint.chooseMaterialKind', 'Choose Material Spare or Material Consumable'));
+      return;
+    }
+    if (!raiseForm.equipment.trim()) return;
+    const farFlag = raiseForm.materialKind === 'consumable' ? consumableFarMatch(raiseForm.equipment, farAssets) : null;
     setRaising(true);
     try {
     const plant = dbPlants.find(p => p.id === raiseForm.plant);
@@ -1267,22 +1288,33 @@ export function Maintenance() {
     const unitRow = raiseForm.unit
       ? scopeUnits.find(u => u.plant_id === plant?.id && (u.code === raiseForm.unit || u.name.toLowerCase() === raiseForm.unit.toLowerCase()))
       : undefined;
-    const { data: newTicket, error } = await insertRows('maintenance_tickets', {
+    const kindLabel = raiseForm.materialKind === 'spare' ? 'Material Spare' : 'Material Consumable';
+    const assessLabel = raiseForm.materialKind === 'consumable' || raiseForm.assessment === 'needs_part' ? 'Needs part' : 'Repairable';
+    const flagLine = farFlag
+      ? `Flagged: "${raiseForm.equipment.trim()}" matches FAR asset ${farFlag.name}. This belongs under Material Spare.`
+      : '';
+    const ticketPayload: Record<string, unknown> = {
       type: 'emergency', status: 'open',
-      title: `${raiseForm.equipment} — ${raiseForm.assessment === 'repairable' ? 'Repairable' : 'Needs part'}`,
+      title: `${kindLabel}: ${raiseForm.equipment} — ${assessLabel}`,
       equipment: raiseForm.equipment,
+      material_kind: raiseForm.materialKind,
       plant_id: plant?.id || null,
       unit: raiseForm.unit || null,
       unit_id: unitRow?.id || null,
-      description: raiseForm.description || null,
-      // Reliable FAR link when the equipment was picked from the type-ahead — powers
-      // the asset QR profile's history (was previously captured but dropped).
-      far_asset_id: raiseForm.farAssetId || null,
+      description: [raiseForm.description, flagLine].filter(Boolean).join('\n') || null,
+      far_asset_id: raiseForm.materialKind === 'spare' ? (raiseForm.farAssetId || null) : null,
       raised_by: activeProfile.name, raised_role: role,
       // A technician / Technical raiser is implicitly assigned to themselves so
       // they can continue the store-indent / repair loop without role confusion.
       assigned_to: (isTechnician || role === 'factory_operator') ? activeProfile.name : null,
-    }).select('*, plants(name)').single();
+    };
+    let { data: newTicket, error } = await insertRows('maintenance_tickets', ticketPayload as never).select('*, plants(name)').single();
+    if (error && /material_kind|schema cache|column/i.test(error.message || '')) {
+      const { material_kind: _omit, ...withoutKind } = ticketPayload;
+      const retry = await insertRows('maintenance_tickets', withoutKind as never).select('*, plants(name)').single();
+      newTicket = retry.data;
+      error = retry.error;
+    }
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
     if (newTicket && !(newTicket as { ticket_no?: string }).ticket_no) {
       const allocated = (await assignTicketNos([newTicket.id])).get(newTicket.id);
@@ -1307,7 +1339,7 @@ export function Maintenance() {
     notify({
       target_roles: ['admin', 'unit_head', 'store_manager_maint'],
       title: `Maintenance ticket raised: ${raiseForm.equipment}`,
-      body: `${activeProfile.name} · ${raiseForm.assessment === 'repairable' ? 'Repairable in-house' : 'Needs store part'}${raiseForm.farAssetId ? '' : ' · ⚠ Equipment not in FAR (entered manually)'}`,
+      body: `${activeProfile.name} · ${kindLabel} · ${raiseForm.materialKind === 'consumable' || raiseForm.assessment === 'needs_part' ? 'Needs store part' : 'Repairable in-house'}${raiseForm.materialKind === 'consumable' ? ' · consumable (not FAR)' : ''}${farFlag ? ' · ⚠ matches a FAR asset' : ''}`,
       type: 'urgent', route: maintRoute(newTicket?.id),
       actor_name: activeProfile.name, actor_role: role, read_by: [],
       // Scope the ticket to its plant/unit so only that plant's unit head +
@@ -1340,11 +1372,11 @@ export function Maintenance() {
 
     setRaiseSaved(true);
     await loadData();
-    const needsPart = raiseForm.assessment === 'needs_part';
+    const needsPart = raiseForm.materialKind === 'consumable' || raiseForm.assessment === 'needs_part';
     const ticketForStore = newTicket;
     setTimeout(() => {
       setShowRaisePanel(false); setRaiseSaved(false); setRaisePhotoBlob(null);
-      setRaiseForm({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '' });
+      setRaiseForm({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '', materialKind: '' });
       // Always open the store parts form when "Need a part from store" was chosen
       // (meeting 3.2 — flow must not stop after ticket create).
       if (ticketForStore && needsPart) {
@@ -3851,17 +3883,27 @@ export function Maintenance() {
 
       {/* ── PANEL: Raise ticket ──────────────────────────────────────────── */}
       <SlidePanel open={showRaisePanel} onClose={() => { setShowRaisePanel(false); setRaiseSaved(false); }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
-        <PanelField label={t('maint.equipmentAsset')}>
-          <FarEquipField
-            requirePick
-            value={raiseForm.equipment}
-            assets={raiseFarAssets}
-            onChange={v => setRaiseForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
-            onPick={a => setRaiseForm(f => ({ ...f, farAssetId: a?.id ?? '', equipmentMark: a?.identification_mark ?? '', plant: a?.plant_id ?? f.plant }))}
-          />
-          {raiseForm.equipment.trim().length > 1 && (raiseForm.farAssetId
-            ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{raiseForm.equipmentMark ? ` · ${raiseForm.equipmentMark}` : ''}.</div>
-            : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.pickFromFarHint', 'Type the job number or name, then pick the matching FAR row. Tickets cannot be raised on free text.')}</div>)}
+        <PanelField label={t('maint.materialKind', 'Material')}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {(['spare', 'consumable'] as const).map(kind => {
+              const on = raiseForm.materialKind === kind;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => setRaiseForm(f => ({ ...f, materialKind: kind, equipment: '', farAssetId: '', equipmentMark: '', assessment: kind === 'consumable' ? 'needs_part' : f.assessment }))}
+                  style={{
+                    padding: '10px 8px', borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+                    border: on ? '1.5px solid #0F172A' : '1px solid #E2E8F0',
+                    background: on ? '#0F172A' : '#fff',
+                    color: on ? '#fff' : '#334155',
+                  }}
+                >
+                  {kind === 'spare' ? t('maint.materialSpare', 'Material Spare') : t('maint.materialConsumable', 'Material Consumable')}
+                </button>
+              );
+            })}
+          </div>
         </PanelField>
         {/* No procurement-unit selector.
             Chlorides and Plasticiser were sub-units of a single 'Rehla' plant,
@@ -3870,11 +3912,69 @@ export function Maintenance() {
             so picking a factory already says which unit it is. Asking again was
             asking the same question twice. */}
         <PanelField label={t('common.plant')}>
-          <PanelSelect value={raiseForm.plant} onChange={e => setRaiseForm(f => ({ ...f, plant: e.target.value, unit: '' }))}>
+          <PanelSelect value={raiseForm.plant} onChange={e => {
+            const plant = e.target.value;
+            setRaiseForm(f => {
+              const asset = farAssets.find(a => a.id === f.farAssetId);
+              const stillHere = !!asset && asset.plant_id === plant;
+              return {
+                ...f,
+                plant,
+                unit: '',
+                ...(f.materialKind === 'spare' && !stillHere ? { equipment: '', farAssetId: '', equipmentMark: '' } : {}),
+              };
+            });
+          }}>
             <option value="">{t('maint.selectPlant')}</option>
             {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
           </PanelSelect>
         </PanelField>
+        {raiseForm.materialKind === 'spare' && (
+          <PanelField label={t('maint.equipmentAsset')}>
+            <FarEquipField
+              value={raiseForm.equipment}
+              assets={raiseFarAssets}
+              onChange={v => setRaiseForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
+              onPick={a => setRaiseForm(f => ({ ...f, farAssetId: a?.id ?? '', equipmentMark: a?.identification_mark ?? '', plant: a?.plant_id ?? f.plant }))}
+            />
+            {raiseForm.farAssetId
+              ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{raiseForm.equipmentMark ? ` · ${raiseForm.equipmentMark}` : ''}.</div>
+              : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{raiseForm.plant ? t('maint.sparePickHint', 'Type the job number or name, then pick the matching FAR row.') : t('maint.spareNeedPlant', 'Select the plant, then pick the FAR asset.')}</div>}
+          </PanelField>
+        )}
+        {raiseForm.materialKind === 'consumable' && (
+          <PanelField label={t('maint.consumableLabel', 'Material *')}>
+            <PanelInput
+              value={raiseForm.equipment}
+              placeholder={t('maint.consumablePlaceholder', 'Write the consumable (e.g. 150W flood light, grease)')}
+              onChange={e => setRaiseForm(f => ({ ...f, equipment: e.target.value, farAssetId: '', equipmentMark: '' }))}
+            />
+            {(() => {
+              const hit = consumableFarMatch(raiseForm.equipment, farAssets);
+              if (!hit) return null;
+              const markBit = !isPlaceholderMark(hit.identification_mark) && hit.identification_mark ? ` (${hit.identification_mark})` : '';
+              return (
+                <div style={{ marginTop: 8, background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 12, color: '#92400E', fontWeight: 650 }}>{t('maint.consumableFarFlag', { name: `${hit.name}${markBit}`, defaultValue: 'This matches FAR asset {{name}}. It belongs under Material Spare.' })}</div>
+                  <button
+                    type="button"
+                    onClick={() => setRaiseForm(f => ({
+                      ...f,
+                      materialKind: 'spare',
+                      equipment: `${hit.name}${markBit}`,
+                      farAssetId: hit.id,
+                      equipmentMark: hit.identification_mark || '',
+                      plant: hit.plant_id || f.plant,
+                    }))}
+                    style={{ marginTop: 6, border: 'none', background: 'transparent', color: '#0F172A', fontWeight: 700, fontSize: 12, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+                  >
+                    {t('maint.useAsSpare', 'Raise as Material Spare')}
+                  </button>
+                </div>
+              );
+            })()}
+          </PanelField>
+        )}
         <PanelField label={t('maint.issueDescription')}>
           <PanelTextarea value={raiseForm.description} onChange={e => setRaiseForm(f => ({ ...f, description: e.target.value }))} placeholder={t('maint.issuePlaceholder')} />
         </PanelField>
@@ -3887,7 +3987,7 @@ export function Maintenance() {
         <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
         {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
-        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || !raiseForm.farAssetId || raising} requiredHint={t('maint.raiseRequiredHint')} />
+        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={raising || (raiseForm.materialKind === 'spare' ? !raiseForm.farAssetId : raiseForm.materialKind === 'consumable' ? !raiseForm.equipment.trim() : true)} requiredHint={raiseForm.materialKind === 'spare' ? t('maint.spareNeedPick', 'Pick the equipment from the FAR list.') : raiseForm.materialKind === 'consumable' ? t('maint.consumableNeedName', 'Write the consumable name.') : t('maint.chooseMaterialKind', 'Choose Material Spare or Material Consumable')} />
       </SlidePanel>
 
       {/* ── PANEL: Complete periodic ─────────────────────────────────────── */}
