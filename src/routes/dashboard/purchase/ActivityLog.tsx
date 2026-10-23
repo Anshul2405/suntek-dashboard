@@ -15,7 +15,6 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination } from '../../../components/v2';
 import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th } from '../../../components/v2';
-import { TableSearch } from '../../../components/ui/TableSearch';
 import { useDirectory, extractMentionIds, truncate } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { useRoleContext } from '../../../contexts/RoleContext';
@@ -25,7 +24,8 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
-import { DateRangeFilter } from '../../../components/v2';
+import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
+import { Building2, Factory, Layers, MapPin } from 'lucide-react';
 import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
@@ -660,35 +660,51 @@ export function ActivityLog() {
             </button>
           </div>
         </div>
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <TableSearch value={search} onChange={setSearch} placeholder={t('activity.searchPh', 'Search equipment, activity, person, ticket…')} style={{ marginBottom: 0 }} />
-          </div>
-          <select value={plantFilter} onChange={e => setPlantFilter(e.target.value)} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
-            <option value="">{t('activity.allPlants', 'All plants')}</option>
-            {plantNames.map(p => <option key={p} value={p}>{displayLocationName(p)}</option>)}
-          </select>
-          <select value={srcFilter} onChange={e => patchParams({ src: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
-            <option value="">{t('activity.allModules', 'All modules')}</option>
-            <option value="manual">{t('activity.srcManual', 'Manual log')}</option>
-            <option value="maintenance">{t('activity.srcMaint', 'Maintenance')}</option>
-            <option value="incident">{t('activity.srcIncident', 'Incidents')}</option>
-            <option value="system">{t('activity.srcSystem', 'Store & system')}</option>
-          </select>
+        {/* Same filter bar as Maintenance / Incidents (search · selects · IST
+            date range · Reset); every value lives in the URL. */}
+        <FilterBar
+          className="mb-3 !p-0 !border-0 !shadow-none !bg-transparent"
+          search={search}
+          onSearch={setSearch}
+          searchPlaceholder={t('activity.searchPh', 'Search equipment, activity, person, ticket…')}
+          onReset={() => patchParams({ q: '', plant: '', src: '', state: '', unit: '', from: '', to: '', kpi: '', p: '' })}
+        >
+          <FilterSelect
+            icon={<Building2 />}
+            value={plantFilter || 'all'}
+            onChange={v => setPlantFilter(v === 'all' ? '' : v)}
+            options={[{ value: 'all', label: t('activity.allPlants', 'All plants') }, ...plantNames.map(p => ({ value: p, label: displayLocationName(p) }))]}
+          />
+          <FilterSelect
+            icon={<Layers />}
+            value={srcFilter || 'all'}
+            onChange={v => patchParams({ src: v === 'all' ? '' : v })}
+            options={[
+              { value: 'all', label: t('activity.allModules', 'All modules') },
+              { value: 'manual', label: t('activity.srcManual', 'Manual log') },
+              { value: 'maintenance', label: t('activity.srcMaint', 'Maintenance') },
+              { value: 'incident', label: t('activity.srcIncident', 'Incidents') },
+              { value: 'system', label: t('activity.srcSystem', 'Store & system') },
+            ]}
+          />
           {stateOptions.length > 1 && (
-            <select value={stateFilter} onChange={e => patchParams({ state: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
-              <option value="">{t('activity.allStates', 'All states')}</option>
-              {stateOptions.map(st => <option key={st} value={st}>{st}</option>)}
-            </select>
+            <FilterSelect
+              icon={<MapPin />}
+              value={stateFilter || 'all'}
+              onChange={v => patchParams({ state: v === 'all' ? '' : v })}
+              options={[{ value: 'all', label: t('activity.allStates', 'All states') }, ...stateOptions.map(st => ({ value: st, label: st }))]}
+            />
           )}
           {unitOptions.length > 0 && (
-            <select value={unitFilter} onChange={e => patchParams({ unit: e.target.value })} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
-              <option value="">{t('activity.allUnits', 'All units')}</option>
-              {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
-            </select>
+            <FilterSelect
+              icon={<Factory />}
+              value={unitFilter || 'all'}
+              onChange={v => patchParams({ unit: v === 'all' ? '' : v })}
+              options={[{ value: 'all', label: t('activity.allUnits', 'All units') }, ...unitOptions.map(u => ({ value: u, label: u }))]}
+            />
           )}
           <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => setFromTo(from, to)} />
-        </div>
+        </FilterBar>
         {loadError ? (
           <ErrorState title={t('activity.errorTitle')} message={t('activity.errorMessage')}
             onRetry={() => { setLoading(true); setLoadError(false); load(); }} />
