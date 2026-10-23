@@ -9,7 +9,7 @@ import { useNotifications } from '../../../contexts/NotificationsContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { Building2, Plus } from 'lucide-react';
-import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard } from '../../../components/v2';
+import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill } from '../../../components/v2';
 
 
 function TagPeople({
@@ -382,7 +382,7 @@ export function IncidentReports({
                 <td className="whitespace-nowrap">{formatDateTime(r.occurred_at)}</td>
                 <td>{displayLocationName(r.plants?.name) || t('incidents.noPlant')}</td>
                 <td>{r.what_text}</td>
-                <td>{r.claimed_by ? nameOf(r.claimed_by) : t('incidents.open')}</td>
+                <td>{r.claimed_by ? nameOf(r.claimed_by) : <StatusPill tone="amber" label={t('incidents.open')} />}</td>
                 <td>{(r.tagged_people || []).map(nameOf).filter(Boolean).join(', ') || '—'}</td>
                 <td>{(r.photo_urls || []).length + (r.doc_urls || []).length || '—'}</td>
               </tr>
