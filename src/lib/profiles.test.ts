@@ -208,6 +208,17 @@ describe('canSeeScheduleSetup', () => {
     expect(canSeeScheduleSetup({ ...sanju, capabilities: ['manage_schedules'] })).toBe(true);
   });
 
+  it('keeps Schedule Setup for a unit head who also does maintenance', () => {
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_uh', baseRoleId: 'unit_head', capabilities: ['perform_maintenance'] }))).toBe(true);
+  });
+
+  it('hides it from technicians, operators and floor workers unless granted', () => {
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_m', baseRoleId: 'technician_shd', capabilities: [] }))).toBe(false);
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'factory_operator', capabilities: [] }))).toBe(false);
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_x', baseRoleId: 'technical_team', capabilities: ['perform_maintenance'] }))).toBe(false);
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'db_m', baseRoleId: 'technician_shd', capabilities: ['manage_schedules'] }))).toBe(true);
+  });
+
   it('still opens Schedule Setup for unit head and owner without an extra toggle', () => {
     expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'unit_head' }))).toBe(true);
     expect(canSeeScheduleSetup(mk(['*'], { id: 'db_owner', baseRoleId: 'admin' }))).toBe(true);

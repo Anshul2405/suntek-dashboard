@@ -117,15 +117,19 @@ export const FLOOR_NO_SCHEDULE_ROLE_IDS = ['technician_shd', 'factory_operator']
 
 /**
  * Who can open the Schedule Setup tab.
- * Store / warehouse managers and technicians / operators are hidden unless
- * User Management granted `manage_schedules`. Unit Head / Management / Admin
- * keep it even if they also hold perform_maintenance.
+ *  • admin (or anyone granted `manage_schedules`) → yes;
+ *  • Unit Head / Management → yes, even when they also hold `perform_maintenance`;
+ *  • technicians / operators / store & warehouse managers, or anyone else who
+ *    does the floor work (`perform_maintenance`) → only with `manage_schedules`;
+ *  • everyone else → yes.
  */
 export function canSeeScheduleSetup(profile: Pick<MockProfile, 'id' | 'baseRoleId' | 'allowedDashboardRoutes' | 'capabilities'>): boolean {
   if (profileHasCapability(profile as MockProfile, 'manage_schedules')) return true;
-  const held = [profile.id, profile.baseRoleId];
-  const blocked = [...STORE_MANAGER_ROLE_IDS, ...FLOOR_NO_SCHEDULE_ROLE_IDS];
-  return !held.some(id => !!id && (blocked as readonly string[]).includes(id));
+  const held = [profile.id, profile.baseRoleId].filter((id): id is string => !!id);
+  if (held.includes('unit_head') || held.includes('management')) return true;
+  const blocked = [...STORE_MANAGER_ROLE_IDS, ...FLOOR_NO_SCHEDULE_ROLE_IDS] as readonly string[];
+  if (held.some(id => blocked.includes(id))) return false;
+  return !(profile.capabilities || []).includes('perform_maintenance');
 }
 
 /** Combine every role a person holds — routes and allowances are a union. */
