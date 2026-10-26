@@ -8,6 +8,8 @@ import {
 import { fetchActivePlants } from '../../lib/plants';
 import { displayLocationName } from '../../lib/plantLabels';
 import { useToast } from '../../components/ui/toast';
+import { usePagination } from '../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../components/v2';
 
 const PHOTOS: { key: PhotoKey; label: string }[] = [
   { key: 'heat', label: 'Heat sample' },
@@ -28,6 +30,11 @@ export function AccessControl() {
   const [draft, setDraft] = useState<OpsSettings>(saved);
   const [requests, setRequests] = useState<LateRequest[]>([]);
   const [audit, setAudit] = useState<AuditRow[]>([]);
+  // Empty-table text waits for the first load (it used to say "No history yet." while loading).
+  const [requestsLoaded, setRequestsLoaded] = useState(false);
+  const [auditLoaded, setAuditLoaded] = useState(false);
+  const { pageRows: requestPage, controls: requestPager } = usePagination(requests);
+  const { pageRows: auditPage, controls: auditPager } = usePagination(audit);
   const [saving, setSaving] = useState(false);
   const [backing, setBacking] = useState(false);
   const [plants, setPlants] = useState<{ id: string; name: string }[]>([]);
@@ -35,8 +42,8 @@ export function AccessControl() {
 
   useEffect(() => { setDraft(saved); }, [saved]);
   useEffect(() => {
-    void loadLateRequests().then(setRequests);
-    void loadAudit(150).then(setAudit);
+    void loadLateRequests().then((r) => { setRequests(r); setRequestsLoaded(true); });
+    void loadAudit(150).then((a) => { setAudit(a); setAuditLoaded(true); });
     void fetchActivePlants<{ id: string; name: string }>('id, name').then((r) => setPlants(r.data || []));
   }, []);
 
@@ -262,8 +269,8 @@ export function AccessControl() {
               </tr>
             </thead>
             <tbody>
-              {requests.length === 0 && <tr><td colSpan={7} className="text-center text-slate-400 py-4">No late-entry requests.</td></tr>}
-              {requests.map((r) => (
+              {requests.length === 0 && <tr><td colSpan={7} className="text-center text-slate-400 py-4">{requestsLoaded ? 'No late-entry requests.' : '…'}</td></tr>}
+              {requestPage.map((r) => (
                 <tr key={r.id}>
                   <td className="text-xs font-bold">{new Date(r.created_at).toLocaleString('en-IN')}</td>
                   <td className="text-xs">{r.requested_by}<div className="text-slate-400">{r.requested_role}</div></td>
@@ -284,6 +291,7 @@ export function AccessControl() {
             </tbody>
           </table>
         </div>
+        {requests.length > 0 && <TablePaginationV2 controls={requestPager} label="requests" />}
       </section>
 
       {admin && (
@@ -456,8 +464,8 @@ export function AccessControl() {
           <table className="dt2">
             <thead><tr><th>When</th><th>Who</th><th>Module</th><th>What</th><th>Photo</th></tr></thead>
             <tbody>
-              {audit.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-4">No history yet.</td></tr>}
-              {audit.map((row) => (
+              {audit.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-4">{auditLoaded ? 'No history yet.' : '…'}</td></tr>}
+              {auditPage.map((row) => (
                 <tr key={row.id}>
                   <td className="text-xs font-bold whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN')}</td>
                   <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{row.actor_role}</div></td>
@@ -469,6 +477,7 @@ export function AccessControl() {
             </tbody>
           </table>
         </div>
+        {audit.length > 0 && <TablePaginationV2 controls={auditPager} label="entries" />}
       </section>
     </div>
   );
