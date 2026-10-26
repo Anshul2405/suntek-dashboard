@@ -16,8 +16,9 @@ import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
 import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
-import { StatCard, SectionCard, ButtonV2, SegmentTabs, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { Boxes, Wrench, Camera, Download, Upload, Plus } from 'lucide-react';
+import { StatCard, SectionCard, ButtonV2, SegmentTabs, TablePaginationV2, ThV2 as Th, FilterBar, FilterSelect } from '../../../components/v2';
+import { Boxes, Wrench, Camera, Download, Upload, Plus, Building2 } from 'lucide-react';
+import { useUrlFilters } from '../../../lib/urlFilters';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary';
 import * as XLSX from 'xlsx';
@@ -94,7 +95,7 @@ const IMPORT_CSV_COLUMNS: CsvColumn[] = [
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 type MaintTicketRow = Database['public']['Tables']['maintenance_tickets']['Row'] & { plants?: { name: string | null } | null };
 type MaintStoreReqRow = Database['public']['Tables']['maintenance_store_requests']['Row'];
-type MaintTicketLite = { ticket_no?: string | null } & Pick<MaintTicketRow, 'id' | 'equipment' | 'status' | 'created_at' | 'closed_at' | 'pm_bill_total' | 'pm_bill_url' | 'far_asset_id' | 'plants'>;
+type MaintTicketLite = { ticket_no?: string | null } & Pick<MaintTicketRow, 'id' | 'plant_id' | 'equipment' | 'status' | 'created_at' | 'closed_at' | 'pm_bill_total' | 'pm_bill_url' | 'far_asset_id' | 'plants'>;
 type MaintStoreReqLite = Pick<MaintStoreReqRow, 'ticket_id' | 'part_name' | 'quantity' | 'store_decision' | 'purchase_required' | 'total_price' | 'busy_transaction_ref'>;
 
 /** A single repair/maintenance done — the unit of the annual FAR cost register. */
@@ -115,6 +116,7 @@ interface MaintEntry {
   farAssetId: string | null;
   /** Human ticket number (STK0042) — never show the UUID. */
   ticketNo: string;
+  plantId: string | null;
 }
 
 /** Indian financial year (Apr–Mar) label for a date, e.g. "FY2025-26". */
@@ -312,9 +314,19 @@ export function FAR() {
   const [saved, setSaved] = useState(false);
   const [assets, setAssets] = useState<AssetRow[]>([]);
   const [expandedType, setExpandedType] = useState<string | null>(null);
-  const [equipSearch, setEquipSearch] = useState('');
-  const [equipPlantFilter, setEquipPlantFilter] = useState<string[]>([]); // empty = all plants (combined)
-  const [equipOpenTable, setEquipOpenTable] = useState(false);            // the big list is hidden until asked
+  // Filters live in the URL (q, plant, pic, rstatus, fy) — refresh / back= keep them.
+  const filters = useUrlFilters(['q', 'plant', 'pic', 'rstatus', 'fy'] as const);
+  const { q: equipSearch, plant: farPlant, pic: picFilter, rstatus: repairStatus, fy: fyParam } = filters.values;
+  const equipPlantFilter = useMemo(() => (farPlant ? [farPlant] : []), [farPlant]);
+  // The big list is hidden until asked. null = automatic: a register filter
+  // (search / photo) opens it — filtering a hidden list helps no one.
+  const [equipOpenTable, setEquipOpenTable] = useState<boolean | null>(null);
+  const registerOpen = equipOpenTable ?? (!!equipSearch || !!picFilter);
+  // Plant filter options: only factories this user can access.
+  const filterPlants = useMemo(
+    () => [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name)),
+    [allowedPlants, scopeReady],
+  );
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   // The ONE factory this FAR belongs to. Formerly a multi-select that
   // flat-mapped every parsed row across each chosen factory — "sharing" a FAR
@@ -328,7 +340,6 @@ export function FAR() {
   // Maintenance/repair cost register (annual, for insurance)
   const [maintEntries, setMaintEntries] = useState<MaintEntry[]>([]);
   const [maintLoading, setMaintLoading] = useState(true);
-  const [selectedFY, setSelectedFY] = useState<string | null>(null);
   const farMaintRef = useRef<HTMLDivElement>(null);
   const farRegisterRef = useRef<HTMLDivElement>(null);
   const [drillEntry, setDrillEntry] = useState<MaintEntry | null>(null);
@@ -392,7 +403,7 @@ export function FAR() {
   async function loadMaintCosts() {
     try {
       const { data: tickets } = await supabase.from('maintenance_tickets')
-        .select('id, ticket_no, equipment, status, created_at, closed_at, pm_bill_total, pm_bill_url, far_asset_id, plants(name)')
+        .select('id, ticket_no, plant_id, equipment, status, created_at, closed_at, pm_bill_total, pm_bill_url, far_asset_id, plants(name)')
         .eq('type', 'emergency')
         .order('created_at', { ascending: false }).returns<MaintTicketLite[]>();
       const ids = (tickets || []).map((tk) => tk.id);
@@ -417,6 +428,7 @@ export function FAR() {
           id: tk.id,
           equipment: tk.equipment,
           plant: tk.plants?.name || '—',
+          plantId: tk.plant_id ?? null,
           part: primary?.part_name || t('far.inHouseRepair', 'In-house repair'),
           cost,
           procuredQty,
@@ -530,9 +542,11 @@ export function FAR() {
     const q = equipSearch.trim().toLowerCase();
     let filtered = expandFarUnits(assets);
     if (equipPlantFilter.length) filtered = filtered.filter(a => a.plant_id && equipPlantFilter.includes(a.plant_id));
+    if (picFilter === 'missing') filtered = filtered.filter(a => !a.photo_url);
+    if (picFilter === 'has') filtered = filtered.filter(a => !!a.photo_url);
     if (q) filtered = filtered.filter(a => (a.name || '').toLowerCase().includes(q) || normMark(a.identification_mark).includes(normMark(q)) || (jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)).toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
     return groupAssetsByType(filtered);
-  }, [assets, equipSearch, equipPlantFilter, jobMap]);
+  }, [assets, equipSearch, equipPlantFilter, picFilter, jobMap]);
   const groupSort = useSortable(equipGroups, {
     type: g => g.type,
     count: g => g.count,
@@ -585,13 +599,18 @@ export function FAR() {
     () => [...new Set(farRelatedEntries.map(e => e.fy))].filter(fy => fy !== 'Unknown').sort().reverse(),
     [farRelatedEntries],
   );
-  useEffect(() => { if (!selectedFY && fyList.length) setSelectedFY(fyList[0]); }, [fyList, selectedFY]);
-  const activeFY = selectedFY || fyList[0] || null;
-  const fyEntries = useMemo(
-    () => farRelatedEntries.filter(e => e.fy === activeFY)
-      .sort((a, b) => (b.closed_at || b.created_at).localeCompare(a.closed_at || a.created_at)),
-    [farRelatedEntries, activeFY],
-  );
+  // fy=all spans every year (the Repair flagged KPI counts across years).
+  const activeFY = fyParam === 'all' ? 'all' : (fyParam && fyList.includes(fyParam) ? fyParam : fyList[0] || null);
+  const fyLabel = activeFY === 'all' ? t('far.allYears', 'All years') : activeFY;
+  const fyEntries = useMemo(() => {
+    const q = equipSearch.trim().toLowerCase();
+    return farRelatedEntries
+      .filter(e => (activeFY === 'all' || e.fy === activeFY)
+        && (!farPlant || e.plantId === farPlant)
+        && (!repairStatus || (repairStatus === 'open' ? e.status !== 'closed' : e.status === 'closed'))
+        && (!q || [e.equipment, e.part, e.ticketNo, e.plant].some(x => (x || '').toLowerCase().includes(q))))
+      .sort((a, b) => (b.closed_at || b.created_at).localeCompare(a.closed_at || a.created_at));
+  }, [farRelatedEntries, activeFY, farPlant, repairStatus, equipSearch]);
   const fyTotal = fyEntries.reduce((s, e) => s + e.cost, 0);
   const fyLastUpdated = fyEntries.reduce((mx, e) => { const d = e.closed_at || e.created_at; return d > mx ? d : mx; }, '');
 
@@ -604,8 +623,8 @@ export function FAR() {
     closed: e => new Date(e.closed_at || e.created_at),
     cost: e => e.cost,
   }, { key: 'closed', dir: 'desc' });
-  const groupPg = usePagination(groupSort.sorted, { resetKey: `${groupSort.sort.key}|${groupSort.sort.dir}` });
-  const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
+  const groupPg = usePagination(groupSort.sorted, { resetKey: `${equipSearch}|${farPlant}|${picFilter}|${groupSort.sort.key}|${groupSort.sort.dir}` });
+  const fyPg = usePagination(fySort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
 
   // ── Pic-proof coverage — % of registered assets with a photo on file ─────────
   const picCoverage = assets.length
@@ -809,7 +828,7 @@ export function FAR() {
               A hard-coded roster in help text goes stale silently. */}
           <KpiInfoButton info={{ title: 'Total Fixed Assets', what: 'Count of all capitalised fixed assets registered across the factories you have access to. Each asset is named and tracked in the FAR, and belongs to exactly one factory.', source: 'Form entry', formLabel: 'Add Asset form', formPath: '/dashboard/purchase/far', note: 'Live count from the Supabase fixed_assets table, scoped to your factories.' }} />
           <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading ? '…' : assets.length}
-            onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onView={() => { filters.only({}); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')}
             caption={loading ? '\u00a0' : plantsInFar.length === 0
               ? t('far.captionNoFactories', 'no assets registered yet')
@@ -820,17 +839,43 @@ export function FAR() {
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Assets Flagged for Repair', what: 'Count of fixed assets that have been flagged as requiring repair or maintenance and are awaiting resolution. High count = production downtime risk.', source: 'Derived', note: 'Open (not yet closed) emergency maintenance tickets from the maintenance workflow.' }} />
           <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={maintLoading ? '…' : farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
-            onView={() => farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onView={() => { filters.only({ rstatus: 'open', fy: 'all' }); farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRepairs', 'View FAR repairs')} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Pic-Proof Coverage', what: 'Percentage of registered assets that have a photo on file as proof of existence. Required for insurance claims and audits. Target 100%.', source: 'Derived', note: 'Assets with a photo on file ÷ total registered assets. 0% when the FAR is empty. Updates as photos are added or removed.' }} />
           <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading ? '…' : `${picCoverage}%`}
             caption={<div className="progress mt-1"><div style={{ width: `${picCoverage}%` }}></div></div>}
-            onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onView={() => { filters.only({ pic: 'missing' }); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')} />
         </div>
       </div>
+
+      {/* One bar for both lists: plant + search apply to repairs and the register;
+          repair status to the repairs; photo to the register. */}
+      <FilterBar
+        className="mb-4"
+        search={equipSearch} onSearch={(q) => filters.set({ q })}
+        searchPlaceholder={t('far.searchEquipPh', 'Search equipment type, mark or job no…')}
+        onReset={filters.reset}
+      >
+        {filterPlants.length > 1 && (
+          <FilterSelect icon={<Building2 />} value={farPlant || 'all'} onChange={(v) => filters.set({ plant: v === 'all' ? '' : v })}
+            options={[{ value: 'all', label: t('common.allPlants') }, ...filterPlants.map(p => ({ value: p.id, label: displayLocationName(p.name) }))]} />
+        )}
+        <FilterSelect icon={<Wrench />} value={repairStatus || 'all'} onChange={(v) => filters.set({ rstatus: v === 'all' ? '' : v })}
+          options={[
+            { value: 'all', label: t('far.allRepairs', 'All repairs') },
+            { value: 'open', label: t('far.awaitingClosure') },
+            { value: 'closed', label: t('far.repairsClosed', 'Closed repairs') },
+          ]} />
+        <FilterSelect icon={<Camera />} value={picFilter || 'all'} onChange={(v) => filters.set({ pic: v === 'all' ? '' : v })}
+          options={[
+            { value: 'all', label: t('far.allPhotos', 'Photo: all') },
+            { value: 'missing', label: t('far.photoMissing', 'No photo') },
+            { value: 'has', label: t('far.photoOnFile', 'Photo on file') },
+          ]} />
+      </FilterBar>
 
       {/* ── Maintenance & Repairs by Financial Year (FAR-linked only) ──────── */}
       <div ref={farMaintRef}>
@@ -848,14 +893,14 @@ export function FAR() {
         {/* Financial-year tabs */}
         {maintLoading ? null : fyList.length === 0
           ? <span className="text-xs text-slate-400 block mb-4">{t('far.noMaintRecorded')}</span>
-          : <SegmentTabs className="mb-4" items={fyList.map(fy => ({ key: fy, label: fy }))} value={activeFY ?? fyList[0]} onChange={setSelectedFY} />}
+          : <SegmentTabs className="mb-4" items={[...fyList.map(fy => ({ key: fy, label: fy })), { key: 'all', label: t('far.allYears', 'All years') }]} value={activeFY ?? fyList[0]} onChange={(fy) => filters.set({ fy })} />}
 
         {activeFY && (
           <>
             {/* Aggregate row */}
             <div className="grid grid-cols-12 gap-4 mb-4">
               <div className="col-span-12 sm:col-span-4 rounded-xl border border-slate-100 p-4" style={{ background: '#F8FAFC' }}>
-                <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('far.repairCost')} · {activeFY}</div>
+                <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('far.repairCost')} · {fyLabel}</div>
                 <div className="text-[24px] font-extrabold mt-1 num text-slate-800">{inr(fyTotal)}</div>
               </div>
               <div className="col-span-6 sm:col-span-4 rounded-xl border border-slate-100 p-4" style={{ background: '#F8FAFC' }}>
@@ -875,7 +920,7 @@ export function FAR() {
                 </thead>
                 <tbody>
                   {fyEntries.length === 0 && (
-                    <tr><td colSpan={6} className="text-center text-slate-400 py-6 text-sm">{t('far.noMaintInFy', { fy: activeFY })}</td></tr>
+                    <tr><td colSpan={6} className="text-center text-slate-400 py-6 text-sm">{(farPlant || repairStatus || equipSearch) ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('far.noMaintInFy', { fy: fyLabel })}</td></tr>
                   )}
                   {fyPg.pageRows.map(e => (
                     <tr key={e.id} onClick={() => setDrillEntry(e)} style={{ cursor: 'pointer' }}>
@@ -889,7 +934,7 @@ export function FAR() {
                   ))}
                   {fyEntries.length > 0 && (
                     <tr style={{ borderTop: '2px solid #E2E8F0' }}>
-                      <td colSpan={5} className="font-bold text-right pr-4">{t('far.total')} · {activeFY}</td>
+                      <td colSpan={5} className="font-bold text-right pr-4">{t('far.total')} · {fyLabel}</td>
                       <td className="num font-extrabold text-slate-800">{inr(fyTotal)}</td>
                     </tr>
                   )}
@@ -1042,12 +1087,12 @@ export function FAR() {
                     whose assets they are looking at. */}
                 {activePlantLabel && <span> · <strong>{activePlantLabel}</strong></span>}
               </div>
-              <button onClick={() => setEquipOpenTable(o => !o)} className="text-sm font-semibold text-slate-700 hover:text-slate-900" style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
-                {equipOpenTable ? `${t('far.hideRegister', 'Hide register')} ▴` : `${t('far.showRegister', 'Show register')} ▾`}
+              <button onClick={() => setEquipOpenTable(!registerOpen)} className="text-sm font-semibold text-slate-700 hover:text-slate-900" style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                {registerOpen ? `${t('far.hideRegister', 'Hide register')} ▴` : `${t('far.showRegister', 'Show register')} ▾`}
               </button>
             </div>
 
-            {equipOpenTable && (
+            {registerOpen && (
               <div style={{ marginTop: 14 }}>
                 {/* The factory control is ALWAYS present — never hidden because
                     only one option exists. With a single factory it is a plain
@@ -1063,27 +1108,7 @@ export function FAR() {
                     )}
                   </div>
                 )}
-                {plantChips.length > 1 && (
-                  <div className="flex gap-2 mb-3 flex-wrap">
-                    <button onClick={() => setEquipPlantFilter([])} className={`chip${equipPlantFilter.length === 0 ? ' active' : ''}`}>{t('common.allPlants')}</button>
-                    {plantChips.map(p => (
-                      <button
-                        key={p.id}
-                        onClick={() => setEquipPlantFilter(f => f.includes(p.id) ? f.filter(x => x !== p.id) : [...f, p.id])}
-                        className={`chip${equipPlantFilter.includes(p.id) ? ' active' : ''}`}
-                        // A factory with no assets yet stays selectable — picking
-                        // it is how you confirm the register really is empty
-                        // rather than filtered — but is dimmed so the gap shows.
-                        style={p.hasData ? undefined : { opacity: 0.55 }}
-                        title={p.hasData ? undefined : t('far.plantNoAssets', 'no assets imported yet')}
-                      >
-                        {p.name}{p.hasData ? '' : ' ·'}
-                      </button>
-                    ))}
-                    {equipPlantFilter.length > 1 && <span style={{ fontSize: 11, color: '#94A3B8', alignSelf: 'center' }}>{t('far.combined', 'combined')}</span>}
-                  </div>
-                )}
-                <input value={equipSearch} onChange={e => setEquipSearch(e.target.value)} placeholder={t('far.searchEquipPh', 'Search equipment type, mark or job no…')} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 12px', fontSize: 13, marginBottom: 10, outline: 'none', background: '#fff' }} />
+                {/* Plant + search for the register are in the filter bar above. */}
                 <div className="overflow-x-auto scroll-x" style={{ maxHeight: 460 }}>
                   <table className="dt2">
                     <thead>
@@ -1095,7 +1120,7 @@ export function FAR() {
                       </tr>
                     </thead>
                     <tbody>
-                      {groupSort.sorted.length === 0 && <tr><td colSpan={9} className="text-center text-slate-400 py-6 text-sm">{assets.length === 0 ? t('far.noAssetsYet') : t('far.noEquipmentMatches', 'No equipment matches.')}</td></tr>}
+                      {groupSort.sorted.length === 0 && <tr><td colSpan={9} className="text-center text-slate-400 py-6 text-sm">{assets.length === 0 ? t('far.noAssetsYet') : t('common.noRowsMatchFilters', 'No rows match these filters')}</td></tr>}
                       {groupPg.pageRows.map(g => {
                         const open = expandedType === g.type;
                         const make = repVal(g.assets.map(a => a.make));
