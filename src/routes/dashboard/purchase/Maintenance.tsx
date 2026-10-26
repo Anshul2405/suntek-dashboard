@@ -1208,10 +1208,18 @@ export function Maintenance() {
     const extra = rows.length > 3 ? ` +${rows.length - 3}` : '';
     return names.length ? `${names.join(', ')}${extra} · ${dueScopeLabel}` : dueScopeLabel;
   };
+  // Emergency KPI "See …" links filter to exactly the statuses each card counts.
+  const grpMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const emergencyGroups: Record<string, { label: string; match: (tk: TicketRow) => boolean }> = {
+    'grp:open':       { label: t('maint.openTickets'), match: tk => tk.status !== 'closed' },
+    'grp:store':      { label: t('maint.pendingStoreApproval'), match: tk => ['pending_store', 'pending_unit_head'].includes(tk.status) },
+    'grp:purchase':   { label: t('maint.purchaseHandover'), match: tk => ['pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(tk.status) },
+    'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && tk.closed_at >= grpMonthStart },
+  };
   const fltEmergency = emergencyTickets.filter(t =>
     matchQ(...ticketSearchHaystack(t))
     && (fltPlant === 'all' || t.plant_id === fltPlant)
-    && (fltStatus === 'all' || t.status === fltStatus));
+    && (fltStatus === 'all' || (emergencyGroups[fltStatus] ? emergencyGroups[fltStatus].match(t) : t.status === fltStatus)));
   const plantFilterOptions = [
     { value: 'all', label: t('common.allPlants') },
     ...plantOptions.map(p => ({ value: p.id, label: displayLocationName(p.name) })),
@@ -1226,6 +1234,7 @@ export function Maintenance() {
       ]
     : [
         { value: 'all', label: t('common.allStatus') },
+        ...Object.entries(emergencyGroups).map(([value, g]) => ({ value, label: g.label })),
         ...[...new Set(emergencyTickets.map(tk => tk.status))].map(s => ({ value: s, label: statusLabel(s) })),
       ];
 
@@ -3722,20 +3731,20 @@ export function Maintenance() {
             <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
               label={t('maint.openTickets')} value={loading ? '…' : openEmergency}
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
-              onView={() => setFltStatus('all')}
+              onView={() => setFltStatus('grp:open')}
               viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
               label={t('maint.pendingStoreApproval')} value={loading ? '…' : pendingStore}
-              onView={() => setFltStatus('pending_store')}
+              onView={() => setFltStatus('grp:store')}
               viewLabel={t('maint.viewPendingStore', 'See store queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
               label={t('maint.purchaseHandover')} value={loading ? '…' : pendingPurchase}
-              onView={() => setFltStatus('pending_purchase')}
+              onView={() => setFltStatus('grp:purchase')}
               viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.closedMtd')} value={loading ? '…' : closedMTD}
               caption={t('maint.completedThisMonth')}
-              onView={() => setFltStatus('closed')}
+              onView={() => setFltStatus('grp:closed_mtd')}
               viewLabel={t('maint.viewClosed', 'See closed')} />
           </div>
 
