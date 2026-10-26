@@ -14,6 +14,7 @@ import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../../components/v2';
+import { formatDate } from '../../../lib/utils/formatting';
 
 type Panel = 'topup' | 'ledger' | null;
 type LedgerRow = Database['public']['Tables']['marine_insurance']['Row'];
@@ -182,7 +183,7 @@ export function MarineInsurance() {
               <tbody>
                 {pagedLedger.map((l, i) => (
                   <tr key={l.id || i}>
-                    <td className="text-slate-500">{l.date}</td>
+                    <td className="text-slate-500">{formatDate(l.date)}</td>
                     <td>
                       {l.type === 'top_up'
                         ? <span className="badge" style={{ background: '#DCFCE7', color: '#16A34A' }}>{t('marine.badgeTopUp')}</span>
@@ -304,7 +305,7 @@ export function MarineInsurance() {
               }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{l.reference || '—'}</div>
-                <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>{l.date}</div>
+                <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>{formatDate(l.date)}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: l.amount > 0 ? '#16A34A' : '#DC2626' }}>

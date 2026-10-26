@@ -8,6 +8,7 @@ import { useMentionNotifier } from '../../lib/mentions';
 import { useBlacklistGuard } from '../../lib/blacklist/guard';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { formatDateTime } from '../../lib/utils/formatting';
 
 // ── Geofence fallback ────────────────────────────────────────────────────────
 // Used ONLY when the signed-in user's factories carry no coordinates yet.
@@ -579,7 +580,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
               <div className="text-xs text-slate-500 mb-1">{t('checkin.timestamp')}</div>
               <div className="font-medium font-mono text-sm">
-                {gpsData ? gpsData.timestamp.toLocaleString('en-IN') : '--:--:--'}
+                {gpsData ? formatDateTime(gpsData.timestamp) : '--:--:--'}
               </div>
             </div>
 

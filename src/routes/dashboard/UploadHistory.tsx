@@ -46,11 +46,12 @@ import {
   describeDeleteError, type ImportBatchRow, type BatchPreview,
 } from '../../lib/imports/batches';
 import type { Database } from '../../lib/database.types';
+import { formatDate, formatDateTime } from '../../lib/utils/formatting';
 
 type DeletionRow = Database['public']['Tables']['import_batch_deletions']['Row'];
 
-const fmtDT = (d: string | null | undefined) => (d ? new Date(d).toLocaleString('en-IN') : '—');
-const fmtD = (d: string | null | undefined) => (d ? new Date(d).toLocaleDateString('en-IN') : '—');
+const fmtDT = (d: string | null | undefined) => formatDateTime(d);
+const fmtD = (d: string | null | undefined) => formatDate(d);
 
 const AUDIT_COLUMNS: CsvColumn[] = [
   { header: 'Deleted at', key: 'deleted_at' },
@@ -517,7 +518,7 @@ export function UploadHistory() {
               onClick={() => exportToCsv('upload-deletion-audit',
                 AUDIT_COLUMNS,
                 deletions.map(d => ({ ...d, module: moduleLabel(d.module), forced: d.forced ? 'YES' : 'no' })) as unknown as Record<string, unknown>[],
-                [['Suntek — Upload deletion audit'], ['Generated at', new Date().toLocaleString('en-IN')]])}
+                [['Suntek — Upload deletion audit'], ['Generated at', formatDateTime(new Date())]])}
             >
               {t('common.export', 'Export')}
             </ButtonV2>

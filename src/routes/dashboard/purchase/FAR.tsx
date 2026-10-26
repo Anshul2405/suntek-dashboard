@@ -643,7 +643,7 @@ export function FAR() {
       ['Financial year', activeFY],
       ['Total maintenance cost (insurance deduction)', inr(fyTotal)],
       ['Entries', fyEntries.length],
-      ['Generated at', new Date().toLocaleString('en-IN')],
+      ['Generated at', formatDateTime(new Date())],
     ];
     exportToCsv(`maintenance-register-${activeFY}`, MAINT_CSV_COLUMNS, rows, preamble);
   }
@@ -761,7 +761,7 @@ export function FAR() {
       ['Source file', importFileName],
       ['Cloud copy', cloudUrl || '—'],
       ['Rows', parsedRows.length],
-      ['Generated at', new Date().toLocaleString('en-IN')],
+      ['Generated at', formatDateTime(new Date())],
     ]);
   }
 

@@ -10,6 +10,7 @@ import { displayLocationName } from '../../lib/plantLabels';
 import { useToast } from '../../components/ui/toast';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
+import { formatDate, formatDateTime } from '../../lib/utils/formatting';
 
 const PHOTOS: { key: PhotoKey; label: string }[] = [
   { key: 'heat', label: 'Heat sample' },
@@ -140,7 +141,7 @@ export function AccessControl() {
           </label>
           <div className="text-sm">
             <div className="text-[11px] uppercase text-slate-400 font-bold">Last backup</div>
-            <div className="font-bold">{draft.backupLastAt ? new Date(draft.backupLastAt).toLocaleString('en-IN') : 'Never'}</div>
+            <div className="font-bold">{draft.backupLastAt ? formatDateTime(draft.backupLastAt) : 'Never'}</div>
             {due && <div className="text-xs font-bold text-red-600">A backup is due.</div>}
           </div>
           {admin && (
@@ -272,10 +273,10 @@ export function AccessControl() {
               {requests.length === 0 && <tr><td colSpan={7} className="text-center text-slate-400 py-4">{requestsLoaded ? 'No late-entry requests.' : '…'}</td></tr>}
               {requestPage.map((r) => (
                 <tr key={r.id}>
-                  <td className="text-xs font-bold">{new Date(r.created_at).toLocaleString('en-IN')}</td>
+                  <td className="text-xs font-bold">{formatDateTime(r.created_at)}</td>
                   <td className="text-xs">{r.requested_by}<div className="text-slate-400">{r.requested_role}</div></td>
                   <td className="text-xs">{r.module}</td>
-                  <td className="text-xs font-bold">{r.entry_date || '—'}</td>
+                  <td className="text-xs font-bold">{formatDate(r.entry_date)}</td>
                   <td className="text-xs">{r.reason}</td>
                   <td className="text-xs font-bold">{r.status}</td>
                   <td>
@@ -467,7 +468,7 @@ export function AccessControl() {
               {audit.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-4">{auditLoaded ? 'No history yet.' : '…'}</td></tr>}
               {auditPage.map((row) => (
                 <tr key={row.id}>
-                  <td className="text-xs font-bold whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN')}</td>
+                  <td className="text-xs font-bold whitespace-nowrap">{formatDateTime(row.created_at)}</td>
                   <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{row.actor_role}</div></td>
                   <td className="text-xs">{row.module}</td>
                   <td className="text-xs">{row.summary}</td>

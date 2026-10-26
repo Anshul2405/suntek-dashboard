@@ -13,6 +13,7 @@ import { MetricExplorer } from '../../components/anomaly/MetricExplorer';
 import { AnomalyAnalyticsGrid } from '../../components/anomaly/AnomalyAnalyticsGrid';
 import { LEVEL_LABEL, LEVEL_ORDER } from '../../lib/anomaly/levels';
 import type { AnomalyFinding, Level } from '../../lib/anomaly/types';
+import { formatDate } from '../../lib/utils/formatting';
 
 /** Severity tier → icon (mild → extreme). */
 const TIER_ICON: Record<Level, React.ReactNode> = {
@@ -57,7 +58,7 @@ export function AnomalyDashboard() {
             <Activity size={18} />
           </span>
           <div className="text-[13px] text-slate-500">
-            {t('anomaly.scanSubtitle')} · {scan?.anchor_date ? t('anomaly.dataThrough', { date: new Date(scan.anchor_date).toLocaleDateString('en-IN') }) : '—'}
+            {t('anomaly.scanSubtitle')} · {scan?.anchor_date ? t('anomaly.dataThrough', { date: formatDate(scan.anchor_date) }) : '—'}
             {scan?._fallback && <span className="text-amber-600"> · {t('anomaly.cached')}</span>}
           </div>
         </div>

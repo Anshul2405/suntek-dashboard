@@ -11,6 +11,7 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import type { Database } from '../../../lib/database.types';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../../components/v2';
+import { formatDate } from '../../../lib/utils/formatting';
 
 type LabourRow = Database['public']['Tables']['labour_costs']['Row'] & { plants?: { name: string | null } | null };
 
@@ -147,7 +148,7 @@ export function Labour() {
                   return (
                     <tr key={c.id} style={{ cursor: 'pointer' }}>
                       <td className="font-semibold">{c.plants?.name || '—'}</td>
-                      <td className="text-slate-500 text-xs">{c.date}</td>
+                      <td className="text-slate-500 text-xs">{formatDate(c.date)}</td>
                       <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
                       <td className="num text-slate-500">{c.sales_qty ?? '—'}</td>
                       <td className="num font-bold">₹ {(c.computed_cost || 0).toLocaleString('en-IN')}</td>
