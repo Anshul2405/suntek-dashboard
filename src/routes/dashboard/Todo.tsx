@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { hereForBack, withBack } from '../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import {
   ClipboardCheck, Receipt, Package, Wrench, Undo2, CalendarClock,
@@ -86,6 +87,7 @@ function Cell({ value }: { value: TodoCell }) {
 
 export function Todo() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { t } = useTranslation();
   const { sections, totalCount, ready, refresh } = useTodo();
   const { activeProfile } = useRoleContext();
@@ -289,7 +291,8 @@ export function Todo() {
                       {pageItems.map((it) => (
                         <tr
                           key={it.id}
-                          onClick={() => navigate(it.route)}
+                          // Items that open a ticket / requisition return here on close.
+                          onClick={() => navigate(it.route.startsWith('/dashboard/purchase/') ? withBack(it.route, hereForBack(location)) : it.route)}
                           className="hover:bg-slate-50"
                           style={{ cursor: 'pointer', borderBottom: '1px solid #F8FAFC' }}
                         >

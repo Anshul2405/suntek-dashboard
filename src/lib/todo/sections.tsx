@@ -232,7 +232,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         const plant = ctx.plantName(r.plant_id);
         items.push({
           id: `sr_${r.id}`,
-          route: '/dashboard/purchase/storereq',
+          route: `/dashboard/purchase/storereq?queue=pending&req=${r.id}`,
           title: r.item,
           sortDate: r.created_at ?? undefined,
           cells: {

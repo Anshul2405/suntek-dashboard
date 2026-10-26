@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { displayLocationName, locationInPlants } from '../../lib/plantLabels';
 import { VoiceSearch } from '../../components/search/VoiceSearch';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { hereForBack, withBack } from '../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -110,6 +111,7 @@ const fmtDT = (d: string | null) => formatDateTime(d);
 
 export function Overview() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { t } = useTranslation();
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [moveFilter, setMoveFilter] = useState('all');
@@ -461,7 +463,7 @@ export function Overview() {
                 <tr><td colSpan={7} className="text-center text-slate-400 py-6">…</td></tr>
               )}
               {shownPending.map(r => (
-                <tr key={r.id} onClick={() => navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`)} style={{ cursor: 'pointer' }}>
+                <tr key={r.id} onClick={() => navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereForBack(location)))} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
                       <Package size={13} className="text-slate-400" /> {t('overview.storeReq', 'Store Requisition')}
@@ -478,7 +480,7 @@ export function Overview() {
                       <ButtonV2
                         size="sm" variant="outline"
                         className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
-                        onClick={(e) => { e.stopPropagation(); navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`); }}
+                        onClick={(e) => { e.stopPropagation(); navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereForBack(location))); }}
                       >
                         {t('overview.review', 'Review')}
                       </ButtonV2>
