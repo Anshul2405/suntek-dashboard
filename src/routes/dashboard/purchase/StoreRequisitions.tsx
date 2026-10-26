@@ -127,16 +127,8 @@ export function StoreRequisitions() {
     else setDetailReq(r);
   }
 
-  // Deep link from Overview's Pending approvals (?req=<id>): open that request once loaded.
-  const reqParam = searchParams.get('req');
+  // Deep link from Overview's Pending approvals (?req=<id>): opened once, after the first load.
   const openedReqParam = useRef<string | null>(null);
-  useEffect(() => {
-    if (!reqParam || openedReqParam.current === reqParam) return;
-    const r = items.find(x => x.id === reqParam);
-    if (!r) return;
-    openedReqParam.current = reqParam;
-    openRow(r);
-  }, [reqParam, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const queuePending = searchParams.get('queue') === 'pending';
   const listed = useMemo(() => {
@@ -175,6 +167,9 @@ export function StoreRequisitions() {
       if (error) throw error;
       setItems(data || []);
       setLoadError(false);
+      const reqParam = searchParams.get('req');
+      const linked = reqParam && openedReqParam.current !== reqParam ? (data || []).find(x => x.id === reqParam) : undefined;
+      if (linked) { openedReqParam.current = reqParam; openRow(linked); }
     } catch (err) {
       console.error('[StoreRequisitions] load failed', err);
       setLoadError(true);

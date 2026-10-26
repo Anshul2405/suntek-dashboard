@@ -27,7 +27,7 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { groupAssetsByType, expandFarUnits, normMark, matchAsset } from '../../../lib/far/assets';
 import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
 import { ticketNoLabel } from '../../../lib/ticketNo';
-import { statusText } from './maintenance/shared';
+import { statusText } from './maintenance/statusText';
 import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import type { Database } from '../../../lib/database.types';
