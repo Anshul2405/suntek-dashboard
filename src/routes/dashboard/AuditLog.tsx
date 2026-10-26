@@ -100,10 +100,10 @@ export function AuditLog() {
       {/* KPI row */}
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 md:col-span-4" icon={<Activity />}
-          label={t('audit.totalActivities')} value={logs.length}
+          label={t('audit.totalActivities')} value={loading ? '…' : logs.length}
           caption={t('audit.totalActivitiesSub')} />
         <StatCard className="col-span-12 md:col-span-4" icon={<Users />} tone="blue" valueTone="blue"
-          label={t('audit.activeSessions')} value={activeSessionsCount}
+          label={t('audit.activeSessions')} value={loading ? '…' : activeSessionsCount}
           caption={t('audit.activeSessionsSub')} />
         <StatCard className="col-span-12 md:col-span-4" icon={<Globe />}
           label={t('audit.clientIp')}

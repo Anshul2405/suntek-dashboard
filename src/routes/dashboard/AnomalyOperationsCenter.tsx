@@ -145,15 +145,15 @@ export function AnomalyOperationsCenter() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red"
           valueTone={counts.critical > 0 ? 'red' : 'default'}
-          label={t('anomalyCenter.sev_critical')} value={counts.critical} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_critical')} value={isLoading ? '…' : counts.critical} caption={t('anomalyCenter.open_flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertCircle />} tone="amber"
           valueTone={counts.warning > 0 ? 'amber' : 'default'}
-          label={t('anomalyCenter.sev_warning')} value={counts.warning} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_warning')} value={isLoading ? '…' : counts.warning} caption={t('anomalyCenter.open_flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Eye />} tone="blue"
           valueTone={counts.watch > 0 ? 'blue' : 'default'}
-          label={t('anomalyCenter.sev_watch')} value={counts.watch} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_watch')} value={isLoading ? '…' : counts.watch} caption={t('anomalyCenter.open_flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green" valueTone="green"
-          label={t('anomalyCenter.resolved_dismissed')} value={counts.resolved} caption={t('anomalyCenter.cleared_total')} />
+          label={t('anomalyCenter.resolved_dismissed')} value={isLoading ? '…' : counts.resolved} caption={t('anomalyCenter.cleared_total')} />
       </div>
 
       {/* Status view switch */}
