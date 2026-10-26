@@ -5,7 +5,11 @@ import { useTranslation } from 'react-i18next';
 import { FileSpreadsheet, FileText, Plus } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
-import { formatDateTime } from '../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
+import { useUrlFilters } from '../../lib/urlFilters';
+import { plantsForPicker } from '../../lib/access/pickerPlants';
+import { DateRangeFilter, FilterBar, FilterSelect } from '../../components/v2';
+import { Building2, FlaskConical, Layers } from 'lucide-react';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
@@ -17,7 +21,8 @@ import { printTds } from '../../lib/batch/printDocs';
 import type { CoaResultMap } from '../../lib/batch/printDocs';
 import type { TdsFamily } from '../../lib/batch/tdsCatalog';
 import { CoaEntryPanel, type CoaSheetTarget } from '../../components/batch/CoaEntryPanel';
-import { TableSearch, useTextFilter } from '../../components/ui/TableSearch';
+import { useTextFilter } from '../../components/ui/TableSearch';
+import { displayLocationName } from '../../lib/plantLabels';
 
 interface ProductionSheetRow {
   id: string;
@@ -104,7 +109,7 @@ export function BatchSheet() {
   const seeSheetPhoto = canViewPhoto(ops, activeProfile, 'sheet');
   const seeBucketPhoto = canViewPhoto(ops, activeProfile, 'bucket');
   const seeHeatPhoto = canViewPhoto(ops, activeProfile, 'heat');
-  const { scopeQuery, allowedPlants, isGlobal, ready: scopeReady, inScope } = usePlantScope();
+  const { scopeQuery, allowedPlants, ready: scopeReady, inScope } = usePlantScope();
   const role = activeProfile.id;
   const canCreateSheet = canViewBatchFacet(activeProfile, 'sheet');
   const isFactoryAccountant = role === 'accountant_delhi' || role === 'accountant_other'
@@ -121,37 +126,33 @@ export function BatchSheet() {
   const [sheetsLoaded, setSheetsLoaded] = useState(false);
   const [coaTarget, setCoaTarget] = useState<CoaSheetTarget | null>(null);
   const [detailRow, setDetailRow] = useState<ProductionSheetRow | null>(null);
-  const [plantFilter, setPlantFilter] = useState('');
-  const [search, setSearch] = useState('');
   const highlightBatchNo = searchParams.get('highlight');
+  // Filters live in the URL so a refresh / back= restores them; Reset clears all.
+  const filters = useUrlFilters(['q', 'plant', 'reactor', 'grade', 'from', 'to'] as const);
+  const { q: search, plant: plantFilter, reactor: reactorFilter, grade: gradeFilter, from: fromDate, to: toDate } = filters.values;
 
-  const plantOptions = useMemo(() => {
-    // Prefer the scope plant list so Admin "All plants" / a selected plant is not
-    // limited to whatever happened to land in a truncated fetch.
-    if (allowedPlants.length > 0) {
-      return allowedPlants.map((p) => p.name).sort((a, b) => a.localeCompare(b));
-    }
-    const names = new Set<string>();
-    for (const row of prodSheets) {
-      const n = row.plants?.name?.trim();
-      if (n) names.add(n);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, [allowedPlants, prodSheets]);
+  // Only factories this user can access — never the full list as a fallback.
+  const plantOptions = useMemo(
+    () => [...plantsForPicker(allowedPlants, scopeReady)].sort((a, b) => a.name.localeCompare(b.name)),
+    [allowedPlants, scopeReady],
+  );
+  const reactorOf = (r: ProductionSheetRow) => (r.reactors?.code || r.reactors?.name || '').trim();
+  const reactorOptions = useMemo(
+    () => [...new Set(prodSheets.map(reactorOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    [prodSheets],
+  );
+  const gradeOptions = useMemo(
+    () => [...new Set(prodSheets.map(r => (r.oil_grade || '').trim()).filter(Boolean))].sort(),
+    [prodSheets],
+  );
 
-  const showPlantFilter = isGlobal ? plantOptions.length > 1 : allowedPlants.length > 1;
-
-  useEffect(() => {
-    if (!isGlobal && allowedPlants.length === 1) {
-      setPlantFilter(allowedPlants[0].name);
-    }
-  }, [isGlobal, allowedPlants]);
-
-  const plantFilteredSheets = useMemo(() => {
-    if (!plantFilter) return prodSheets;
-    return prodSheets.filter((r) => r.plants?.name === plantFilter);
-  }, [prodSheets, plantFilter]);
-  const filteredSheets = useTextFilter(plantFilteredSheets, search, r => [
+  const facetFilteredSheets = useMemo(() => prodSheets.filter((r) =>
+    (!plantFilter || r.plant_id === plantFilter)
+    && (!reactorFilter || reactorOf(r) === reactorFilter)
+    && (!gradeFilter || (r.oil_grade || '').trim() === gradeFilter)
+    && inIstDayRange(r.created_at, fromDate, toDate),
+  ), [prodSheets, plantFilter, reactorFilter, gradeFilter, fromDate, toDate]);
+  const filteredSheets = useTextFilter(facetFilteredSheets, search, r => [
     r.batch_no,
     r.plants?.name,
     r.reactors?.code,
@@ -337,39 +338,28 @@ export function BatchSheet() {
             )}
           </div>
         </div>
-        <div className="flex items-end gap-3 mb-3 flex-wrap">
-          {showPlantFilter && (
-            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-              <span>{t('common.plant', 'Plant')}</span>
-              <select
-                value={plantFilter}
-                onChange={(e) => setPlantFilter(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 min-w-[200px] cursor-pointer"
-              >
-                {isGlobal && <option value="">{t('batchProd.allPlants', 'All plants')}</option>}
-                {plantOptions.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </label>
+        <FilterBar
+          className="mb-3 !p-0 !border-0 !shadow-none !bg-transparent"
+          search={search}
+          onSearch={(q) => filters.set({ q })}
+          searchPlaceholder={t('batchProd.searchPh', 'Search batch no, plant, reactor, grade, or name…')}
+          onReset={filters.reset}
+        >
+          {plantOptions.length > 1 && (
+            <FilterSelect icon={<Building2 />} value={plantFilter || 'all'} onChange={(v) => filters.set({ plant: v === 'all' ? '' : v })}
+              options={[{ value: 'all', label: t('common.allPlants') }, ...plantOptions.map(p => ({ value: p.id, label: displayLocationName(p.name) }))]} />
           )}
-          <div className="flex-1 min-w-[220px]">
-            <TableSearch
-              value={search}
-              onChange={setSearch}
-              placeholder={t('batchProd.searchPh', 'Search batch no, plant, reactor, grade, or name…')}
-              style={{ marginBottom: 0 }}
-            />
+          <FilterSelect icon={<FlaskConical />} value={reactorFilter || 'all'} onChange={(v) => filters.set({ reactor: v === 'all' ? '' : v })}
+            options={[{ value: 'all', label: t('common.allReactors', 'All reactors') }, ...reactorOptions.map(r => ({ value: r, label: r }))]} />
+          <FilterSelect icon={<Layers />} value={gradeFilter || 'all'} onChange={(v) => filters.set({ grade: v === 'all' ? '' : v })}
+            options={[{ value: 'all', label: t('common.allGrades', 'All grades') }, ...gradeOptions.map(g => ({ value: g, label: g }))]} />
+          <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => filters.set({ from, to })} />
+        </FilterBar>
+        {filters.active && sheetsLoaded && (
+          <div className="text-[11px] text-slate-500 mb-2">
+            {t('batchProd.plantFilterCount', { defaultValue: '{{count}} sheet(s)', count: filteredSheets.length })}
           </div>
-          {(plantFilter || search.trim()) && (
-            <span className="text-[11px] text-slate-500 pb-2">
-              {t('batchProd.plantFilterCount', {
-                defaultValue: '{{count}} sheet(s)',
-                count: filteredSheets.length,
-              })}
-            </span>
-          )}
-        </div>
+        )}
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
             <thead>
@@ -410,15 +400,10 @@ export function BatchSheet() {
                   </td>
                 </tr>
               )}
-              {prodSheets.length > 0 && filteredSheets.length === 0 && (
+              {sheetsLoaded && prodSheets.length > 0 && filteredSheets.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-10 px-4 text-sm text-slate-500">
-                    {search.trim()
-                      ? t('batchProd.noSearchMatch', 'No batch sheets match that search.')
-                      : t('batchProd.noPlantSheets', {
-                          defaultValue: 'No batch sheets for {{plant}}.',
-                          plant: plantFilter,
-                        })}
+                    {t('common.noRowsMatchFilters', 'No rows match these filters')}
                   </td>
                 </tr>
               )}
