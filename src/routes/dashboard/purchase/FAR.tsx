@@ -1278,8 +1278,8 @@ export function FAR() {
                 onClick={() => { const a = assetMaint.asset; setAssetMaint(null); raiseTicketForAsset(a); }}
                 style={{ display: 'block', width: '100%', marginTop: 8, fontSize: 13, fontWeight: 700, color: '#fff', background: '#0A1628', border: 'none', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
               >{t('far.raiseTicket', 'Raise ticket')}</button>
-              {/* Emergency list filtered to this asset — client-side nav, not a full reload. */}
-              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?tab=emergency&q=${encodeURIComponent(assetMaint.asset.identification_mark || assetMaint.asset.name)}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
+              {/* Emergency list filtered to this asset. back= returns to FAR on close. */}
+              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?tab=emergency&q=${encodeURIComponent(assetMaint.asset.identification_mark || assetMaint.asset.name)}&${backHere()}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}
