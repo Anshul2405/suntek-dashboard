@@ -12,6 +12,8 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
+import { usePagination } from '../../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../../components/v2';
 
 type Panel = 'topup' | 'ledger' | null;
 type LedgerRow = Database['public']['Tables']['marine_insurance']['Row'];
@@ -93,6 +95,8 @@ export function MarineInsurance() {
   const ledgerList = ledger.filter(l =>
     ledgerFilter === 'all' ? true : ledgerFilter === 'top-up' ? l.type === 'top_up' : l.type === 'deduction'
   );
+  // Full-ledger panel pages too; switching top-ups / deductions goes back to page 1.
+  const { pageRows: ledgerListPage, controls: ledgerListPager } = usePagination(ledgerList, { resetKey: ledgerFilter });
 
   const lSort = useSortable(ledger, {
     date:      l => new Date(l.date),
@@ -101,6 +105,8 @@ export function MarineInsurance() {
     amount:    l => l.amount,
     balance:   l => l.balance,
   }, { key: 'date', dir: 'desc' });
+  // Paged — this list grows with use; page 1 again when the rows change.
+  const { pageRows: pagedLedger, controls: ledgerPager } = usePagination(lSort.sorted, { resetKey: `ledger|${lSort.sort.key}|${lSort.sort.dir}` });
 
   return (
     <>
@@ -164,37 +170,40 @@ export function MarineInsurance() {
         ) : loading ? (
           <SkeletonRows rows={6} />
         ) : (
-        <div className="overflow-x-auto scroll-x">
-          <table className="dt2">
-            <thead>
-              <tr>
-                <Th sortKey="date" s={lSort} firstDir="desc">{t('marine.colDate')}</Th><Th sortKey="type" s={lSort}>{t('marine.colType')}</Th><Th sortKey="reference" s={lSort}>{t('marine.colReference')}</Th>
-                <Th sortKey="amount" s={lSort} firstDir="desc" className="num">{t('marine.colAmount')}</Th><Th sortKey="balance" s={lSort} firstDir="desc" className="num">{t('marine.colBalance')}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {lSort.sorted.map((l, i) => (
-                <tr key={l.id || i}>
-                  <td className="text-slate-500">{l.date}</td>
-                  <td>
-                    {l.type === 'top_up'
-                      ? <span className="badge" style={{ background: '#DCFCE7', color: '#16A34A' }}>{t('marine.badgeTopUp')}</span>
-                      : <span className="badge" style={{ background: '#FEE2E2', color: '#DC2626' }}>{t('marine.badgeDeduct')}</span>
-                    }
-                  </td>
-                  <td>{l.reference || '—'}</td>
-                  <td className="num font-semibold" style={{ color: l.amount > 0 ? '#16A34A' : '#DC2626' }}>
-                    {l.amount > 0 ? '+' : ''}₹ {Math.abs(l.amount)} Cr
-                  </td>
-                  <td className="num">₹ {l.balance} Cr</td>
+        <>
+          <div className="overflow-x-auto scroll-x">
+            <table className="dt2">
+              <thead>
+                <tr>
+                  <Th sortKey="date" s={lSort} firstDir="desc">{t('marine.colDate')}</Th><Th sortKey="type" s={lSort}>{t('marine.colType')}</Th><Th sortKey="reference" s={lSort}>{t('marine.colReference')}</Th>
+                  <Th sortKey="amount" s={lSort} firstDir="desc" className="num">{t('marine.colAmount')}</Th><Th sortKey="balance" s={lSort} firstDir="desc" className="num">{t('marine.colBalance')}</Th>
                 </tr>
-              ))}
-              {ledger.length === 0 && (
-                <tr><td colSpan={5} className="text-center text-slate-400 py-6 text-sm">{t('marine.noLedgerEntries')}</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pagedLedger.map((l, i) => (
+                  <tr key={l.id || i}>
+                    <td className="text-slate-500">{l.date}</td>
+                    <td>
+                      {l.type === 'top_up'
+                        ? <span className="badge" style={{ background: '#DCFCE7', color: '#16A34A' }}>{t('marine.badgeTopUp')}</span>
+                        : <span className="badge" style={{ background: '#FEE2E2', color: '#DC2626' }}>{t('marine.badgeDeduct')}</span>
+                      }
+                    </td>
+                    <td>{l.reference || '—'}</td>
+                    <td className="num font-semibold" style={{ color: l.amount > 0 ? '#16A34A' : '#DC2626' }}>
+                      {l.amount > 0 ? '+' : ''}₹ {Math.abs(l.amount)} Cr
+                    </td>
+                    <td className="num">₹ {l.balance} Cr</td>
+                  </tr>
+                ))}
+                {ledger.length === 0 && (
+                  <tr><td colSpan={5} className="text-center text-slate-400 py-6 text-sm">{t('marine.noLedgerEntries')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {lSort.sorted.length > 0 && <TablePaginationV2 controls={ledgerPager} label={t('marine.nounEntries', 'entries')} />}
+        </>
         )}
       </div>
 
@@ -287,7 +296,7 @@ export function MarineInsurance() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {ledgerList.map((l, i) => (
+          {ledgerListPage.map((l, i) => (
             <div key={l.id || i} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid #F1F5F9', background: '#FAFAFA', display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{
                 width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
@@ -309,6 +318,7 @@ export function MarineInsurance() {
             <div style={{ textAlign: 'center', color: '#94A3B8', padding: '24px 0', fontSize: 13 }}>{t('marine.noEntries')}</div>
           )}
         </div>
+        {ledgerList.length > 0 && <TablePaginationV2 controls={ledgerListPager} label={t('marine.nounEntries', 'entries')} />}
       </SlidePanel>
     </>
   );

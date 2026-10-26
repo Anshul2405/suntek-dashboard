@@ -9,6 +9,8 @@ import { useMentionNotifier } from '../../../lib/mentions';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import type { Database } from '../../../lib/database.types';
+import { usePagination } from '../../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../../components/v2';
 
 type LabourRow = Database['public']['Tables']['labour_costs']['Row'] & { plants?: { name: string | null } | null };
 
@@ -67,6 +69,8 @@ export function Labour() {
     variance:     c => c.variance_pct ?? 0,
     flag:         c => (c.is_flagged ? 1 : 0),
   }, { key: 'date', dir: 'desc' });
+  // Paged — this list grows with use; page 1 again when the rows change.
+  const { pageRows: pagedCosts, controls: costPager } = usePagination(cSort.sorted, { resetKey: `labour|${cSort.sort.key}|${cSort.sort.dir}` });
 
   return (
     <>
@@ -118,49 +122,52 @@ export function Labour() {
         ) : loading ? (
           <SkeletonRows rows={5} />
         ) : (
-        <div className="overflow-x-auto scroll-x">
-          <table className="dt2">
-            <thead>
-              <tr>
-                <Th sortKey="plant" s={cSort}>{t('labour.colPlant')}</Th>
-                <Th sortKey="date" s={cSort} firstDir="desc">{t('labour.colDate')}</Th>
-                <Th sortKey="purchaseQty" s={cSort} firstDir="desc" className="num">{t('labour.colPurchaseQty')}</Th>
-                <Th sortKey="salesQty" s={cSort} firstDir="desc" className="num">{t('labour.colSalesQty')}</Th>
-                <Th sortKey="computedCost" s={cSort} firstDir="desc" className="num">{t('labour.colComputedCost')}</Th>
-                <Th sortKey="targetCost" s={cSort} firstDir="desc" className="num">{t('labour.colTargetCost')}</Th>
-                <Th sortKey="perMt" s={cSort} firstDir="desc" className="num">{t('labour.colPerMt')}</Th>
-                <Th sortKey="variance" s={cSort} firstDir="desc">{t('labour.colVariance')}</Th>
-                <Th sortKey="flag" s={cSort} firstDir="desc">{t('labour.colFlag')}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {cSort.sorted.map(c => {
-                const vPct = c.variance_pct || 0;
-                const tColor = vPct > 0 ? '#D97706' : vPct < 0 ? '#16A34A' : '#475569';
-                const tBg    = vPct > 0 ? '#FEF3C7' : vPct < 0 ? '#DCFCE7' : '#F1F5F9';
-                const tLbl   = vPct > 0 ? t('labour.varianceOver', { pct: vPct.toFixed(1) }) : vPct < 0 ? t('labour.varianceUnder', { pct: Math.abs(vPct).toFixed(1) }) : t('labour.onTarget');
-                return (
-                  <tr key={c.id} style={{ cursor: 'pointer' }}>
-                    <td className="font-semibold">{c.plants?.name || '—'}</td>
-                    <td className="text-slate-500 text-xs">{c.date}</td>
-                    <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
-                    <td className="num text-slate-500">{c.sales_qty ?? '—'}</td>
-                    <td className="num font-bold">₹ {(c.computed_cost || 0).toLocaleString('en-IN')}</td>
-                    <td className="num text-slate-500">₹ {(c.target_cost || 0).toLocaleString('en-IN')}</td>
-                    <td className="num">₹ {(c.per_mt_cost || 0).toLocaleString('en-IN')}</td>
-                    <td>
-                      <span className="badge" style={{ background: tBg, color: tColor }}>{tLbl}</span>
-                    </td>
-                    <td>{c.is_flagged ? <span className="badge" style={{ background: '#FEE2E2', color: '#DC2626' }}>{t('labour.flagBadge')}</span> : '—'}</td>
-                  </tr>
-                );
-              })}
-              {costs.length === 0 && (
-                <tr><td colSpan={9} className="text-center text-slate-400 py-6 text-sm">{t('labour.emptyState')}</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="overflow-x-auto scroll-x">
+            <table className="dt2">
+              <thead>
+                <tr>
+                  <Th sortKey="plant" s={cSort}>{t('labour.colPlant')}</Th>
+                  <Th sortKey="date" s={cSort} firstDir="desc">{t('labour.colDate')}</Th>
+                  <Th sortKey="purchaseQty" s={cSort} firstDir="desc" className="num">{t('labour.colPurchaseQty')}</Th>
+                  <Th sortKey="salesQty" s={cSort} firstDir="desc" className="num">{t('labour.colSalesQty')}</Th>
+                  <Th sortKey="computedCost" s={cSort} firstDir="desc" className="num">{t('labour.colComputedCost')}</Th>
+                  <Th sortKey="targetCost" s={cSort} firstDir="desc" className="num">{t('labour.colTargetCost')}</Th>
+                  <Th sortKey="perMt" s={cSort} firstDir="desc" className="num">{t('labour.colPerMt')}</Th>
+                  <Th sortKey="variance" s={cSort} firstDir="desc">{t('labour.colVariance')}</Th>
+                  <Th sortKey="flag" s={cSort} firstDir="desc">{t('labour.colFlag')}</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedCosts.map(c => {
+                  const vPct = c.variance_pct || 0;
+                  const tColor = vPct > 0 ? '#D97706' : vPct < 0 ? '#16A34A' : '#475569';
+                  const tBg    = vPct > 0 ? '#FEF3C7' : vPct < 0 ? '#DCFCE7' : '#F1F5F9';
+                  const tLbl   = vPct > 0 ? t('labour.varianceOver', { pct: vPct.toFixed(1) }) : vPct < 0 ? t('labour.varianceUnder', { pct: Math.abs(vPct).toFixed(1) }) : t('labour.onTarget');
+                  return (
+                    <tr key={c.id} style={{ cursor: 'pointer' }}>
+                      <td className="font-semibold">{c.plants?.name || '—'}</td>
+                      <td className="text-slate-500 text-xs">{c.date}</td>
+                      <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
+                      <td className="num text-slate-500">{c.sales_qty ?? '—'}</td>
+                      <td className="num font-bold">₹ {(c.computed_cost || 0).toLocaleString('en-IN')}</td>
+                      <td className="num text-slate-500">₹ {(c.target_cost || 0).toLocaleString('en-IN')}</td>
+                      <td className="num">₹ {(c.per_mt_cost || 0).toLocaleString('en-IN')}</td>
+                      <td>
+                        <span className="badge" style={{ background: tBg, color: tColor }}>{tLbl}</span>
+                      </td>
+                      <td>{c.is_flagged ? <span className="badge" style={{ background: '#FEE2E2', color: '#DC2626' }}>{t('labour.flagBadge')}</span> : '—'}</td>
+                    </tr>
+                  );
+                })}
+                {costs.length === 0 && (
+                  <tr><td colSpan={9} className="text-center text-slate-400 py-6 text-sm">{t('labour.emptyState')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {cSort.sorted.length > 0 && <TablePaginationV2 controls={costPager} label={t('labour.nounEntries', 'entries')} />}
+        </>
         )}
       </div>
 

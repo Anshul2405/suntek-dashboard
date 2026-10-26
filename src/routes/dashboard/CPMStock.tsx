@@ -14,6 +14,8 @@ import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2 } from '../../components/v2';
 import type { Database } from '../../lib/database.types';
 import { formatDate } from '../../lib/utils/formatting';
+import { usePagination } from '../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../components/v2';
 
 type StockRow = Database['public']['Tables']['stock_levels']['Row'] & { plants?: { name: string | null } | null };
 type TankRow = Database['public']['Tables']['tanks']['Row'];
@@ -89,6 +91,8 @@ export function CPMStock() {
     quantity: i => i.quantity,
     date: i => (i.date ? new Date(i.date) : null),
   }, { key: 'date', dir: 'desc' });
+  // Paged — this list grows with use; page 1 again when the rows change.
+  const { pageRows: pagedItems, controls: itemPager } = usePagination(storeSort.sorted, { resetKey: `${storeSearch}|${storeSort.sort.key}|${storeSort.sort.dir}` });
 
   // Pivot the normalised drum rows back into the density×location matrix.
   const densities = [...new Set(drumRows.map(r => r.density))].sort((a, b) => a - b);
@@ -285,30 +289,33 @@ export function CPMStock() {
         {loading ? (
           <div className="p-5"><SkeletonRows rows={6} /></div>
         ) : (
-        <div className="overflow-x-auto scroll-x">
-          <table className="dt2">
-            <thead>
-              <tr>
-                <Th sortKey="product" s={storeSort}>{t('cpmStock.product')}</Th><Th sortKey="plant" s={storeSort}>{t('cpmStock.plant')}</Th><Th sortKey="density" s={storeSort} firstDir="desc" className="num">{t('cpmStock.density')}</Th>
-                <Th sortKey="quantity" s={storeSort} firstDir="desc" className="num">{t('cpmStock.qty')}</Th><Th sortKey="date" s={storeSort} firstDir="desc">{t('cpmStock.date')}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {storeSort.sorted.map(i => (
-                <tr key={i.id}>
-                  <td className="font-semibold">{i.product}</td>
-                  <td>{i.plants?.name || '—'}</td>
-                  <td className="num">{i.density || '—'}</td>
-                  <td className="num font-bold">{i.quantity}</td>
-                  <td className="text-slate-500 text-xs">{formatDate(i.date)}</td>
+        <>
+          <div className="overflow-x-auto scroll-x">
+            <table className="dt2">
+              <thead>
+                <tr>
+                  <Th sortKey="product" s={storeSort}>{t('cpmStock.product')}</Th><Th sortKey="plant" s={storeSort}>{t('cpmStock.plant')}</Th><Th sortKey="density" s={storeSort} firstDir="desc" className="num">{t('cpmStock.density')}</Th>
+                  <Th sortKey="quantity" s={storeSort} firstDir="desc" className="num">{t('cpmStock.qty')}</Th><Th sortKey="date" s={storeSort} firstDir="desc">{t('cpmStock.date')}</Th>
                 </tr>
-              ))}
-              {filteredItems.length === 0 && (
-                <tr><td colSpan={5} className="text-center text-slate-400 py-6 text-sm">{t('cpmStock.noStockRecords')}</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pagedItems.map(i => (
+                  <tr key={i.id}>
+                    <td className="font-semibold">{i.product}</td>
+                    <td>{i.plants?.name || '—'}</td>
+                    <td className="num">{i.density || '—'}</td>
+                    <td className="num font-bold">{i.quantity}</td>
+                    <td className="text-slate-500 text-xs">{formatDate(i.date)}</td>
+                  </tr>
+                ))}
+                {filteredItems.length === 0 && (
+                  <tr><td colSpan={5} className="text-center text-slate-400 py-6 text-sm">{loading ? '…' : stockItems.length ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('cpmStock.noStockRecords')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {storeSort.sorted.length > 0 && <TablePaginationV2 controls={itemPager} label={t('cpmStock.nounItems', 'items')} />}
+        </>
         )}
       </SectionCard>
 

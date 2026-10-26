@@ -15,6 +15,8 @@ import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, WorkCard } from '../../components/v2';
 import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import type { Database } from '../../lib/database.types';
+import { usePagination } from '../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../components/v2';
 
 type BlacklistEventRow = Database['public']['Tables']['blacklist_events']['Row'];
 
@@ -184,6 +186,8 @@ export function Blacklist() {
     date:     e => new Date(e.created_at),
     status:   e => (e.is_active ? 1 : 0),
   }, { key: 'date', dir: 'desc' });
+  // Paged — this list grows with use; page 1 again when the rows change.
+  const { pageRows: pagedEntries, controls: entryPager } = usePagination(fSort.sorted, { resetKey: `${filterType}|${filterSev}|${filterStatus}|${search}|${fSort.sort.key}|${fSort.sort.dir}` });
 
   // ── Save new entry ──────────────────────────────────────────────────────────
   async function handleSave() {
@@ -528,7 +532,7 @@ export function Blacklist() {
                     : t('blacklist.emptyNoMatch')}
                 </td></tr>
               )}
-              {fSort.sorted.map(e => {
+              {pagedEntries.map(e => {
                 const tc = TYPE_CFG[e.type] || TYPE_CFG.other;
                 const sc = SEV_CFG[e.severity] || SEV_CFG.high;
                 return (
@@ -598,6 +602,7 @@ export function Blacklist() {
             </tbody>
           </table>
         </div>
+        {fSort.sorted.length > 0 && <TablePaginationV2 controls={entryPager} label={t('blacklist.nounEntries', 'entries')} />}
       </div>
 
       {/* ── Add panel ────────────────────────────────────────────────────── */}
