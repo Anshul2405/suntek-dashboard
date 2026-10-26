@@ -26,7 +26,7 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { StockRegister } from './StockRegister';
 import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../../lib/store/requisitionQueue';
 import { useMyIdentity } from '../../../lib/useMyIdentity';
-import { ticketNoForId, reqNoLabel } from '../../../lib/ticketNo';
+import { reqNoLabel, useTicketNos } from '../../../lib/ticketNo';
 import { DateRangeFilter } from '../../../components/v2';
 import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
@@ -137,6 +137,8 @@ export function StoreRequisitions() {
       return inIstDayRange(r.created_at, from, to);
     });
   }, [items, queuePending, searchParams, approvalView, me.ids, canDecideReq, waitingIsMine]);
+  // Fetches ticket_no for linked tickets so the list shows STK0042, not a UUID fragment.
+  const ticketNoForId = useTicketNos(items.map(r => r.ticket_id));
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
@@ -277,7 +279,7 @@ export function StoreRequisitions() {
           status,
           item: row.item,
         }),
-        body: `#${row.id.slice(0, 8)} · ${row.plants?.name ?? ''}`,
+        body: `${reqNoLabel(row)} · ${row.plants?.name ?? ''}`,
         type: status === 'rejected' ? 'urgent' : 'info',
         route: '/dashboard/purchase/storereq',
         actor_name: activeProfile.name || '',

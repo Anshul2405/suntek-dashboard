@@ -97,6 +97,13 @@ export function partDecisionLabel(decision: string | null | undefined, t?: TFn):
   return t ? t(hit.key, hit.fallback) : hit.fallback;
 }
 
+/** Ticket status as people say it ("Pending Store"), never the DB slug. */
+export function statusText(status: string, t?: TFn): string {
+  const cfg = STATUS_CFG[status];
+  if (!cfg) return status.replace(/_/g, ' ');
+  return t && cfg.labelKey ? t(cfg.labelKey, cfg.label) : cfg.label;
+}
+
 export function statusBadge(status: string, t?: TFn) {
   const cfg = STATUS_CFG[status] || { label: status, bg: '#F1F5F9', color: '#475569' };
   const label = t && cfg.labelKey ? t(cfg.labelKey, cfg.label) : cfg.label;

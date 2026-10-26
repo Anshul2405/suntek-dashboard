@@ -26,6 +26,8 @@ import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { groupAssetsByType, expandFarUnits, normMark, matchAsset } from '../../../lib/far/assets';
 import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
+import { ticketNoLabel } from '../../../lib/ticketNo';
+import { statusText } from './maintenance/shared';
 import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import type { Database } from '../../../lib/database.types';
@@ -108,6 +110,8 @@ interface MaintEntry {
   fy: string;
   /** FAR asset this repair was logged against, when the ticket was linked. */
   farAssetId: string | null;
+  /** Human ticket number (STK0042) — never show the UUID. */
+  ticketNo: string;
 }
 
 /** Indian financial year (Apr–Mar) label for a date, e.g. "FY2025-26". */
@@ -272,6 +276,7 @@ export function FAR() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
+  const statusLabel = (status: string) => statusText(status, t);
   const { activeProfile } = useRoleContext();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   // Machine-photo lightbox (PIC column → view).
@@ -393,6 +398,7 @@ export function FAR() {
           busyRef: procuredRows[0]?.busy_transaction_ref ?? primary?.busy_transaction_ref ?? null,
           fy: fyOf(when),
           farAssetId: tk.far_asset_id ?? null,
+          ticketNo: ticketNoLabel(tk),
         };
       });
       setMaintEntries(entries);
@@ -581,7 +587,7 @@ export function FAR() {
   function downloadMaintCsv() {
     if (!activeFY) return;
     const rows = fyEntries.map(e => ({
-      ticket: e.id.slice(0, 8), equipment: e.equipment, plant: e.plant, part: e.part,
+      ticket: e.ticketNo, equipment: e.equipment, plant: e.plant, part: e.part,
       status: e.status, created: fmtDT(e.created_at), closed: fmtDT(e.closed_at),
       busy: e.busyRef || '', cost: Math.round(e.cost),
     }));
@@ -845,10 +851,10 @@ export function FAR() {
                   )}
                   {fyPg.pageRows.map(e => (
                     <tr key={e.id} onClick={() => setDrillEntry(e)} style={{ cursor: 'pointer' }}>
-                      <td className="num text-xs text-slate-500">#{e.id.slice(0, 8)}</td>
+                      <td className="num text-xs text-slate-500">#{e.ticketNo}</td>
                       <td className="font-semibold text-slate-700">{e.equipment}</td>
                       <td className="text-slate-500 text-xs">{e.part}</td>
-                      <td className="text-slate-500 text-xs">{e.status.replace(/_/g, ' ')}</td>
+                      <td className="text-slate-500 text-xs">{statusLabel(e.status)}</td>
                       <td className="text-slate-500 text-xs">{e.closed_at ? fmtDT(e.closed_at) : '—'}</td>
                       <td className="num font-semibold">{e.cost ? inr(e.cost) : '—'}</td>
                     </tr>
@@ -1232,7 +1238,7 @@ export function FAR() {
                       <span className="num text-[13px] font-bold" style={{ color: e.cost ? '#15803D' : '#94A3B8' }}>{e.cost ? inr(e.cost) : t('far.inHouseNoPart')}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2 mt-1">
-                      <span className="text-[11px] text-slate-500">#{e.id.slice(0, 8)} · {e.status.replace(/_/g, ' ')} · {e.fy}</span>
+                      <span className="text-[11px] text-slate-500">#{e.ticketNo} · {statusLabel(e.status)} · {e.fy}</span>
                       <span className="text-[11px] text-slate-400">{e.closed_at ? fmtDT(e.closed_at) : fmtDT(e.created_at)}</span>
                     </div>
                   </button>
@@ -1260,11 +1266,11 @@ export function FAR() {
           );
           return (
             <div>
-              <Row k={t('far.rowTicketNo')} v={drillEntry.id.slice(0, 8)} />
+              <Row k={t('far.rowTicketNo')} v={drillEntry.ticketNo} />
               <Row k={t('far.rowEquipment')} v={drillEntry.equipment} />
               <Row k={t('far.rowPlant')} v={drillEntry.plant} />
               <Row k={t('far.rowPartType')} v={drillEntry.part} />
-              <Row k={t('far.rowStatus')} v={drillEntry.status.replace(/_/g, ' ')} />
+              <Row k={t('far.rowStatus')} v={statusLabel(drillEntry.status)} />
               <Row k={t('far.rowFinancialYear')} v={drillEntry.fy} />
               <Row k={t('far.rowRaisedAt')} v={fmtDT(drillEntry.created_at)} />
               <Row k={t('far.rowClosedAt')} v={drillEntry.closed_at ? fmtDT(drillEntry.closed_at) : t('far.openDash')} />
@@ -1277,7 +1283,7 @@ export function FAR() {
               {drillEntry.billUrl && (
                 <a href={drillEntry.billUrl} target="_blank" rel="noreferrer" style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB' }}>{t('far.viewSupplierBill', 'View supplier bill')} ↗</a>
               )}
-              <a href="/dashboard/purchase/maint" style={{ display: 'block', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB' }}>{t('far.openInMaintenance')} →</a>
+              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?ticket=${drillEntry.id}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}

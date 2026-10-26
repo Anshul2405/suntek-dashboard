@@ -18,6 +18,8 @@ import { ThV2 as Th, StatusPill } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { useToast } from '../../../components/ui/toast';
 import { RepairReturnModal } from './RepairReturnModal';
+import { ticketNoLabel, useTicketNos } from '../../../lib/ticketNo';
+import { statusText } from './maintenance/shared';
 import { repairPending } from '../../../lib/store/repairReturn';
 import { cleanPartName } from '../../../lib/store/defectiveSplit';
 import type { Database } from '../../../lib/database.types';
@@ -140,7 +142,7 @@ export function RepairScrapPanel() {
   }, [parts, rows]);
 
   const filteredItems = useTextFilter(partItems, search,
-    i => [i.part.part_name, i.ticket.equipment, i.ticket.plants?.name, i.ticket.id.slice(0, 8), i.ticket.assigned_to]);
+    i => [i.part.part_name, i.ticket.equipment, i.ticket.plants?.name, i.ticket.id.slice(0, 8), ticketNoLabel(i.ticket), i.ticket.assigned_to]);
   // A ticket that repaired 3 and scrapped 2 appears in BOTH lists, each with
   // its own quantity — which is the whole point of the split.
   const repair = useMemo(() => filteredItems.filter(i => Number(i.part.repair_qty) > 0), [filteredItems]);
@@ -255,7 +257,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                     <td className="font-semibold">{p.part_name}</td>
                     <td className="text-slate-500">{r.equipment}</td>
                     <td className="text-slate-500">{r.plants?.name || '—'}</td>
-                    <td><span className="num text-xs text-blue-600 font-semibold">#{r.id.slice(0, 8)}</span></td>
+                    <td><span className="num text-xs text-blue-600 font-semibold">#{ticketNoLabel(r)}</span></td>
                     <td className="text-slate-500">{fmtDate(r.closed_at)}</td>
                     {!isRepair && <td className="num font-bold" style={{ color: '#DC2626' }}>{Number(p.scrap_qty)}</td>}
                     {isRepair && (
@@ -270,7 +272,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                           label={t(`repairScrap.return_${rs}`, rs)} />
                       </td>
                     )}
-                    <td><StatusPill tone={r.status === 'closed' ? 'green' : 'slate'} label={r.status} /></td>
+                    <td><StatusPill tone={r.status === 'closed' ? 'green' : 'slate'} label={statusText(r.status, t)} /></td>
                     <td>
                       {(p.photo_url || r.defective_part_photo_url) ? (
                         <button
@@ -325,6 +327,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
   const [expanded, setExpanded] = useState<string | null>(null);
   const [reverseFor, setReverseFor] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  const ticketNoForId = useTicketNos(allocs.map(a => a.ticket_id));
   const [busy, setBusy] = useState(false);
 
   const byReceipt = useMemo(() => {
@@ -420,7 +423,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
                               <strong>{a.item_name}</strong>
                               <span>+{Number(a.qty)} {t('repairReturn.toRepairedStock', 'to repaired stock')}</span>
                               <button onClick={() => onOpenTicket(a.ticket_id)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, padding: 0 }}>
-                                #{a.ticket_id.slice(0, 8)}
+                                #{ticketNoForId(a.ticket_id)}
                               </button>
                             </div>
                           ))}
