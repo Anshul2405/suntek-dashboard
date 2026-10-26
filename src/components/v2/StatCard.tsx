@@ -56,7 +56,7 @@ export function StatCard({
   const clickable = !!onView;
   return (
     <div
-      className={cn('card2 p-5', clickable && 'cursor-pointer hover:border-slate-300 hover:shadow-sm transition', className)}
+      className={cn('card2 p-4 sm:p-5', clickable && 'cursor-pointer hover:border-slate-300 hover:shadow-sm transition', className)}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
       onClick={clickable ? onView : undefined}
@@ -77,7 +77,7 @@ export function StatCard({
           {label}
         </span>
       </div>
-      <div className={cn('text-[30px] font-bold leading-none num', VALUE_TONES[valueTone])}>
+      <div className={cn('text-[26px] sm:text-[30px] font-bold leading-none num', VALUE_TONES[valueTone])}>
         {value}
       </div>
       {caption && <div className="text-xs text-slate-500 mt-2">{caption}</div>}

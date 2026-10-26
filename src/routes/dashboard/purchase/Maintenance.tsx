@@ -3576,22 +3576,22 @@ export function Maintenance() {
       {tab === 'periodic' && (
         <>
           <div className="grid grid-cols-12 gap-4 mb-4">
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Calendar />} tone="amber"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<Calendar />} tone="amber"
               label={t('maint.dueToday')} value={dueToday}
               caption={dueToday === 0 ? `${t('maint.noDueToday')} · ${dueScopeLabel}` : dueItemPreview(dueTodaySchedules)}
               onView={() => { setPeriodicFocus('today'); dueTodayRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewDueToday', 'See today’s list')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CalendarDays />} tone="amber"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<CalendarDays />} tone="amber"
               label={t('maint.dueThisWeek')} value={dueWeek}
               caption={dueWeek === 0 ? `${t('maint.noDueWeek')} · ${dueScopeLabel}` : dueItemPreview(dueWeekSchedules)}
               onView={() => { setPeriodicFocus('week'); weeklyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewDueWeek', 'See this week')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={overdue > 0 ? 'red' : 'default'}
+            <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={overdue > 0 ? 'red' : 'default'}
               label={t('maint.overdue')} value={overdue}
               caption={overdue > 0 ? dueItemPreview(overdueSchedules) : `${t('maint.noOverdueSchedules', 'No overdue schedules')} · ${dueScopeLabel}`}
               onView={() => { setPeriodicFocus('overdue'); overdueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewOverdue', 'See overdue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.completedMtd')} value={closedPeriodicMTD}
               caption={t('maint.completedThisMonth')} />
           </div>
@@ -3719,20 +3719,20 @@ export function Maintenance() {
       {tab === 'emergency' && (
         <>
           <div className="grid grid-cols-12 gap-4 mb-4">
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
+            <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
               label={t('maint.openTickets')} value={loading ? '…' : openEmergency}
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
               onView={() => setFltStatus('all')}
               viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
               label={t('maint.pendingStoreApproval')} value={loading ? '…' : pendingStore}
               onView={() => setFltStatus('pending_store')}
               viewLabel={t('maint.viewPendingStore', 'See store queue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
               label={t('maint.purchaseHandover')} value={loading ? '…' : pendingPurchase}
               onView={() => setFltStatus('pending_purchase')}
               viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
+            <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.closedMtd')} value={loading ? '…' : closedMTD}
               caption={t('maint.completedThisMonth')}
               onView={() => setFltStatus('closed')}
