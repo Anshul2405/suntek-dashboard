@@ -31,6 +31,7 @@ import { statusText } from './maintenance/statusText';
 import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import type { Database } from '../../../lib/database.types';
+import { fetchAllRows } from '../../../lib/fetchAll';
 
 // ── FAR bulk-import (CSV / Excel → verify → register) ─────────────────────────
 interface FarImportRow {
@@ -349,9 +350,13 @@ export function FAR() {
       const { data: plantsData } = await fetchActivePlants<{ id: string; name: string }>('id, name');
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
 
+      // PAGED: the register is past 1,000 assets and PostgREST caps a response
+      // at 1000 silently — the KPI read exactly "1000" and the rest were missing.
       const { data, error } = await withEmbedFallback(
-        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('created_at', { ascending: false }).returns<AssetRow[]>(),
-        () => scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).returns<AssetRow[]>(),
+        fetchAllRows<AssetRow>((from, to) =>
+          scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
+        () => fetchAllRows<AssetRow>((from, to) =>
+          scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
         'FAR.assets',
       );
       if (error) throw error;
