@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, X, Download, Building2, Activity } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -84,6 +84,11 @@ export function NightDutyScheduler() {
   const [techSearch, setTechSearch] = useState('');
   // The scheduling form lives in an inline right-side wizard panel.
   const [schedulerOpen, setSchedulerOpen] = useState(false);
+  // Below lg the wizard renders after the whole schedule table — scroll it into view on open.
+  const wizardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (schedulerOpen && window.innerWidth < 1024) wizardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [schedulerOpen]);
   const [step, setStep] = useState(1);
 
   // Schedule-table filters (per mockup: search · plant · date range · status · reset)
@@ -566,7 +571,7 @@ export function NightDutyScheduler() {
 
     {/* ── Inline wizard panel: Assign Night Duty ─────────────────────────── */}
     {schedulerOpen && (
-      <div className="card2 p-5 lg:sticky lg:top-4">
+      <div ref={wizardRef} className="card2 p-5 lg:sticky lg:top-4">
         <div className="flex items-start justify-between mb-1">
           <div className="font-heading font-semibold text-[17px]">{t('nightBoard.assignNightDuty', 'Assign Night Duty')}</div>
           <button onClick={closeWizard} aria-label="Close" className="text-slate-400 hover:text-slate-600 p-1 -mr-1"><X size={16} /></button>

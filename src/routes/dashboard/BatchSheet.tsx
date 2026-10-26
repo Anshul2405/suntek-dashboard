@@ -423,13 +423,13 @@ export function BatchSheet() {
           <table className="dt2">
             <thead>
               <tr>
-                <th>Batch no</th>
-                <th>Plant</th>
-                <th>Reactor</th>
-                <th className="num">Density</th>
-                <th>Grade</th>
-                <th>Photos</th>
-                <th>Created</th>
+                <th>{t('batchProd.thBatchNo', 'Batch no')}</th>
+                <th>{t('batchProd.thPlant', 'Plant')}</th>
+                <th>{t('batchProd.thReactor', 'Reactor')}</th>
+                <th className="num">{t('batchProd.thDensity', 'Density')}</th>
+                <th>{t('batchProd.thGrade', 'Grade')}</th>
+                <th>{t('batchProd.detailPhotos', 'Photos')}</th>
+                <th>{t('batchProd.thCreated', 'Created')}</th>
                 <th></th>
               </tr>
             </thead>
