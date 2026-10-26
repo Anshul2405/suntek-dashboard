@@ -253,8 +253,9 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
       const { data } = await supabase.from('active_batches').select('*').eq('status', 'active').returns<BatchRow[]>();
       const dbBatches = data || [];
       setBatches(dbBatches);
+      // Keep a batch restored from the session draft; otherwise default to the first.
       if (dbBatches.length > 0) {
-        setBatchId(dbBatches[0].id);
+        setBatchId(cur => (cur && dbBatches.some(b => b.id === cur) ? cur : dbBatches[0].id));
       }
     } catch (err) {
       console.error("Failed to load active batches:", err);
@@ -291,7 +292,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               temp: row.temp ? `${row.temp} °C` : '—',
               cpGravity: row.cp_gravity ? String(row.cp_gravity) : '—',
               cl2Press: row.cl2_pressure ? `${row.cl2_pressure} kg` : '—',
-              operator: row.profiles?.name || 'Live Op',
+              operator: row.profiles?.name || '—',
             };
           });
           setReadings(formatted);
@@ -333,7 +334,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
           temp: data.temp ? `${data.temp} °C` : '—',
           cpGravity: data.cp_gravity ? String(data.cp_gravity) : '—',
           cl2Press: data.cl2_pressure ? `${data.cl2_pressure} kg` : '—',
-          operator: data.profiles?.name || 'Live Op',
+          operator: data.profiles?.name || '—',
         };
         setReadings(prev => [newRow, ...prev]);
 
@@ -406,6 +407,9 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
         setNewBatchNo('');
         setNewRecipe('1400');
         setNewTargetQty('1400');
+        // Show the new batch in the selector and log against it straight away.
+        setBatches(prev => [newBatch as BatchRow, ...prev.filter(b => b.id !== newBatch.id)]);
+        setBatchId(newBatch.id);
         setActiveTab('reading');
 
         toast.success(t('batchEntry.batchStartedSuccess', { batchNo: newBatch.batch_no }));
@@ -419,12 +423,20 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
   const visibleReadings = readings;
 
-  // Elapsed time from a hardcoded start (just display)
-  const elapsed = '16h 45m';
+  // Started / elapsed come from the selected batch — never a placeholder.
+  const startedAt = selectedBatch?.started_at ? new Date(selectedBatch.started_at) : null;
+  const startedLabel = startedAt
+    ? startedAt.toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit', hour: 'numeric', minute: '2-digit' })
+    : null;
+  const elapsedMin = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 60000)) : 0;
+  const elapsedH = Math.floor(elapsedMin / 60);
+  const elapsed = elapsedH >= 48
+    ? `${Math.floor(elapsedH / 24)}d ${elapsedH % 24}h`
+    : `${elapsedH}h ${elapsedMin % 60}m`;
 
   return (
     <div
-      className={embedded ? 'flex flex-col' : 'h-screen flex flex-col'}
+      className={embedded ? 'flex flex-col' : 'min-h-screen md:h-screen flex flex-col'}
       style={{ background: embedded ? 'transparent' : '#E2E8F0', fontFamily: 'inherit' }}
     >
       {/* Standalone-only header — hidden when embedded in the dashboard */}
@@ -439,8 +451,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right">
-              <div className="text-sm font-bold font-heading">{t('batchEntry.operatorLabel')}: Shyam</div>
-              <div className="text-xs text-slate-400">{t('batchEntry.shiftLabel')}: 6 AM – 2 PM</div>
+              <div className="text-sm font-bold font-heading">{t('batchEntry.operatorLabel')}: {activeProfile.name}</div>
             </div>
           </div>
         </header>
@@ -448,7 +459,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
       {/* Meeting-spec production batch sheet — full-width linear wizard */}
       {activeTab === 'create-sheet' && (
-        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-6'} data-tour="tour-create-form">
+        <main className={embedded ? 'flex-1 py-2' : 'flex-1 overflow-auto p-4 md:p-6'} data-tour="tour-create-form">
           <div className="mb-4">
             <div className="text-base font-bold text-slate-800">{t('batchProd.title', 'Create production batch sheet')}</div>
             <p className="text-xs text-slate-500 mt-0.5">
@@ -465,16 +476,17 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
         </main>
       )}
 
-      {/* Two-column body — reading / new-batch / upload / history */}
+      {/* Two-column body — reading / new-batch / upload / history. Stacks below
+          md so the reading log isn't squeezed to zero width on a phone. */}
       {activeTab !== 'create-sheet' && (
-      <main className={embedded ? 'flex-1 flex gap-6' : 'flex-1 overflow-hidden p-6 flex gap-6'}>
+      <main className={embedded ? 'flex-1 flex flex-col md:flex-row gap-4 md:gap-6' : 'flex-1 md:overflow-hidden p-4 md:p-6 flex flex-col md:flex-row gap-4 md:gap-6'}>
 
         {/* LEFT: Tab switches and Forms */}
-        <div className="w-80 shrink-0 flex flex-col gap-0">
+        <div className="w-full md:w-80 shrink-0 flex flex-col gap-0">
           <div className="bg-white rounded-2xl p-6 flex-1 overflow-auto shadow-sm flex flex-col">
             <h2 className="text-xl font-bold mb-4 flex items-center gap-2 border-b pb-2">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2.5">
-                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                <path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9V3M7 15h10"/>
               </svg>
               {t('batchEntry.batchActions')}
             </h2>
@@ -751,14 +763,18 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
           <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50 rounded-t-2xl shrink-0">
             <div>
               <h3 className="font-bold text-lg">{t('batchEntry.batchLogTitle', { label: batchLabel ? `#${batchLabel}` : t('batchEntry.logWord') })}</h3>
-              <div className="text-xs text-slate-500">{t('batchEntry.started')}: 22/02/26 10 PM</div>
+              {startedLabel && (
+                <div className="text-xs text-slate-500">{t('batchEntry.started')}: {startedLabel}</div>
+              )}
             </div>
-            <div
-              className="font-bold px-3 py-1 rounded-full text-sm"
-              style={{ background: '#D1FAE5', color: '#065F46' }}
-            >
-              {t('batchEntry.running', { elapsed })}
-            </div>
+            {selectedBatch?.status === 'active' && startedAt && (
+              <div
+                className="font-bold px-3 py-1 rounded-full text-sm"
+                style={{ background: '#D1FAE5', color: '#065F46' }}
+              >
+                {t('batchEntry.running', { elapsed })}
+              </div>
+            )}
           </div>
 
           {/* Scrollable table */}
