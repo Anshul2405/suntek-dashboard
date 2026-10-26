@@ -322,22 +322,22 @@ export function StoreRequisitions() {
       <>
       {/* Summary tiles */}
       <div className="grid grid-cols-12 gap-4 mb-4">
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
+        <StatCard className="col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
           label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length)}
           caption={t('storereq.stat_total_sub', 'Open requests')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount)}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
           onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewPending', 'See pending')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
+        <StatCard className="col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount)}
           caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
           onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
           viewLabel={t('common.view', 'View')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
           label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount)}
           caption={t('storereq.stat_urgent_sub', 'High priority requests')}
           onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
