@@ -329,7 +329,7 @@ export function PurchaseOrders() {
                     <td className="num text-green-700">{r.dispatched_qty ?? '—'}</td>
                     <td className="num text-amber-700">{r.pending_qty ?? '—'}</td>
                     <td className="num font-semibold">{r.price ? `₹ ${Number(r.price).toLocaleString('en-IN')}` : '—'}</td>
-                    <td className="text-slate-500 text-xs">{r.date || '—'}</td>
+                    <td className="text-slate-500 text-xs">{formatDate(r.date)}</td>
                   </tr>
                 ))}
               </tbody>
