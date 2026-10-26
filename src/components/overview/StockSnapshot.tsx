@@ -10,6 +10,8 @@ interface StockSnapshotProps {
   locations: string[];
   matrix: Record<string, number[]>;
   tanks: TankRow[];
+  /** False until the stock query returns — empty states wait for it. */
+  loaded: boolean;
   onOpenStock: () => void;
 }
 
@@ -17,7 +19,7 @@ interface StockSnapshotProps {
  * Read-only CPM density×location matrix + tank levels shown on the Overview.
  * Pure display — extracted from Overview to keep that file focused.
  */
-export function StockSnapshot({ densities, locations, matrix, tanks, onOpenStock }: StockSnapshotProps) {
+export function StockSnapshot({ densities, locations, matrix, tanks, loaded, onOpenStock }: StockSnapshotProps) {
   const { t } = useTranslation();
   return (
     <div className="grid grid-cols-12 gap-5 mb-5">
@@ -65,6 +67,13 @@ export function StockSnapshot({ densities, locations, matrix, tanks, onOpenStock
                   </tr>
                 );
               })}
+              {locations.length === 0 && (
+                <tr>
+                  <td colSpan={densities.length + 2} className="text-center text-slate-400 py-6 text-sm">
+                    {loaded ? t('overview.noDrumStock', 'No drum stock on record yet') : '…'}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -103,7 +112,7 @@ export function StockSnapshot({ densities, locations, matrix, tanks, onOpenStock
             );
           })}
           {tanks.length === 0 && (
-            <div className="text-center text-slate-400 py-6 text-sm">{t('overview.noTanksConfigured', 'No tanks configured')}</div>
+            <div className="text-center text-slate-400 py-6 text-sm">{loaded ? t('overview.noTanksConfigured', 'No tanks configured') : '…'}</div>
           )}
         </div>
       </div>
