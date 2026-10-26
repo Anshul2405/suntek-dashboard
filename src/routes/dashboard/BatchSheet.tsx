@@ -8,7 +8,7 @@ import { SkeletonRows } from '../../components/ui/states';
 import { formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
 import { useUrlFilters } from '../../lib/urlFilters';
 import { plantsForPicker } from '../../lib/access/pickerPlants';
-import { DateRangeFilter, FilterBar, FilterSelect } from '../../components/v2';
+import { DateRangeFilter, FilterBar, FilterSelect, TablePaginationV2 } from '../../components/v2';
 import { Building2, FlaskConical, Layers } from 'lucide-react';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
@@ -22,6 +22,8 @@ import type { CoaResultMap } from '../../lib/batch/printDocs';
 import type { TdsFamily } from '../../lib/batch/tdsCatalog';
 import { CoaEntryPanel, type CoaSheetTarget } from '../../components/batch/CoaEntryPanel';
 import { useTextFilter } from '../../components/ui/TableSearch';
+import { usePagination } from '../../components/ui/usePagination';
+import { patchUrlParams } from '../../lib/urlParams';
 import { displayLocationName } from '../../lib/plantLabels';
 
 interface ProductionSheetRow {
@@ -164,6 +166,19 @@ export function BatchSheet() {
     r.oil_ratio != null ? String(r.oil_ratio) : '',
   ]);
 
+  // Paged — ~800 sheets painted at once made the page ~81,000px tall on a phone.
+  // Page / size live in the URL (?p=&ps=) like the Activity Log, so back= and a
+  // refresh land on the same page; a filter change snaps back to page 1.
+  const { pageRows: pageSheets, controls: sheetPager } = usePagination(filteredSheets, {
+    resetKey: `${search}|${plantFilter}|${reactorFilter}|${gradeFilter}|${fromDate}|${toDate}`,
+    initialPage: Number(searchParams.get('p')) || 1,
+    initialPageSize: Number(searchParams.get('ps')) || 10,
+    onChange: (page, size) => patchUrlParams(setSearchParams, {
+      p: page > 1 ? String(page) : '',
+      ps: size !== 10 ? String(size) : '',
+    }),
+  });
+
   const loadProductionSheets = useCallback(async () => {
     // Page through every in-scope sheet. A hard .limit(100) under a global Admin
     // scope returned only the newest 100 across ALL plants — so filtering to one
@@ -235,14 +250,18 @@ export function BatchSheet() {
   useEffect(() => {
     if (!highlightBatchNo || prodSheets.length === 0) return;
     const rowId = `prod-sheet-${highlightBatchNo.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-    const el = document.getElementById(rowId);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Paged list: open the page that holds the new sheet before scrolling to it.
+    const idx = filteredSheets.findIndex(r => r.batch_no === highlightBatchNo);
+    if (idx >= 0) sheetPager.setPage(Math.floor(idx / sheetPager.pageSize) + 1);
+    const scrollTmr = window.setTimeout(() => {
+      document.getElementById(rowId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
     const tmr = window.setTimeout(() => {
       const next = new URLSearchParams(searchParams);
       next.delete('highlight');
       setSearchParams(next, { replace: true });
     }, 3500);
-    return () => clearTimeout(tmr);
+    return () => { clearTimeout(tmr); clearTimeout(scrollTmr); };
     // Only re-run when the highlight target or sheet list identity changes — not on every searchParams mutate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightBatchNo, prodSheets.length]);
@@ -407,7 +426,7 @@ export function BatchSheet() {
                   </td>
                 </tr>
               )}
-              {filteredSheets.map(row => {
+              {pageSheets.map(row => {
                 const sheetUrls = seeSheetPhoto ? (row.sheet_photo_urls ?? []) : [];
                 const bucketUrls = seeBucketPhoto ? (row.bucket_photo_urls ?? []) : [];
                 const heatUrls = seeHeatPhoto ? (row.heat_sample_photo_urls ?? []) : [];
@@ -480,6 +499,10 @@ export function BatchSheet() {
             </tbody>
           </table>
         </div>
+        {/* Paging footer only once loaded — never a "0 of 0" while the first page loads. */}
+        {sheetsLoaded && filteredSheets.length > 0 && (
+          <TablePaginationV2 controls={sheetPager} label={t('batchProd.nounSheets', 'sheets')} />
+        )}
       </div>
 
       {detailRow && (

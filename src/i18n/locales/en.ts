@@ -584,6 +584,7 @@ const en = {
       'New Batch starts the run → Log Reading records it hourly → Close runs yield QC → Create Batch Sheet records density and photos as P12-13 → the register holds it → the accountant moves it to stock, then dispatch. Upload OCR is the paper shortcut into the readings.\n\nOpen questions for the plant: who creates the sheet, who closes the run, and whether every batch gets a sheet or only the ones that go to stock.\n\nReplay this anytime with How this works.',
   },
   batchProd: {
+    nounSheets: "sheets",
     thBatchNo: "Batch no",
     thPlant: "Plant",
     thReactor: "Reactor",
