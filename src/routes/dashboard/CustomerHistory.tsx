@@ -180,7 +180,7 @@ export function CustomerHistory() {
                   </thead>
                   <tbody>
                     {custPg.pageRows.map(c => (
-                      <tr key={c.code} style={{ cursor: 'pointer' }}>
+                      <tr key={c.code}>
                         <td className="font-semibold">{c.name}</td>
                         <td className="num font-bold">{fmtINR(c.mtdRevenue)}</td>
                         <td className="num text-slate-500">{fmtINR(c.fyRevenue)}</td>
