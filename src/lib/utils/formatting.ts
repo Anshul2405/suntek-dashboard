@@ -29,9 +29,9 @@ export function formatPct(value: number, decimals = 1): string {
 }
 
 // ── Dates (IST) ──────────────────────────────────────────────────────────────
-// The plants run on India time and every screen shows one format: "22 Oct 2026"
-// (and "22 Oct 2026, 3:05 pm" with a time). Pinning the zone means a browser
-// left on UTC — or a phone set abroad — still shows the plant's calendar day.
+// The plants run on India time and every screen shows one format: "22/10/2026"
+// (dd/mm/yyyy; "22/10/2026, 3:05 pm" with a time). Pinning the zone means a
+// browser left on UTC — or a phone set abroad — still shows the plant's day.
 
 export const IST_TZ = 'Asia/Kolkata';
 const IST_OFFSET_MS = 330 * 60_000; // IST has no DST
@@ -45,19 +45,17 @@ function toDate(date: string | Date | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** "22 Oct 2026" in IST. Empty / invalid input → '—'.
- *  Built from the IST calendar day rather than toLocaleDateString: browsers
- *  disagree on short months ("Sep" vs "Sept"), and one format is the point. */
+/** "22/10/2026" (dd/mm/yyyy) in IST. Empty / invalid input → '—'.
+ *  Built from the IST calendar day rather than toLocaleDateString, whose
+ *  output depends on the browser locale — one format is the point. */
 export function formatDate(date: string | Date | null | undefined): string {
   const d = toDate(date);
   if (!d) return '—';
   const [y, m, day] = istDayKey(d).split('-');
-  return `${day} ${MONTHS[Number(m) - 1]} ${y}`;
+  return `${day}/${m}/${y}`;
 }
 
-/** "22 Oct 2026, 3:05 pm" in IST. Empty / invalid input → '—'. */
+/** "22/10/2026, 3:05 pm" in IST. Empty / invalid input → '—'. */
 export function formatDateTime(date: string | Date | null | undefined): string {
   const d = toDate(date);
   if (!d) return '—';

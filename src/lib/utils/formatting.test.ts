@@ -2,18 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { formatDate, formatDateTime, istDayKey, inIstDayRange, normalizeDayRange, istRangeToIso } from './formatting';
 
 describe('IST date formatting', () => {
-  it('formats as 22 Oct 2026', () => {
-    expect(formatDate('2026-10-22T06:00:00Z')).toBe('22 Oct 2026');
-    expect(formatDate('2026-10-22')).toBe('22 Oct 2026');
-    expect(formatDate('2026-09-05')).toBe('05 Sep 2026'); // never "Sept"
+  it('formats as dd/mm/yyyy', () => {
+    expect(formatDate('2026-10-22T06:00:00Z')).toBe('22/10/2026');
+    expect(formatDate('2026-10-22')).toBe('22/10/2026');
+    expect(formatDate('2026-09-05')).toBe('05/09/2026'); // zero-padded day and month
+    expect(formatDate(new Date('2026-01-01T00:00:00+05:30'))).toBe('01/01/2026');
   });
   it('uses the IST calendar day, not UTC', () => {
     // 20:00 UTC on the 21st is 01:30 IST on the 22nd.
-    expect(formatDate('2026-10-21T20:00:00Z')).toBe('22 Oct 2026');
+    expect(formatDate('2026-10-21T20:00:00Z')).toBe('22/10/2026');
     expect(istDayKey('2026-10-21T20:00:00Z')).toBe('2026-10-22');
   });
-  it('adds the time after the date', () => {
-    expect(formatDateTime('2026-10-22T09:35:00Z')).toBe('22 Oct 2026, 3:05 pm');
+  it('adds the 12-hour IST time after the date', () => {
+    expect(formatDateTime('2026-10-22T09:35:00Z')).toBe('22/10/2026, 3:05 pm');
+    expect(formatDateTime('2026-10-21T18:35:00Z')).toBe('22/10/2026, 12:05 am');
+    expect(formatDateTime('2026-10-22T06:30:00Z')).toBe('22/10/2026, 12:00 pm');
   });
   it('degrades to a dash', () => {
     expect(formatDate(null)).toBe('—');
