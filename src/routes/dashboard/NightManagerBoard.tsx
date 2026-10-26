@@ -146,6 +146,7 @@ export function NightManagerBoard() {
   const toast = useToast();
   const { can, roles } = useRoleContext();
   const [liveDuty, setLiveDuty] = useState<CheckInLog[]>([]);
+  const [dutyLoaded, setDutyLoaded] = useState(false);
   const [deviceMappings, setDeviceMappings] = useState<DeviceMappingRow[]>([]);
   const [selectedCheckIn, setSelectedCheckIn] = useState<CheckInLog | null>(null);
   
@@ -206,9 +207,8 @@ export function NightManagerBoard() {
         const ip = row.ip_address;
 
         let name = row.profiles?.name || t('nightBoard.liveCheckIn');
-        // Unknown check-in → entry tier, the least privileged. The ladder runs
-        // L0 (admin) → L4 (entry) since migration 64.
-        let role = row.profiles?.role || 'L4';
+        // Role label, not the slug / tier code; unknown → "Operator".
+        let role = roleLabelOf(row.profiles?.role ?? null);
         let phone = row.profiles?.phone || null;
         let isMapped = false;
 
@@ -262,6 +262,8 @@ export function NightManagerBoard() {
       setLiveDuty(formatted);
     } catch (e) {
       console.error('Error loading board data:', e);
+    } finally {
+      setDutyLoaded(true);
     }
   };
 
@@ -357,11 +359,13 @@ export function NightManagerBoard() {
               <div className="text-base font-bold font-heading text-slate-900 font-heading">{t('nightBoard.liveCheckinMap')}</div>
               <div className="text-xs text-slate-500">
                 {t('nightBoard.mapSubtitle')}
+                {dutyLoaded && <>
                 {' · '}{liveDuty.length} {t('nightBoard.geoTaggedCheckins').toLowerCase()}
                 {liveDuty.filter(d => d.status === 'red').length > 0 && (
                   <span className="text-amber-600 font-semibold"> · {liveDuty.filter(d => d.status === 'red').length} {t('nightBoard.outOfZone').toLowerCase()}</span>
                 )}
                 {' · '}{liveDuty.length > 0 ? Math.round((liveDuty.filter(d => d.photo_url).length / liveDuty.length) * 100) : 0}% {t('nightBoard.photoProofPct').toLowerCase()}
+                </>}
               </div>
             </div>
             {selectedCheckIn && (
@@ -476,6 +480,9 @@ export function NightManagerBoard() {
           <div className="text-[11px] text-slate-500 mb-4">{t('nightBoard.dutyListSubtitle')}</div>
           
           <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
+            {sortedDuty.length === 0 && (
+              <div className="text-center text-slate-400 py-6 text-sm">{dutyLoaded ? t('nightBoard.noCheckinsYet', 'No check-ins yet.') : '…'}</div>
+            )}
             {sortedDuty.map((d, i) => {
               const dotColor = PIN_COLOR[d.status];
               // By check-in id — matching on name highlighted every check-in by the same person.

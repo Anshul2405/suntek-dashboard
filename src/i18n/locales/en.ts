@@ -2403,6 +2403,7 @@ const en = {
     "legendOutOfZone": "Out of zone",
     "onDutyCurrentShift": "On duty · current shift",
     "dutyListSubtitle": "Latest check-ins automatically appear at the top. Click any to locate them.",
+    "noCheckinsYet": "No check-ins yet.",
     "ipTooltip": "IP: {{ip}}. Click to manage assignment.",
     "mapped": "Mapped",
     "unmappedIp": "Unmapped IP",
