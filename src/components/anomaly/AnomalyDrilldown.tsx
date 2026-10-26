@@ -6,6 +6,7 @@ import { SlidePanel } from '../SlidePanel';
 import { MiniBarChart } from '../charts/AnalyticsViz';
 import { useNarrative } from '../../lib/anomaly/useAnomalies';
 import type { AnomalyFinding } from '../../lib/anomaly/types';
+import { formatDate } from '../../lib/utils/formatting';
 
 const SEV_COLOR = { urgent: '#DC2626', warning: '#D97706', info: '#2563EB' } as const;
 const SEV_KEY = { urgent: 'anomaly.sevUrgent', warning: 'anomaly.sevWarning', info: 'anomaly.sevInfo' } as const;
@@ -169,7 +170,7 @@ function evidenceStats(f: AnomalyFinding, t: TFunction): { label: string; value:
         { label: t('anomaly.evDaysSilent', 'Days silent'), value: `${d.daysSilent}` },
         { label: t('anomaly.evFyRevenue', 'FY revenue'), value: inr(d.fyRevenue) },
         { label: t('anomaly.evOutstanding', 'Outstanding'), value: inr(d.outstanding) },
-        { label: t('anomaly.evLastInvoice', 'Last invoice'), value: d.lastInvoice ? new Date(d.lastInvoice).toLocaleDateString('en-IN') : '—' },
+        { label: t('anomaly.evLastInvoice', 'Last invoice'), value: d.lastInvoice ? formatDate(d.lastInvoice) : '—' },
       ];
     case 'A8_credit_risk':
       return [

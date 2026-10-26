@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { bindLateEntryHost, submitLateRequest } from '../lib/opsControls';
+import { formatDate } from '../lib/utils/formatting';
 
 /**
  * One dialog for the whole app. A backdated save calls ensureLateApproval,
@@ -58,7 +59,7 @@ export function LateEntryHost() {
       <div style={{ width: 'min(440px, 100%)', background: '#fff', borderRadius: 16, padding: 20, boxShadow: '0 20px 50px rgba(15,23,42,0.2)' }}>
         <div style={{ fontWeight: 800, fontSize: 16, color: '#0F172A' }}>Management approval needed</div>
         <p style={{ fontSize: 13, color: '#475569', marginTop: 8, lineHeight: 1.45 }}>
-          {job.entryDate} is outside the {job.bufferDays}-day buffer for <strong>{job.module}</strong>. This entry will not be saved until Management approves the reason.
+          {formatDate(job.entryDate)} is outside the {job.bufferDays}-day buffer for <strong>{job.module}</strong>. This entry will not be saved until Management approves the reason.
         </p>
         <textarea
           value={reason}

@@ -7,10 +7,11 @@ import { TablePaginationV2 as TablePagination } from './v2';
 import { TableSearch, useTextFilter } from './ui/TableSearch';
 import { fmtINR, useBusyPurchases, useOverviewKPIs } from '../hooks/useBusyData';
 import { useBusyCompany } from '../contexts/BusyCompanyContext';
+import { formatDate } from '../lib/utils/formatting';
 
 function fmtBusyDate(iso: string) {
   const d = new Date(`${iso}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return Number.isNaN(d.getTime()) ? iso : formatDate(d);
 }
 
 export function BusyPurchasesCard({ className = 'mb-4' }: { className?: string }) {

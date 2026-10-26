@@ -55,12 +55,19 @@ export function formatDate(date: string | Date | null | undefined): string {
   return `${day}/${m}/${y}`;
 }
 
+/** "3:05 pm" in IST (12-hour, lower-case am/pm). Empty / invalid input → '—'. */
+export function formatTime(date: string | Date | null | undefined): string {
+  const d = toDate(date);
+  if (!d) return '—';
+  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: IST_TZ });
+  return time.replace(/\s?(AM|PM)$/i, m => ` ${m.trim().toLowerCase()}`);
+}
+
 /** "22/10/2026, 3:05 pm" in IST. Empty / invalid input → '—'. */
 export function formatDateTime(date: string | Date | null | undefined): string {
   const d = toDate(date);
   if (!d) return '—';
-  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: IST_TZ });
-  return `${formatDate(d)}, ${time.replace(/\s?(AM|PM)$/i, m => ` ${m.trim().toLowerCase()}`)}`;
+  return `${formatDate(d)}, ${formatTime(d)}`;
 }
 
 /** The IST calendar day ('YYYY-MM-DD') an instant falls on. */

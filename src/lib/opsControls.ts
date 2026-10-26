@@ -6,6 +6,7 @@ const q = (name: string) => (supabase as unknown as { from: (t: string) => any }
 import { isAdminProfile, isManagementProfile, type MockProfile } from './profiles';
 import { needsLateApproval } from './datePolicy';
 import { DEFAULT_VALUE_CATEGORIES, type ValueCategorySettings } from './valueCategory';
+import { formatDate } from './utils/formatting';
 
 export const MODULES = [
   { key: 'stock', label: 'Stock Register' },
@@ -297,7 +298,7 @@ const LATE_ROUTES: Record<string, string> = {
 function niceDate(iso: string | null | undefined) {
   if (!iso) return '';
   const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return Number.isNaN(d.getTime()) ? iso : formatDate(iso.slice(0, 10));
 }
 
 /** Tell the person who asked. Best effort: a missing account never blocks the review. */

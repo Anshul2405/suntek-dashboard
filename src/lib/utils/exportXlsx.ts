@@ -10,6 +10,7 @@
 
 import * as XLSX from 'xlsx';
 import { isAdminProfile, type MockProfile } from '../profiles';
+import { formatDateTime } from './formatting';
 
 const PROTECTION_PASSWORD = 'suntek2024';
 
@@ -78,7 +79,7 @@ export function exportToXlsx(
     ['Role', profile.roleLabel],
     ['Plant', profile.plant ?? 'All'],
     ['Protected', isEditableRole(profile) ? 'No' : 'Yes'],
-    ['Exported at', new Date().toLocaleString('en-IN')],
+    ['Exported at', formatDateTime(new Date())],
   ]);
   XLSX.utils.book_append_sheet(wb, metaWs, 'Export Info');
 

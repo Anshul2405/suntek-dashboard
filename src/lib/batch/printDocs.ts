@@ -2,6 +2,7 @@
  * Print / Save-as-PDF helpers for TDS and Certificate of Analysis.
  * Uses a print window (same pattern as FAR QR labels) — browser "Save as PDF" covers download.
  */
+import { formatDate } from '../utils/formatting';
 
 import {
   coaFamilyFromGrade,
@@ -166,7 +167,7 @@ export function printCoa(opts: {
   const params = coaParamsForGravity(gravity, family);
   const product = coaProductName();
   const logo = `${window.location.origin}/brand/suntek-official.png`;
-  const dateStr = opts.date || new Date().toLocaleDateString('en-IN');
+  const dateStr = opts.date || formatDate(new Date());
 
   const rows = params.map((p) => {
     const result = opts.results[p.key] ?? '';

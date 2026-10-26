@@ -384,9 +384,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       return (data ?? []).map((d) => {
         const isTonight = d.duty_date === todayIso;
         const days = daysFromNow(d.duty_date);
-        const dateLabel = new Date(d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', {
-          weekday: 'long', day: '2-digit', month: 'short', year: 'numeric',
-        });
+        const dateLabel = `${new Date(d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long' })}, ${formatDate(d.duty_date)}`;
         const plant = ctx.plantName(d.plant_id);
         const when = isTonight ? 'Tonight' : days === 1 ? 'Tomorrow' : days != null ? `In ${days} days` : 'Scheduled';
         return {

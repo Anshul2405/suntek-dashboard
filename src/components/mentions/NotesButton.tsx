@@ -10,6 +10,7 @@ import { supabase } from '../../lib/supabase';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { useNotifications } from '../../contexts/NotificationsContext';
 import { useToast } from '../ui/toast';
+import { formatDateTime } from '../../lib/utils/formatting';
 import {
   useDirectory, getNotes, getNotesCount, getWatchers, getReceipts, markNoteSeen,
   postNote, addWatchers, truncate, seenProfileIds, tickState,
@@ -318,7 +319,7 @@ function NoteRow({ note, receipts, viewerId, onSeen }: {
 
 function fmtTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return formatDateTime(iso);
   } catch {
     return '';
   }
