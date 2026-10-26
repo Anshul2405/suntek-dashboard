@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 export interface KpiMeta {
   title: string;
   what: string;
-  source: 'BUSY DB' | 'Supabase' | 'Derived' | 'Form entry' | 'Mock data';
+  source: 'BUSY DB' | 'Supabase' | 'Derived' | 'Form entry' | 'Mock data' | 'Purchase workbook';
   tables?: string[];
   dbPath?: string;
   filter?: string;
@@ -15,11 +15,12 @@ export interface KpiMeta {
 }
 
 const SRC_STYLE: Record<KpiMeta['source'], { bg: string; color: string; dot: string }> = {
-  'BUSY DB':    { bg: '#1E3A5F', color: '#93C5FD', dot: '#3B82F6' },
+  'BUSY DB':    { bg: '#161616', color: '#FDBA74', dot: '#EF6C00' },
   'Supabase':   { bg: '#1A3A2A', color: '#86EFAC', dot: '#22C55E' },
   'Derived':    { bg: '#3B1F5E', color: '#D8B4FE', dot: '#A855F7' },
   'Form entry': { bg: '#3B2A10', color: '#FCD34D', dot: '#F59E0B' },
   'Mock data':  { bg: '#1F2937', color: '#9CA3AF', dot: '#6B7280' },
+  'Purchase workbook': { bg: '#3F2A1D', color: '#FDBA74', dot: '#F97316' },
 };
 
 function Label({ children }: { children: React.ReactNode }) {

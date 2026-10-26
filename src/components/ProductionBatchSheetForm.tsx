@@ -12,10 +12,13 @@ import { useTranslation } from 'react-i18next';
 import { Camera, Check, ChevronLeft, ChevronRight, Eye, ImageUp, X } from 'lucide-react';
 import { CameraCapture } from './CameraCapture';
 import { ImageLightbox, type LightboxImage } from './ui/ImageLightbox';
+import { checkPhotoKind } from '../lib/photoCheck';
+import { recordAudit } from '../lib/opsControls';
 import { uploadWorkflowImage } from '../lib/cloudinary';
 import { insertRows } from '../lib/db';
 import { humanizeError, rawErrorText } from '../lib/errors';
 import { supabase } from '../lib/supabase';
+import { displayLocationName } from '../lib/plantLabels';
 import { usePlantScope } from '../contexts/PlantScopeContext';
 import { useRoleContext } from '../contexts/RoleContext';
 import { canSelectBatchGrade } from '../lib/profiles';
@@ -25,6 +28,9 @@ import {
   preferCatalogIfDbStale,
   parseReactorBatchSeq,
   isValidReactorBatchNo,
+  missingReactorBatches,
+  describeMissingSheets,
+  formatReactorBatchNo,
   reactorBatchPrefix,
   type CatalogReactor,
 } from '../lib/batch/reactorCatalog';
@@ -103,6 +109,7 @@ export function ProductionBatchSheetForm({
   const [plantId, setPlantId] = useState('');
   const [reactorId, setReactorId] = useState('');
   const [batchNoInput, setBatchNoInput] = useState('');
+  const [savedBatchNos, setSavedBatchNos] = useState<string[]>([]);
   const [reactors, setReactors] = useState<ReactorRow[]>([]);
   const [usingFallbackReactors, setUsingFallbackReactors] = useState(false);
   const [density, setDensity] = useState('');
@@ -208,15 +215,21 @@ export function ProductionBatchSheetForm({
     });
   }, [reactorId, reactors]);
 
-  const addPhoto = useCallback((kind: PhotoKind, blob: Blob) => {
+  const addPhoto = useCallback(async (kind: PhotoKind, blob: Blob, name?: string) => {
+    const verdict = await checkPhotoKind(blob, kind, name);
+    if (!verdict.ok) {
+      toast.error(verdict.reason);
+      return;
+    }
+    const stored = verdict.prepared ?? blob;
     setPhotos(prev => {
       if (prev[kind].length >= MAX_PHOTOS) return prev;
       return {
         ...prev,
-        [kind]: [...prev[kind], { blob, previewUrl: URL.createObjectURL(blob) }],
+        [kind]: [...prev[kind], { blob: stored, previewUrl: URL.createObjectURL(stored) }],
       };
     });
-  }, []);
+  }, [toast]);
 
   const removePhoto = useCallback((kind: PhotoKind, index: number) => {
     setPhotos(prev => {
@@ -250,6 +263,17 @@ export function ProductionBatchSheetForm({
   const batchNoOk = !!(selectedReactor?.code && isValidReactorBatchNo(batchNoTyped, selectedReactor.code));
   const batchNoTouched = batchNoTyped.length > batchPrefix.length;
   const batchNoInvalid = batchNoTouched && !batchNoOk;
+  const missingOnThisReactor = (() => {
+    const code = selectedReactor?.code;
+    if (!code) return '';
+    const nos = [...savedBatchNos];
+    if (batchNoOk) nos.push(batchNoTyped);
+    const gap = missingReactorBatches(nos).find((g) => g.code.toUpperCase() === code.toUpperCase());
+    if (!gap) return '';
+    const text = describeMissingSheets(gap);
+    const single = gap.missing.length === 1 && !text.includes(' to ');
+    return `${text} ${single ? 'is' : 'are'} missing or not yet uploaded.`;
+  })();
 
   const canNext =
     step === 0 ? !!(plantId && reactorId && batchNoOk) :
@@ -304,10 +328,57 @@ export function ProductionBatchSheetForm({
     return maxSeq + 1;
   }
 
+  useEffect(() => {
+    const code = reactors.find(r => r.id === reactorId)?.code;
+    if (!code || !plantId) {
+      setSavedBatchNos([]);
+      return;
+    }
+    let cancel = false;
+    void (async () => {
+      const nos: string[] = [];
+      const { data: legacyRows } = await supabase
+        .from('active_batches')
+        .select('batch_no, sheet_details')
+        .eq('plant_id', plantId)
+        .limit(1000)
+        .returns<{ batch_no: string; sheet_details: { reactorCode?: string } | null }[]>();
+      for (const row of legacyRows ?? []) {
+        if (parseReactorBatchSeq(row.batch_no, code) != null) nos.push(row.batch_no);
+      }
+      const { data: nativeRows } = await supabase
+        .from('production_batch_sheets')
+        .select('batch_no')
+        .eq('plant_id', plantId)
+        .limit(500)
+        .returns<{ batch_no: string }[]>();
+      for (const row of nativeRows ?? []) {
+        if (parseReactorBatchSeq(row.batch_no, code) != null) nos.push(row.batch_no);
+      }
+      if (cancel) return;
+      setSavedBatchNos(nos);
+      const max = nos.reduce((m, no) => Math.max(m, parseReactorBatchSeq(no, code) || 0), 0);
+      setBatchNoInput(formatReactorBatchNo(code, max + 1));
+    })();
+    return () => { cancel = true; };
+    // Reads the sheets already saved for this reactor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reactorId, plantId, reactors]);
+
   async function handleSubmit() {
     if (!canNext || !reactorId || !plantId || !photosOk || !densityOk || !batchNoOk) return;
     setSaving(true);
     try {
+      for (const kind of ['sheet', 'bucket', 'heat'] as const) {
+        for (const item of photos[kind]) {
+          const verdict = await checkPhotoKind(item.blob, kind);
+          if (!verdict.ok) {
+            toast.error(verdict.reason);
+            setStep(2);
+            return;
+          }
+        }
+      }
       const creator = activeProfile.name || 'Technical';
       const reactorCode = selectedReactor?.code || 'P1';
       const batchNo = batchNoTyped;
@@ -404,6 +475,15 @@ export function ProductionBatchSheetForm({
         if (insertErr) throw insertErr;
       }
 
+      await recordAudit({
+        module: 'batch',
+        action: 'batch_sheet_created',
+        summary: `Created batch ${batchNo} with sheet, bucket and heat-sample photos`,
+        actorName: creator,
+        actorRole: activeProfile.roleLabel,
+        photoUrl: sheetUrls[0] || bucketUrls[0] || heatUrls[0] || null,
+      });
+
       toast.success(
         t('batchProd.createdSuccess', {
           defaultValue: 'Batch {{batchNo}} created',
@@ -469,7 +549,7 @@ export function ProductionBatchSheetForm({
                 className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-800 outline-none focus:border-amber-400"
               >
                 {scopedPlants.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>
                 ))}
               </select>
             </label>
@@ -522,6 +602,11 @@ export function ProductionBatchSheetForm({
                   batchNoInvalid ? 'border-red-400 bg-red-50' : 'border-slate-200'
                 }`}
               />
+              {missingOnThisReactor && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-slate-800">
+                  {missingOnThisReactor}
+                </div>
+              )}
               {batchNoInvalid ? (
                 <span className="text-[10px] text-red-600 font-semibold">
                   {t('batchProd.batchNoInvalid', {
@@ -639,7 +724,7 @@ export function ProductionBatchSheetForm({
             <div>
               <div className="text-sm font-bold text-slate-800">{t('batchProd.stepPhotos', 'Evidence photos')}</div>
               <p className="mt-1 text-xs text-slate-500">
-                {t('batchProd.stepPhotosHint', 'All three slots required. Maximum 2 photos per slot.')}
+                {t('batchProd.stepPhotosHint', 'All three slots required. A wrong photo is rejected and you cannot continue. Maximum 2 photos per slot.')}
                 {' '}
                 {t('batchProd.tapToPreview', 'Tap a photo to preview full size.')}
               </p>
@@ -695,11 +780,13 @@ export function ProductionBatchSheetForm({
                         <ImageUp size={14} /> Upload
                         <input
                           type="file"
-                          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                          accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif"
                           className="hidden"
                           onChange={e => {
                             const f = e.target.files?.[0];
-                            if (f) addPhoto(kind, f);
+                            // Start the byte copy before the input is cleared. Some
+                            // phones drop the file the moment value is reset.
+                            if (f) void addPhoto(kind, f, f.name);
                             e.target.value = '';
                           }}
                         />
@@ -748,9 +835,9 @@ export function ProductionBatchSheetForm({
                 <dt className="text-[10px] font-bold uppercase text-slate-400">{t('batchProd.oilRatio', 'Oil ratio')}</dt>
                 <dd className="font-semibold text-slate-800">{oilRatio || '—'}</dd>
               </div>
-              <div className="rounded-xl bg-slate-50 px-3 py-2">
-                <dt className="text-[10px] font-bold uppercase text-slate-400">Colour</dt>
-                <dd className="font-semibold text-slate-800 text-xs">{colourNote || 'Photo only'}</dd>
+              <div className="rounded-xl bg-slate-50 px-3 py-2 col-span-2">
+                <dt className="text-[10px] font-bold uppercase text-slate-400">Recorded</dt>
+                <dd className="font-extrabold text-slate-900">{new Date().toLocaleString('en-IN')}</dd>
               </div>
             </dl>
             <div className="text-xs text-slate-500">

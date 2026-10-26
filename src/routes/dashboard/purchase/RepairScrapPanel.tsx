@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Wrench, Trash2, PackageCheck } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { callRpc } from '../../../lib/db';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
@@ -54,6 +55,7 @@ function partReturnState(p: DefectivePartRow): 'pending' | 'partial' | 'returned
 export function RepairScrapPanel() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const toast = useToast();
   const { scopeQuery, storeQuery } = usePlantScope();
   const { activeProfile } = useRoleContext();
@@ -65,6 +67,11 @@ export function RepairScrapPanel() {
   const [search, setSearch] = useState('');
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   const [returnItem, setReturnItem] = useState<PartItem | null>(null);
+
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (q) setSearch(q);
+  }, [searchParams]);
 
   const canReturn = profileHasCapability(activeProfile, 'return_repairs');
   const canReverse = profileHasCapability(activeProfile, 'reverse_repair_return');
@@ -139,7 +146,7 @@ export function RepairScrapPanel() {
   }, [parts, rows]);
 
   const filteredItems = useTextFilter(partItems, search,
-    i => [i.part.part_name, i.ticket.equipment, i.ticket.plants?.name, i.ticket.id.slice(0, 8), i.ticket.assigned_to]);
+    i => [i.part.part_name, i.ticket.equipment, displayLocationName(i.ticket.plants?.name), i.ticket.plants?.name, i.ticket.id.slice(0, 8), i.ticket.assigned_to]);
   // A ticket that repaired 3 and scrapped 2 appears in BOTH lists, each with
   // its own quantity — which is the whole point of the split.
   const repair = useMemo(() => filteredItems.filter(i => Number(i.part.repair_qty) > 0), [filteredItems]);
@@ -207,7 +214,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
   const s = useSortable(rows, {
     part: i => i.part.part_name,
     equipment: i => i.ticket.equipment,
-    plant: i => i.ticket.plants?.name,
+    plant: i => displayLocationName(i.ticket.plants?.name),
     ticket: i => i.ticket.id,
     closed: i => (i.ticket.closed_at ? new Date(i.ticket.closed_at) : null),
     status: i => i.ticket.status,
@@ -253,7 +260,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                   <tr key={p.id} onClick={() => onOpenTicket(r.id)} style={{ cursor: 'pointer' }} title={t('repairScrap.openTicket', 'Open maintenance ticket')}>
                     <td className="font-semibold">{p.part_name}</td>
                     <td className="text-slate-500">{r.equipment}</td>
-                    <td className="text-slate-500">{r.plants?.name || '—'}</td>
+                    <td className="text-slate-500">{displayLocationName(r.plants?.name) || '—'}</td>
                     <td><span className="num text-xs text-blue-600 font-semibold">#{r.id.slice(0, 8)}</span></td>
                     <td className="text-slate-500">{fmtDate(r.closed_at)}</td>
                     {!isRepair && <td className="num font-bold" style={{ color: '#DC2626' }}>{Number(p.scrap_qty)}</td>}
@@ -333,7 +340,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
   }, [allocs]);
 
   const filtered = useTextFilter(receipts, search, r => [
-    r.vendor_name, r.invoice_no, r.actor_name, r.plants?.name, r.id.slice(0, 8),
+    r.vendor_name, r.invoice_no, r.actor_name, displayLocationName(r.plants?.name), r.plants?.name, r.id.slice(0, 8),
     ...(byReceipt.get(r.id) || []).map(a => a.item_name),
   ]);
 

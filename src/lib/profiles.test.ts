@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { profileCanAccess, roleToProfile, initialsFrom, canViewBatchOilRatio, canViewBatchFacet, canViewBatchRegister, canSelectBatchGrade, isAdminProfile, isManagementProfile, type MockProfile, type RoleRow } from './profiles';
+import { profileCanAccess, roleToProfile, initialsFrom, canViewBatchOilRatio, canViewBatchFacet, canViewBatchRegister, canSelectBatchGrade, isAdminProfile, isManagementProfile, canSeeScheduleSetup, unionRoleAccess, profileHasCapability, type MockProfile, type RoleRow } from './profiles';
 
 // Synthetic profiles (the role catalog is now DB-driven; tests use fixtures).
 function mk(allowed: string[], overrides: Partial<MockProfile> = {}): MockProfile {
@@ -34,6 +34,12 @@ describe('profileCanAccess', () => {
     expect(profileCanAccess(p, '/dashboard')).toBe(true);
     expect(profileCanAccess(p, '/dashboard/night-entry')).toBe(false);
     expect(profileCanAccess(p, '/dashboard/batch-entry')).toBe(false);
+  });
+
+  it('opens the purchase book for anyone who already sees purchase orders or marine', () => {
+    expect(profileCanAccess(mk(['/dashboard/purchase/purchase']), '/dashboard/purchase/book')).toBe(true);
+    expect(profileCanAccess(mk(['/dashboard/purchase/marine']), '/dashboard/purchase/book')).toBe(true);
+    expect(profileCanAccess(mk(['/dashboard/purchase/maint']), '/dashboard/purchase/book')).toBe(false);
   });
 
   it('allows explicitly listed routes and denies unlisted ones', () => {
@@ -193,6 +199,46 @@ describe('canViewBatchRegister', () => {
     expect(canViewBatchRegister(raw)).toBe(false);
     expect(profileCanAccess(raw, '/dashboard/batches')).toBe(false);
     expect(profileCanAccess(raw, '/dashboard/batch-entry')).toBe(true);
+  });
+});
+
+describe('canSeeScheduleSetup', () => {
+  it('hides Schedule Setup from a store manager until manage_schedules is granted', () => {
+    const sanju = mk(['/dashboard/purchase/maint'], {
+      id: 'db_sanju',
+      baseRoleId: 'store_manager_maint',
+      capabilities: [],
+    });
+    expect(canSeeScheduleSetup(sanju)).toBe(false);
+    expect(profileHasCapability(sanju, 'manage_schedules')).toBe(false);
+    expect(canSeeScheduleSetup({ ...sanju, capabilities: ['manage_schedules'] })).toBe(true);
+  });
+
+  it('still opens Schedule Setup for unit head and owner without an extra toggle', () => {
+    expect(canSeeScheduleSetup(mk(['/dashboard/purchase/maint'], { id: 'unit_head' }))).toBe(true);
+    expect(canSeeScheduleSetup(mk(['*'], { id: 'db_owner', baseRoleId: 'admin' }))).toBe(true);
+  });
+});
+
+describe('unionRoleAccess', () => {
+  it('unions capabilities across extra roles so preview matches login', () => {
+    const store: RoleRow = {
+      id: 'store_manager_maint',
+      label: 'Store Manager · Maint',
+      level: 'L2',
+      description: null,
+      home_route: '/dashboard/purchase/maint',
+      allowed_routes: ['/dashboard/purchase/maint'],
+      standalone_only: false,
+      is_admin: false,
+      is_system: false,
+      capabilities: [],
+      avatar_from: null,
+      avatar_to: null,
+      sort_order: 20,
+    };
+    const extra: RoleRow = { ...store, id: 'custom', capabilities: ['manage_schedules'] };
+    expect(unionRoleAccess([store, extra]).capabilities).toContain('manage_schedules');
   });
 });
 

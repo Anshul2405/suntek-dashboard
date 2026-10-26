@@ -55,13 +55,13 @@ const COA_TDS_ROW: Record<CoaParamKey, number> = {
 const COA_PARAM_TEMPLATE: Omit<CoaParamDef, 'standard'>[] = [
   { key: 'color_hazen', sno: 1, parameter: 'Color, Hazen Unit, Max', resultKind: 'number' },
   { key: 'chlorine_content', sno: 2, parameter: 'Chlorine Contents %, m/m', resultKind: 'number' },
-  { key: 'specific_gravity', sno: 3, parameter: 'Specific Gravity at 27°C, By Hydrometer', resultKind: 'number' },
-  { key: 'viscosity_35c', sno: 4, parameter: 'Viscosity at 35°C, Ford Cup 4mm, Poise', resultKind: 'number' },
+  { key: 'specific_gravity', sno: 3, parameter: 'Specific Gravity at 30°C, By Hydrometer', resultKind: 'number' },
+  { key: 'viscosity_35c', sno: 4, parameter: 'Viscosity at 30°C, Ford Cup 4mm, Poise', resultKind: 'number' },
   { key: 'free_mineral_acidity', sno: 5, parameter: 'Free Mineral Acidity, % by weight, Max', resultKind: 'number' },
   { key: 'free_chlorine', sno: 6, parameter: 'Free Chlorine, PPM', resultKind: 'text' },
   { key: 'volatile_loss', sno: 7, parameter: 'Volatile Loss at 130°C/3Hrs, % by mass, Max', resultKind: 'number' },
   { key: 'thermal_stability', sno: 8, parameter: 'Thermal Stability as % HCL after 4 hr at 175°C, Max', resultKind: 'number' },
-  { key: 'heat_stability', sno: 9, parameter: 'Heat Stability at 180°C/20 min', resultKind: 'text' },
+  { key: 'heat_stability', sno: 9, parameter: 'Heat Stability at 200°C/20 min', resultKind: 'text' },
   { key: 'ph', sno: 10, parameter: 'pH', resultKind: 'number' },
   { key: 'refractive_index', sno: 11, parameter: 'Refractive Index', resultKind: 'number' },
 ];
@@ -91,14 +91,43 @@ export function coaFamilyFromGrade(oilGrade?: string | null): TdsFamily {
   return oilGrade?.trim().toUpperCase() === 'HNP' ? 'HNP' : 'NP';
 }
 
+/**
+ * Printed STANDARD column on the plant COA for NP 1.20 (grade A1).
+ * Taken from the SPPL Rehla certificate — several limits differ from the TDS sheet.
+ */
+const COA_NP_1200_STANDARD: Partial<Record<CoaParamKey, string>> = {
+  color_hazen: '30',
+  chlorine_content: '42 ± 2',
+  specific_gravity: '1.2 ± 0.02',
+  viscosity_35c: '1 - 5',
+  free_mineral_acidity: '0.01',
+  free_chlorine: 'NIL',
+  volatile_loss: '1.5',
+  thermal_stability: '0.10',
+  heat_stability: 'Light yellow',
+  ph: '6 - 7',
+  refractive_index: '>1.49',
+};
+
 /** Standard column for COA — one row per parameter for the given gravity + family. */
 export function coaParamsForGravity(gravity: number, family: TdsFamily = 'NP'): CoaParamDef[] {
   const band = nearestOilRatioBand(gravity);
   const grade = gradeCodeFor(family, band);
+  const letter = family === 'NP' && grade === 'A1' ? COA_NP_1200_STANDARD : null;
   return COA_PARAM_TEMPLATE.map((p) => ({
     ...p,
-    standard: tdsCell(family, grade, COA_TDS_ROW[p.key]),
+    standard: letter?.[p.key] ?? presentCoaStandard(p.key, tdsCell(family, grade, COA_TDS_ROW[p.key])),
   }));
+}
+
+/** Certificate writes chlorine as "42 ± 2", and puts spaces around ±. */
+function presentCoaStandard(key: CoaParamKey, raw: string): string {
+  const trimmed = raw.trim();
+  if (key === 'chlorine_content') {
+    const m = /^±\s*(\d+(?:\.\d+)?)$/.exec(trimmed);
+    if (m) return `${m[1]} ± 2`;
+  }
+  return trimmed.replace(/±/g, ' ± ').replace(/\s+/g, ' ').trim();
 }
 
 export function coaSpecLabel(gravity: number, family: TdsFamily = 'NP'): string {

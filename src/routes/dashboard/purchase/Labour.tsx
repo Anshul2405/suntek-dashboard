@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { SlidePanel, PanelField, PanelInput, PanelTextarea, PanelDivider, PanelFooter } from '../../../components/SlidePanel';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
 import { useSortable } from '../../../components/ui/useSortable';
@@ -57,7 +58,7 @@ export function Labour() {
   const flaggedCount = costs.filter(c => c.is_flagged).length;
 
   const cSort = useSortable(costs, {
-    plant:        c => c.plants?.name ?? '',
+    plant:        c => displayLocationName(c.plants?.name),
     date:         c => new Date(c.date),
     purchaseQty:  c => c.purchased_qty,
     salesQty:     c => c.sales_qty,
@@ -141,7 +142,7 @@ export function Labour() {
                 const tLbl   = vPct > 0 ? t('labour.varianceOver', { pct: vPct.toFixed(1) }) : vPct < 0 ? t('labour.varianceUnder', { pct: Math.abs(vPct).toFixed(1) }) : t('labour.onTarget');
                 return (
                   <tr key={c.id} style={{ cursor: 'pointer' }}>
-                    <td className="font-semibold">{c.plants?.name || '—'}</td>
+                    <td className="font-semibold">{displayLocationName(c.plants?.name) || '—'}</td>
                     <td className="text-slate-500 text-xs">{c.date}</td>
                     <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
                     <td className="num text-slate-500">{c.sales_qty ?? '—'}</td>

@@ -5,9 +5,10 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
   Wrench, AlertTriangle, AlertCircle, Mic,
-  CheckSquare, ShoppingCart, Truck, FlaskConical, Boxes, ArrowRight, Package,
+  CheckSquare, ShoppingCart, Truck, FlaskConical, Boxes, Package,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import type { Database } from '../../lib/database.types';
 
 type AlertRow = Database['public']['Tables']['alerts']['Row'];
@@ -17,10 +18,10 @@ type ReqRow = Database['public']['Tables']['store_requisitions']['Row'] & { plan
 import {
   useOverviewKPIs, useTopCustomers, useRecentMovements, useAnalyticsKPIs, fmtINR,
 } from '../../hooks/useBusyData';
-import { DSOGauge, RingProgress, MiniBarChart, BulletCompare, DeltaBadge, OverdueAgingBar } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
+import type { KpiMeta } from '../../components/KpiInfoButton';
 import { StockSnapshot } from '../../components/overview/StockSnapshot';
-import { ButtonV2, SectionCard, StatusPill } from '../../components/v2';
+import { ButtonV2, StatusPill } from '../../components/v2';
 
 /** Fallback source→route map for older alert rows without an explicit `route`. */
 const ALERT_ROUTE: Record<string, string> = {
@@ -70,21 +71,70 @@ function toneForCount(n: number | null, hotAt = 1): 'ok' | 'warn' | 'hot' | 'neu
 }
 
 /** One "Business KPIs" column: gray label, big value, colored delta line. */
-function KpiBlock({ label, value, delta, deltaTone = 'slate', info }: {
+function KpiBlock({ label, value, delta, deltaTone = 'slate', info, accent }: {
   label: string;
   value: React.ReactNode;
   delta?: React.ReactNode;
   deltaTone?: 'green' | 'red' | 'orange' | 'slate';
   info?: React.ComponentProps<typeof KpiInfoButton>['info'];
+  accent?: boolean;
 }) {
-  const toneCls = { green: 'text-green-600', red: 'text-red-600', orange: 'text-orange-600', slate: 'text-slate-400' }[deltaTone];
   return (
-    <div className="ops-kpi-cell">
+    <div className="ops-kpi-cell" data-accent={accent ? '1' : undefined}>
       {info && <KpiInfoButton info={info} style={{ top: 8, right: 8 }} />}
       <div className="ops-kpi-label">{label}</div>
       <div className="ops-kpi-val">{value}</div>
-      {delta && <div className={`ops-kpi-delta ${toneCls}`}>{delta}</div>}
+      {delta && <div className="ops-kpi-delta" data-tone={deltaTone}>{delta}</div>}
     </div>
+  );
+}
+
+function Book({
+  title, sub, right, children,
+}: {
+  title: React.ReactNode;
+  sub?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="ov-book">
+      <header className="ov-book-head">
+        <div>
+          <h3>{title}</h3>
+          {sub ? <p>{sub}</p> : null}
+        </div>
+        {right}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function StmtRow({
+  label, value, note, meter, meterTone, info,
+}: {
+  label: string;
+  value: React.ReactNode;
+  note?: React.ReactNode;
+  meter?: number;
+  meterTone?: 'ok' | 'warn' | 'hot';
+  info?: KpiMeta;
+}) {
+  return (
+    <tr>
+      <td className="k">
+        {info && <KpiInfoButton info={info} style={{ top: 6, right: 4 }} />}
+        {label}
+        {meter != null && (
+          <div className="ov-meter" data-tone={meterTone}>
+            <i style={{ width: `${Math.max(0, Math.min(100, meter))}%` }} />
+          </div>
+        )}
+      </td>
+      <td className="v">{value}</td>
+      <td className="n">{note}</td>
+    </tr>
   );
 }
 
@@ -123,34 +173,23 @@ export function Overview() {
   const [pendingReqs, setPendingReqs] = useState<ReqRow[]>([]);
   const [pendingStoreReq, setPendingStoreReq] = useState<number | null>(null);
   const [openMaint, setOpenMaint] = useState<number | null>(null);
-  const [activeBatchCount, setActiveBatchCount] = useState<number | null>(null);
-  const [avgBatchHours, setAvgBatchHours] = useState<number | null>(null);
 
   useEffect(() => {
     (async () => {
-      const [alertsRes, tanksRes, drumsRes, reqRes, maintRes, batchesRes] = await Promise.all([
+      const [alertsRes, tanksRes, drumsRes, reqListRes, reqCountRes, maintRes] = await Promise.all([
         supabase.from('alerts').select('*').eq('is_resolved', false).order('created_at', { ascending: false }).returns<AlertRow[]>(),
         supabase.from('tanks').select('*').order('sort_order', { ascending: true }).returns<TankRow[]>(),
         supabase.from('cpm_drum_stock').select('*').returns<DrumRow[]>(),
         supabase.from('store_requisitions').select('*, plants(name)').eq('status', 'pending').order('created_at', { ascending: false }).limit(8).returns<ReqRow[]>(),
+        supabase.from('store_requisitions').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('maintenance_tickets').select('*', { count: 'exact', head: true }).eq('type', 'emergency').neq('status', 'closed'),
-        supabase.from('active_batches').select('started_at').eq('status', 'active').returns<{ started_at: string }[]>(),
       ]);
       setAlerts(alertsRes.data || []);
       setTanks(tanksRes.data || []);
       setDrumRows(drumsRes.data || []);
-      setPendingReqs(reqRes.data || []);
-      setPendingStoreReq(reqRes.error ? null : (reqRes.data?.length ?? 0));
+      setPendingReqs(reqListRes.data || []);
+      setPendingStoreReq(reqCountRes.error ? null : (reqCountRes.count ?? 0));
       setOpenMaint(maintRes.error ? null : (maintRes.count ?? 0));
-
-      const batches = batchesRes.data || [];
-      setActiveBatchCount(batchesRes.error ? null : batches.length);
-      if (batches.length > 0) {
-        const avgMs = batches.reduce((sum, b) => sum + (Date.now() - new Date(b.started_at).getTime()), 0) / batches.length;
-        setAvgBatchHours(Math.max(0, Math.round(avgMs / 3_600_000)));
-      } else {
-        setAvgBatchHours(null);
-      }
     })();
   }, []);
 
@@ -186,17 +225,16 @@ export function Overview() {
   return (
     <div className="ops-board">
       {/* ── Today's Work (full width) + alerts only when needed ── */}
-      <div>
-        <OpsHead
-          title={t('overview.todaysWork', "Today's Work")}
-          sub={t('overview.todaysWorkSub', 'What needs a decision on the floor right now')}
-        />
+      <Book
+        title={t('overview.todaysWork', "Today's Work")}
+        sub={t('overview.todaysWorkSub', 'What needs a decision on the floor right now')}
+      >
         <div className="ops-shift">
           <button
             type="button"
             className="ops-shift-tile"
             data-tone={toneForCount(pendingStoreReq)}
-            onClick={() => navigate('/dashboard/purchase/storereq')}
+            onClick={() => navigate('/dashboard/purchase/storereq?queue=pending')}
           >
             <div className="ops-shift-label">{t('overview.pendingApprovals', 'Pending Approvals')}</div>
             <div className="ops-shift-val">{pendingStoreReq ?? '…'}</div>
@@ -208,7 +246,7 @@ export function Overview() {
             type="button"
             className="ops-shift-tile"
             data-tone={toneForCount(openMaint)}
-            onClick={() => navigate('/dashboard/purchase/maint')}
+            onClick={() => navigate('/dashboard/purchase/maint?tab=emergency&status=open')}
           >
             <div className="ops-shift-label">{t('overview.openMaintenance', 'Open Maintenance')}</div>
             <div className="ops-shift-val">{openMaint ?? '…'}</div>
@@ -219,23 +257,8 @@ export function Overview() {
           <button
             type="button"
             className="ops-shift-tile"
-            data-tone={activeBatchCount && activeBatchCount > 0 ? 'warn' : 'ok'}
-            onClick={() => navigate('/dashboard/batches')}
-          >
-            <div className="ops-shift-label">{t('overview.activeBatches', 'Active Batches')}</div>
-            <div className="ops-shift-val">{activeBatchCount ?? '…'}</div>
-            <div className="ops-shift-cap">
-              {avgBatchHours != null
-                ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
-                : t('overview.acrossFactories', { count: 4 })}
-            </div>
-          </button>
-          <button
-            type="button"
-            className="ops-shift-tile"
             data-tone={toneForCount(alerts.length)}
             onClick={() => {
-              if (alerts.length === 0) return;
               document.getElementById('ov-alerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }}
           >
@@ -256,7 +279,7 @@ export function Overview() {
             </div>
           </div>
         ) : (
-          <div id="ov-alerts" className="ops-alert-panel mt-3">
+          <div id="ov-alerts" className="ops-alert-panel">
             <OpsHead
               title={t('overview.criticalAlerts', 'Critical Alerts')}
               sub={t('overview.criticalAlertsSub', 'Plant stoppers & risk flags')}
@@ -281,21 +304,21 @@ export function Overview() {
                     onClick={() => route && navigate(route)}
                     role={route ? 'link' : undefined}
                   >
-                    <span className={`w-6 h-6 rounded-md inline-flex items-center justify-center shrink-0 mt-0.5 ${sev === 'red' ? 'bg-red-50 text-red-600' : sev === 'amber' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                    <span className={`w-6 h-6 inline-flex items-center justify-center shrink-0 mt-0.5 ${sev === 'red' ? 'bg-[#3F1515] text-[#F87171]' : sev === 'amber' ? 'bg-[#3A2410] text-[#FB923C]' : 'bg-[#2A2A2A] text-[#A39A90]'}`}>
                       {sev === 'red' ? <AlertTriangle size={12} /> : <AlertCircle size={12} />}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium text-slate-800 leading-snug">{a.text}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{a.source}</div>
+                      <div className="text-[13px] font-medium text-[#F3EFE8] leading-snug">{a.text}</div>
+                      <div className="text-[11px] text-[#8A847C] mt-0.5">{a.source}</div>
                     </div>
-                    <span className="text-[11px] text-slate-400 shrink-0">{a.when_label || AGE(a.created_at, t)}</span>
+                    <span className="text-[11px] text-[#8A847C] shrink-0">{a.when_label || AGE(a.created_at, t)}</span>
                   </div>
                 );
               })}
             </div>
           </div>
         )}
-      </div>
+      </Book>
 
       {/* ── Tool rail ── */}
       <div>
@@ -325,13 +348,13 @@ export function Overview() {
       </div>
 
       {/* ── Business KPIs ── */}
-      <div>
-        <OpsHead
-          title={t('overview.businessKpis', 'Business KPIs')}
-          sub={t('overview.businessKpisSub', 'BUSY ledger pulse — MTD & FY')}
-        />
+      <Book
+        title={t('overview.businessKpis', 'Business KPIs')}
+        sub={t('overview.businessKpisSub', 'BUSY ledger pulse — MTD & FY')}
+      >
         <div className="ops-kpi-rail">
           <KpiBlock
+            accent
             label={t('overview.totalSalesMtd', 'Total Sales (MTD)')}
             value={kpis ? fmtINR(kpis.salesMTD) : '…'}
             delta={analytics ? `${analytics.momRevGrowthPct >= 0 ? '+' : ''}${analytics.momRevGrowthPct}% ${t('overview.vsLastMonth', 'vs last month')}` : undefined}
@@ -344,10 +367,17 @@ export function Overview() {
             delta={kpis ? t('overview.invoicesFy', { count: kpis.salesInvoiceCount }) : undefined}
           />
           <KpiBlock
-            label={t('overview.purchasePaidMtd', 'Purchase Paid (MTD)')}
+            label={t('overview.purchaseMtd', 'Purchase · MTD')}
             value={kpis ? fmtINR(kpis.purchaseMTD) : '…'}
-            delta={t('overview.inclMarineIns', 'incl. marine insurance')}
-            info={{ title: 'Purchase MTD', what: 'Total purchase amount paid to suppliers in the current month, all plants consolidated.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14, Cancelled=0, current month' }}
+            delta={kpis?.purchaseNote || t('overview.inclMarineIns', 'incl. marine insurance')}
+            info={{ title: 'Purchase MTD', what: 'Total purchase invoices from suppliers in the current month, all plants consolidated. Liquid chlorine is left out.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=2, Cancelled=0, current month' }}
+          />
+          <KpiBlock
+            label={t('overview.cashNetMtd', 'Cash in − out · MTD')}
+            value={kpis ? `${kpis.receiptsMTD - kpis.paymentsMTD < 0 ? '−' : ''}${fmtINR(Math.abs(kpis.receiptsMTD - kpis.paymentsMTD))}` : '…'}
+            delta={kpis ? t('overview.cashInOut', { defaultValue: 'In {{inAmt}} · Out {{outAmt}}', inAmt: fmtINR(kpis.receiptsMTD), outAmt: fmtINR(kpis.paymentsMTD) }) : undefined}
+            deltaTone={kpis && kpis.receiptsMTD >= kpis.paymentsMTD ? 'green' : 'orange'}
+            info={{ title: 'Cash in vs out this month', what: 'Money received from customers (receipt vouchers) minus money paid out (payment vouchers) this month, up to today. Post-dated entries are left out.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14 receipts, VchType=19 payments, Cancelled=0, current month, date up to today' }}
           />
           <KpiBlock
             label={t('overview.debtorsOutstanding', 'Debtors Outstanding')}
@@ -355,32 +385,23 @@ export function Overview() {
             delta={analytics ? `DSO ${analytics.dso}d` : undefined}
             deltaTone={analytics && analytics.dso > 30 ? 'orange' : 'green'}
           />
-          <KpiBlock
-            label={t('overview.pendingApprovals', 'Pending Approvals')}
-            value={pendingStoreReq ?? '…'}
-            delta={pendingStoreReq ? t('overview.requiresActionShort', 'Requires action') : t('overview.noChange', '— No change')}
-            deltaTone={pendingStoreReq ? 'orange' : 'slate'}
-          />
         </div>
-      </div>
+      </Book>
 
       {/* ── Pending Approvals table ── */}
-      <SectionCard className="!rounded-[14px]" flush>
-        <div className="px-5 pt-5 pb-1">
-          <OpsHead
-            title={t('overview.pendingApprovals', 'Pending Approvals')}
-            sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
-            right={
-              <button
-                type="button"
-                className="ops-link"
-                onClick={() => navigate('/dashboard/purchase/storereq')}
-              >
-                {t('common.viewAll', 'View all')}
-              </button>
-            }
-          />
-        </div>
+      <Book
+        title={t('overview.pendingApprovals', 'Pending Approvals')}
+        sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
+        right={
+          <button
+            type="button"
+            className="ops-link"
+            onClick={() => navigate('/dashboard/purchase/storereq?queue=pending')}
+          >
+            {t('common.viewAll', 'View all')}
+          </button>
+        }
+      >
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
             <thead>
@@ -406,7 +427,7 @@ export function Overview() {
                 </tr>
               )}
               {pendingReqs.map(r => (
-                <tr key={r.id} onClick={() => navigate('/dashboard/purchase/storereq')} style={{ cursor: 'pointer' }}>
+                <tr key={r.id} onClick={() => navigate('/dashboard/purchase/storereq?queue=pending')} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
                       <Package size={13} className="text-slate-400" /> {t('overview.storeReq', 'Store Requisition')}
@@ -414,7 +435,7 @@ export function Overview() {
                   </td>
                   <td className="font-mono text-xs text-slate-400">#{r.id.slice(0, 8)}</td>
                   <td className="font-semibold text-slate-700">{r.item}</td>
-                  <td>{r.plants?.name || '—'}</td>
+                  <td>{displayLocationName(r.plants?.name) || '—'}</td>
                   <td className="num">{r.qty}</td>
                   <td className="text-slate-500">{fmtDT(r.created_at)}</td>
                   <td>
@@ -424,7 +445,7 @@ export function Overview() {
                         <ButtonV2
                           size="sm" variant="outline"
                           className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
-                          onClick={(e) => { e.stopPropagation(); navigate('/dashboard/purchase/storereq'); }}
+                          onClick={(e) => { e.stopPropagation(); navigate('/dashboard/purchase/storereq?queue=pending'); }}
                         >
                           {t('overview.review', 'Review')}
                         </ButtonV2>
@@ -435,239 +456,195 @@ export function Overview() {
             </tbody>
           </table>
         </div>
-        {pendingReqs.length > 0 && (
-          <div className="px-5 py-3 text-[12px] text-slate-400 border-t border-slate-100">
-            {t('overview.showingOf', { n: pendingReqs.length, defaultValue: 'Showing {{n}} of {{n}}' })}
-          </div>
-        )}
-      </SectionCard>
+      </Book>
 
-      {/* ── Analytics Insight Row ── */}
       {analytics && (
-        <div className="grid grid-cols-12 gap-4">
-
-          {/* DSO Gauge */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Days Sales Outstanding (DSO)', what: 'How many days on average it takes to collect payment after a sale is made. Lower is better — below 30d is best-in-class.', source: 'Derived', formula: 'DSO = (Debtors Outstanding / FY Revenue) × 365', tables: ['DailySum', 'Master1', 'Tran1'], note: 'Debtors = Master1 WHERE ParentGrp=116. Target < 30 days.' }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.daysSalesOutstanding')}</div>
-            <div className="flex items-center gap-3">
-              <DSOGauge value={analytics.dso} />
-              <div>
-                <div className="text-xs text-slate-500 leading-snug">{t('overview.targetUnder30')}<br/>{t('overview.turnover')} <strong className="text-slate-700">{analytics.debtorTurnover}×</strong></div>
-                <div className="mt-2">
-                  <DeltaBadge value={-(analytics.dso - 30)} unit={t('overview.dGap')} />
-                </div>
+        <div className="ov-books">
+          <Book
+            title={t('overview.workingCapitalBook', 'Working capital')}
+            sub={t('overview.workingCapitalBookSub', 'DSO · margin · run rate')}
+          >
+            <table className="ov-stmt">
+              <tbody>
+                <StmtRow
+                  info={{ title: 'Days Sales Outstanding (DSO)', what: 'How many days on average it takes to collect payment after a sale is made. Lower is better — below 30d is best-in-class.', source: 'Derived', formula: 'DSO = (Debtors Outstanding / FY Revenue) × 365', tables: ['DailySum', 'Master1', 'Tran1'], note: 'Debtors = Master1 WHERE ParentGrp=116. Target < 30 days.' }}
+                  label={t('overview.daysSalesOutstanding')}
+                  value={`${analytics.dso.toFixed(1)} d`}
+                  note={`${t('overview.targetUnder30')} · ${t('overview.turnover')} ${analytics.debtorTurnover.toFixed(2)}×`}
+                  meter={(analytics.dso / 90) * 100}
+                  meterTone={analytics.dso > 60 ? 'hot' : analytics.dso > 30 ? 'warn' : 'ok'}
+                />
+                <StmtRow
+                  info={{ title: 'Gross Margin %', what: 'Percentage of FY revenue remaining after subtracting total purchases.', source: 'Derived', formula: 'Gross Margin = (FY Revenue − FY Purchase) / FY Revenue × 100', tables: ['Tran1'], note: 'Industry benchmark for chemical mfg is ~28%.' }}
+                  label={t('overview.grossMarginFy')}
+                  value={`${analytics.grossMarginPct.toFixed(1)}%`}
+                  note={`${t('overview.costRatio')} ${analytics.purchaseToCostPct.toFixed(1)}% · ${t('overview.industryAvg28')}`}
+                  meter={analytics.grossMarginPct}
+                  meterTone={analytics.grossMarginPct >= 28 ? 'ok' : analytics.grossMarginPct >= 18 ? 'warn' : 'hot'}
+                />
+                <StmtRow
+                  info={{ title: 'Annualised Revenue Run Rate', what: 'Projects full-year revenue based on the average of the last 2 complete months.', source: 'Derived', formula: 'Run Rate = avg(last 2 complete months revenue) × 12', tables: ['Tran1'] }}
+                  label={t('overview.annualisedRunRate')}
+                  value={fmtINR(analytics.revenueRunRate)}
+                  note={`${analytics.momRevGrowthPct >= 0 ? '+' : ''}${analytics.momRevGrowthPct}% ${t('overview.momRevGrowth')}`}
+                />
+                <StmtRow
+                  info={{ title: 'Net Working Capital', what: 'Total debtors outstanding minus total creditors outstanding.', source: 'Derived', formula: 'NWC = Debtors Outstanding − Creditors Outstanding', tables: ['DailySum', 'Master1'] }}
+                  label={t('overview.netWorkingCapital')}
+                  value={`${analytics.netWorkingCapital >= 0 ? '+' : ''}${fmtINR(analytics.netWorkingCapital)}`}
+                  note={`${t('overview.debtors')} ${fmtINR(kpis?.debtorsOutstanding ?? 0)} · ${t('overview.creditors')} ${fmtINR(analytics.creditorsOutstanding)}`}
+                />
+              </tbody>
+            </table>
+            {analytics.monthly.length > 0 && (
+              <div className="ov-months">
+                {analytics.monthly.slice(-6).map(m => {
+                  const max = Math.max(...analytics.monthly.map(x => x.revenue), 1);
+                  return (
+                    <div key={m.label}>
+                      <b style={{ height: `${Math.max(2, (m.revenue / max) * 28)}px` }} />
+                      <span>{m.label}</span>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-          </div>
+            )}
+          </Book>
 
-          {/* Gross Margin Ring */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Gross Margin %', what: 'Percentage of FY revenue remaining after subtracting total purchases.', source: 'Derived', formula: 'Gross Margin = (FY Revenue − FY Purchase) / FY Revenue × 100', tables: ['Tran1'], note: 'Industry benchmark for chemical mfg is ~28%.' }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.grossMarginFy')}</div>
-            <div className="flex items-center gap-3">
-              <RingProgress pct={analytics.grossMarginPct} color="#16A34A" label={t('overview.marginLabel')} />
-              <div>
-                <div className="text-[22px] font-extrabold text-green-700">{analytics.grossMarginPct}%</div>
-                <div className="text-xs text-slate-500 mt-1">{t('overview.costRatio')} <strong className="text-slate-700">{analytics.purchaseToCostPct}%</strong></div>
-                <div className="text-xs text-slate-500 mt-0.5">{t('overview.industryAvg28')}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Revenue Run Rate + bar sparkline */}
-          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Annualised Revenue Run Rate', what: 'Projects full-year revenue based on the average of the last 2 complete months.', source: 'Derived', formula: 'Run Rate = avg(last 2 complete months revenue) × 12', tables: ['Tran1'] }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.annualisedRunRate')}</div>
-            <div className="text-[22px] font-extrabold text-slate-800 num">{fmtINR(analytics.revenueRunRate)}</div>
-            <div className="flex items-center gap-2 mt-1 mb-2">
-              <DeltaBadge value={analytics.momRevGrowthPct} />
-              <span className="text-[10px] text-slate-500">{t('overview.momRevGrowth')}</span>
-            </div>
-            <MiniBarChart
-              data={analytics.monthly.map(m => m.revenue)}
-              labels={analytics.monthly.map(m => m.label)}
-              color="#EF6C00"
-              height={36}
-            />
-          </div>
-
-          {/* Working Capital — debtors vs creditors */}
-          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Net Working Capital', what: 'Total debtors outstanding minus total creditors outstanding.', source: 'Derived', formula: 'NWC = Debtors Outstanding − Creditors Outstanding', tables: ['DailySum', 'Master1'] }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.netWorkingCapital')}</div>
-            <div className={`text-[22px] font-extrabold num ${analytics.netWorkingCapital >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-              {analytics.netWorkingCapital >= 0 ? '+' : ''}{fmtINR(analytics.netWorkingCapital)}
-            </div>
-            <div className="text-[10px] text-slate-500 mb-3 mt-0.5">{t('overview.debtorsMinusCreditors')}</div>
-            <BulletCompare
-              left={kpis?.debtorsOutstanding ?? 0}
-              right={analytics.creditorsOutstanding}
-              leftLabel={`${t('overview.debtors')} ${fmtINR(kpis?.debtorsOutstanding ?? 0)}`}
-              rightLabel={`${t('overview.creditors')} ${fmtINR(analytics.creditorsOutstanding)}`}
-              leftColor="#EF6C00"
-              rightColor="#2563EB"
-            />
-          </div>
+          <Book
+            title={t('overview.cashCycleBook', 'Cash cycle')}
+            sub={t('overview.cashCycleBookSub', 'DPO · collections · overdue')}
+          >
+            <table className="ov-stmt">
+              <tbody>
+                <StmtRow
+                  info={{ title: 'DPO & Cash Conversion Cycle', what: 'DPO = how many days before the company pays its suppliers. CCC = DSO minus DPO.', source: 'Derived', formula: 'DPO = (Creditors Outstanding / FY Purchase) × 365\nCCC = DSO − DPO' }}
+                  label={t('overview.payablesCycleDpo')}
+                  value={analytics.dpo != null ? `${analytics.dpo.toFixed(1)} d` : '—'}
+                  note={t('overview.daysPayableOutstanding')}
+                />
+                <StmtRow
+                  label={t('overview.cashConversionCycle')}
+                  value={analytics.cashConversionCycle != null
+                    ? `${analytics.cashConversionCycle > 0 ? '+' : ''}${analytics.cashConversionCycle.toFixed(1)} d`
+                    : '—'}
+                  note={analytics.cashConversionCycle != null && analytics.cashConversionCycle <= 0
+                    ? t('overview.cashPositiveCycle')
+                    : t('overview.dsoMinusDpoTied')}
+                />
+                <StmtRow
+                  info={{ title: 'Collection Ratio MTD', what: "Percentage of this month's sales revenue that has already been received as cash.", source: 'Derived', formula: 'Collection Ratio = MTD Receipts / MTD Sales × 100' }}
+                  label={t('overview.collectionRatioMtd')}
+                  value={`${analytics.collectionRatioMTD.toFixed(0)}%`}
+                  note={t('overview.receiptsVsInvoicedMtd')}
+                  meter={analytics.collectionRatioMTD}
+                  meterTone={analytics.collectionRatioMTD >= 80 ? 'ok' : analytics.collectionRatioMTD >= 50 ? 'warn' : 'hot'}
+                />
+                <StmtRow
+                  info={{ title: 'Revenue vs Cash Received Gap', what: 'FY revenue invoiced minus FY receipts actually received — the total still owed across all customers.', source: 'Derived', formula: 'Gap = FY Revenue − FY Receipts (VchType=14)' }}
+                  label={t('overview.revenueVsCashFy')}
+                  value={fmtINR(analytics.revenueReceiptsGap)}
+                  note={`${t('overview.received')} ${fmtINR(analytics.fyReceipts)}`}
+                />
+              </tbody>
+            </table>
+            <table className="dt2">
+              <thead>
+                <tr>
+                  <th>1–30 d</th>
+                  <th>31–60 d</th>
+                  <th>61–90 d</th>
+                  <th>90+ d</th>
+                  <th className="num">{t('overview.overdueAging')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="num">{fmtINR(analytics.overdueAging.d1_30)}</td>
+                  <td className="num">{fmtINR(analytics.overdueAging.d31_60)}</td>
+                  <td className="num">{fmtINR(analytics.overdueAging.d61_90)}</td>
+                  <td className="num">{fmtINR(analytics.overdueAging.d90plus)}</td>
+                  <td className="num" style={{ color: '#DC2626' }}>
+                    {fmtINR(analytics.overdueAging.d1_30 + analytics.overdueAging.d31_60 + analytics.overdueAging.d61_90 + analytics.overdueAging.d90plus)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </Book>
         </div>
       )}
 
-      {/* ── Analytics Insight Row 2 — Liquidity & Risk ── */}
-      {analytics && analytics.dpo !== undefined && (
-        <div className="grid grid-cols-12 gap-4">
-
-          {/* DPO + Cash Conversion Cycle */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'DPO & Cash Conversion Cycle', what: 'DPO = how many days before the company pays its suppliers. CCC = DSO minus DPO.', source: 'Derived', formula: 'DPO = (Creditors Outstanding / FY Purchase) × 365\nCCC = DSO − DPO' }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.payablesCycleDpo')}</div>
-            <div className="text-[28px] font-extrabold num text-blue-700">{analytics.dpo} d</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">{t('overview.daysPayableOutstanding')}</div>
-            <div className="mt-3 pt-3 border-t border-slate-100">
-              <div className="text-[10px] text-slate-400 uppercase tracking-wider">{t('overview.cashConversionCycle')}</div>
-              <div className={`text-[18px] font-extrabold num mt-0.5 ${analytics.cashConversionCycle <= 0 ? 'text-green-700' : 'text-amber-600'}`}>
-                {analytics.cashConversionCycle > 0 ? '+' : ''}{analytics.cashConversionCycle} d
-              </div>
-              <div className="text-[10px] text-slate-400 mt-0.5">
-                {analytics.cashConversionCycle <= 0 ? t('overview.cashPositiveCycle') : t('overview.dsoMinusDpoTied')}
-              </div>
-            </div>
-          </div>
-
-          {/* Collection Ratio */}
-          <div className="col-span-12 sm:col-span-6 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Collection Ratio MTD', what: "Percentage of this month's sales revenue that has already been received as cash.", source: 'Derived', formula: 'Collection Ratio = MTD Receipts / MTD Sales × 100' }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">{t('overview.collectionRatioMtd')}</div>
-            <div className="flex items-center gap-3">
-              <RingProgress pct={Math.min(analytics.collectionRatioMTD, 100)} color="#2563EB" label={t('overview.collectedLabel')} />
-              <div>
-                <div className="text-[22px] font-extrabold text-blue-700">{analytics.collectionRatioMTD.toFixed(0)}%</div>
-                <div className="text-[10px] text-slate-400 mt-1 leading-snug">
-                  {t('overview.receiptsVsInvoicedMtd')}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Overdue Aging */}
-          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Overdue Aging Buckets', what: 'Outstanding bills broken into 4 age bands. Older buckets have higher collection risk.', source: 'BUSY DB', tables: ['Tran3'], filter: 'RecType=5, Status=1 (pending), DueDate < today' }} />
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('overview.overdueAging')}</div>
-              <div className="text-[11px] font-bold text-red-600">
-                {fmtINR(analytics.overdueAging.d1_30 + analytics.overdueAging.d31_60 + analytics.overdueAging.d61_90 + analytics.overdueAging.d90plus)} {t('overview.total')}
-              </div>
-            </div>
-            <OverdueAgingBar aging={analytics.overdueAging} />
-          </div>
-
-          {/* Revenue vs Cash Gap */}
-          <div className="col-span-12 lg:col-span-3 ops-surface p-5" style={{ position: 'relative' }}>
-            <KpiInfoButton info={{ title: 'Revenue vs Cash Received Gap', what: 'FY revenue invoiced minus FY receipts actually received — the total still owed across all customers.', source: 'Derived', formula: 'Gap = FY Revenue − FY Receipts (VchType=16)' }} />
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">{t('overview.revenueVsCashFy')}</div>
-            <div className="text-[22px] font-extrabold num text-amber-600">{fmtINR(analytics.revenueReceiptsGap)}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5 mb-3">{t('overview.uncollectedGap')}</div>
-            <BulletCompare
-              left={analytics.fyReceipts}
-              right={analytics.revenueReceiptsGap}
-              leftLabel={`${t('overview.received')} ${fmtINR(analytics.fyReceipts)}`}
-              rightLabel={`${t('overview.gap')} ${fmtINR(analytics.revenueReceiptsGap)}`}
-              leftColor="#16A34A"
-              rightColor="#F59E0B"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* ── Movements + Top customers ── */}
-      <div className="grid grid-cols-12 gap-4">
-
-        {/* Movements feed */}
-        <div className="col-span-12 lg:col-span-8 ops-surface p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: "Today's Movements Feed", what: 'Real-time activity feed showing sales, purchase, batch, stock, and maintenance events from the last 3 days. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType in (9,14,16,19), last 3 days' }} />
-          <OpsHead title={t('overview.todaysMovements')} />
-
-          {/* Search */}
-          <div className="relative mb-3">
+      <div className="ov-books">
+        <Book
+          title={t('overview.todaysMovements')}
+          sub={t('overview.movementsBookSub', 'Last 3 days from BUSY')}
+        >
+          <div className="ov-search">
             <input
               value={moveSearch}
               onChange={e => setMoveSearch(e.target.value)}
               placeholder={t('overview.searchMovesPlaceholder')}
-              className="pl-10 pr-4 py-2.5 w-full bg-[#F8FAFC] border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#EF6C00] focus:ring-2 focus:ring-[rgba(239,108,0,0.15)] transition"
             />
-            <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
-            </svg>
           </div>
-
-          {/* Filter chips */}
-          <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {['all','purchase','sales','batch','stock','maint'].map(f => (
-              <div
+          <div className="ov-filters">
+            {['all', 'purchase', 'sales', 'batch', 'stock', 'maint'].map(f => (
+              <button
                 key={f}
-                className={`chip${moveFilter === f ? ' active' : ''}`}
+                type="button"
+                data-on={moveFilter === f ? '1' : '0'}
                 onClick={() => setMoveFilter(f)}
               >
-                <span>{t(`overview.movefilter_${f}`)}</span>
-              </div>
+                {t(`overview.movefilter_${f}`)}
+              </button>
             ))}
           </div>
-
-          {/* List */}
-          <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+          <div className="max-h-[420px] overflow-y-auto">
             {filteredMoves.length > 0 ? filteredMoves.map((m, i) => (
               <div
                 key={i}
-                className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
+                className="ov-move-row"
                 onClick={() => navigate(MOVE_ROUTE[m.type] ?? '/dashboard')}
               >
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-100 text-slate-500">
-                  <ArrowRight size={13} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-sm leading-tight truncate">{m.title}</div>
-                  <div className="text-xs text-slate-500 truncate">{m.sub}</div>
+                <span className="ov-move-type">{m.type}</span>
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium truncate">{m.title}</div>
+                  <div className="text-[11px] text-[#8A8178] truncate">{m.sub}</div>
                 </div>
                 <div className="text-right shrink-0">
-                  <div className="text-sm font-semibold num" style={{ color: m.col }}>{m.amt}</div>
-                  <div className="text-[10px] text-slate-400">{m.when}</div>
+                  <div className="text-[13px] font-semibold num" style={{ color: m.col }}>{m.amt}</div>
+                  <div className="text-[10px] text-[#A39A90]">{m.when}</div>
                 </div>
               </div>
             )) : (
-              <div className="ops-empty rounded-xl border border-dashed border-slate-200">
+              <div className="ops-empty">
                 <strong>{t('overview.noMovementsMatch')}</strong>
                 <span>{t('overview.noMovementsHint', 'Sales, purchases, and batch closes from BUSY will stream here.')}</span>
               </div>
             )}
           </div>
-        </div>
+        </Book>
 
-        {/* Top customers snapshot */}
-        <div className="col-span-12 lg:col-span-4 ops-surface p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Customer History Snapshot', what: 'Top 3 customers ranked by MTD sales revenue, pulled live from BUSY.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType=9, Cancelled=0, TOP 3 by MTD revenue' }} />
-          <OpsHead
-            title={t('overview.customerHistorySnapshot')}
-            sub={t('overview.top3ByMtdRevenue')}
-          />
-          <div className="space-y-0.5">
-            {displayCustomers.map(c => (
-              <div
-                key={c.name}
-                className="flex items-center justify-between py-2.5 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 rounded-lg px-1.5 -mx-1.5 transition-colors"
-                onClick={() => navigate('/dashboard/customers')}
-              >
-                <div className="text-sm font-medium truncate pr-2">{c.name}</div>
-                <div className="text-sm font-bold font-heading num shrink-0">₹ {c.mtdVal}</div>
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="ops-link mt-3"
-            onClick={() => navigate('/dashboard/customers')}
-          >
-            {t('overview.openCustomerHistory')} →
-          </button>
-        </div>
+        <Book
+          title={t('overview.customerHistorySnapshot')}
+          sub={t('overview.top3ByMtdRevenue')}
+          right={
+            <button type="button" className="ops-link" onClick={() => navigate('/dashboard/customers')}>
+              {t('overview.openCustomerHistory')}
+            </button>
+          }
+        >
+          {displayCustomers.map((c, i) => (
+            <div
+              key={c.name}
+              className="ov-cust-row"
+              onClick={() => navigate('/dashboard/customers')}
+            >
+              <span className="rk">{String(i + 1).padStart(2, '0')}</span>
+              <span className="nm">{c.name}</span>
+              <span className="am">₹ {c.mtdVal}</span>
+            </div>
+          ))}
+        </Book>
       </div>
 
       <StockSnapshot

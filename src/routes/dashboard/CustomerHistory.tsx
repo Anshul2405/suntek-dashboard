@@ -8,17 +8,33 @@ import {
 } from '../../components/v2';
 import { Users, Trophy, Wallet, ReceiptText, IndianRupee, RefreshCw, Repeat } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useOverviewKPIs, useTopCustomers, useCustomerList, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
+import { useSearchParams } from 'react-router-dom';
+import { useOverviewKPIs, useTopCustomers, useCustomerList, useAnalyticsKPIs, fmtINR, type CustomerListItem } from '../../hooks/useBusyData';
 import { ConcentrationBar, MiniBarChart } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 
 export function CustomerHistory() {
   const { t } = useTranslation();
-  const [search, setSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  const linkedQ = (searchParams.get('q') || '').trim();
+  const [search, setSearch] = useState(linkedQ);
+  const [seenQ, setSeenQ] = useState(linkedQ);
+  if (linkedQ !== seenQ) {
+    setSeenQ(linkedQ);
+    setSearch(linkedQ);
+  }
   const { data: kpis } = useOverviewKPIs();
   const { data: topCustomers } = useTopCustomers(1);
   const { data: customerList } = useCustomerList();
   const { data: analytics } = useAnalyticsKPIs();
+  const topFy = React.useMemo(
+    () => [...(customerList ?? [])].filter((c) => c.fyRevenue > 0).sort((x, y) => y.fyRevenue - x.fyRevenue).slice(0, 10),
+    [customerList],
+  );
+  const topOwed = React.useMemo(
+    () => [...(customerList ?? [])].filter((c) => c.outstanding > 0).sort((x, y) => y.outstanding - x.outstanding).slice(0, 10),
+    [customerList],
+  );
 
   const topCustomer = topCustomers?.[0];
 
@@ -85,7 +101,7 @@ export function CustomerHistory() {
             <KpiInfoButton info={{ title: 'Debtor Turnover Ratio', what: 'How many times per year the total debtor book is "turned over" (collected and replaced). Higher is better. Directly linked to DSO — Turnover = 365 / DSO.', source: 'Derived', formula: 'Turnover = FY Revenue / Debtors Outstanding\nDSO = 365 / Turnover', tables: ['Tran1', 'DailySum', 'Master1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > DailySum' }} />
             <StatCard className="h-full" icon={<RefreshCw />} tone="blue"
               label={t('customers.debtorTurnoverRatio')}
-              value={`${analytics.debtorTurnover}×`}
+              value={`${analytics.debtorTurnover.toFixed(2)}×`}
               caption={t('customers.dsoDaysTarget', { count: analytics.dso })} />
           </div>
 
@@ -124,7 +140,7 @@ export function CustomerHistory() {
 
           {/* Top-5 Supplier Concentration */}
           <div className="col-span-12 lg:col-span-5 relative">
-            <KpiInfoButton info={{ title: 'Top-5 Supplier Spend Concentration', what: 'How much of total FY purchasing spend goes to the 5 largest suppliers. High concentration = supply chain risk — one vendor failing disrupts production.', source: 'Derived', formula: 'Share% = Supplier FY Purchase / Total FY Purchase × 100', tables: ['Tran1', 'Master1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=14, Cancelled=0 · TOP 5 by SUM(VchAmtBaseCur)' }} />
+            <KpiInfoButton info={{ title: 'Top-5 Supplier Spend Concentration', what: 'How much of total FY purchasing spend goes to the 5 largest suppliers. High concentration = supply chain risk — one vendor failing disrupts production.', source: 'Derived', formula: 'Share% = Supplier FY Purchase / Total FY Purchase × 100', tables: ['Tran1', 'Master1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=2, Cancelled=0 · TOP 5 by SUM(VchAmtBaseCur)' }} />
             <SectionCard className="h-full" title={t('customers.top5SupplierSpendConcentration')}>
               <ConcentrationBar segments={analytics.top5Suppliers.map(s => ({ name: s.name, sharePct: s.sharePct }))} />
             </SectionCard>
@@ -132,7 +148,7 @@ export function CustomerHistory() {
 
           {/* Monthly Purchase Trend */}
           <div className="col-span-12 lg:col-span-4 relative">
-            <KpiInfoButton info={{ title: 'Monthly Purchase Trend (6 months)', what: 'Total purchase spend per calendar month for the last 6 months. A rising trend while revenue stays flat = margin compression. Falling purchase costs = positive.', source: 'BUSY DB', tables: ['Tran1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=14, Cancelled=0, last 6 months · GROUP BY year/month' }} />
+            <KpiInfoButton info={{ title: 'Monthly Purchase Trend (6 months)', what: 'Total purchase spend per calendar month for the last 6 months. A rising trend while revenue stays flat = margin compression. Falling purchase costs = positive.', source: 'BUSY DB', tables: ['Tran1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=2, Cancelled=0, last 6 months · GROUP BY year/month' }} />
             <SectionCard className="h-full" title={t('customers.monthlyPurchaseTrend6m')}>
               <MiniBarChart
                 data={analytics.monthlyPurchase.map(m => m.purchase)}
@@ -202,30 +218,51 @@ export function CustomerHistory() {
       {/* Charts row */}
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-6 relative">
-          <KpiInfoButton info={{ title: 'Dispatch History', what: 'Monthly drums dispatched to the top customer over the last 6 months. Used to spot seasonal patterns and forecast the next order.', source: 'BUSY DB', note: 'No per-month per-customer dispatch series is available yet — shows an empty state instead of sample numbers. Future: pull from Tran1 WHERE MasterCode1 = customer code, grouped by month.' }} />
+          <KpiInfoButton info={{ title: 'Top customers this year', what: 'The customers with the most sales invoiced this financial year, and each one\'s share of the top ten.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType=9, Cancelled=0, current FY' }} />
           <SectionCard
             className="h-full"
-            title={`${topCustomer ? topCustomer.name : t('customers.densityPreference')} · ${t('customers.last6Months')}`}
-            subtitle={t('customers.drumsDispatchedPerMonth')}
+            title={t('customers.topFyTitle', 'Top customers this year')}
+            subtitle={t('customers.topFySub', 'Sales invoiced in Busy this financial year')}
           >
-            <div className="py-10 text-center text-sm text-slate-400">
-              No dispatch history available yet.
-            </div>
+            <CustomerBars rows={topFy} value={(c) => c.fyRevenue} empty={t('customers.noBusyYet', 'Waiting for the first Busy read')} />
           </SectionCard>
         </div>
         <div className="col-span-12 lg:col-span-6 relative">
-          <KpiInfoButton info={{ title: 'Density Preference Chart', what: 'Breakdown of the customer\'s order volume by CP density grade (1300, 1400, 1450, 1500). Shows which density grades they predominantly purchase — important for production planning and stock allocation.', source: 'BUSY DB', note: 'No per-customer density breakdown source is available yet — shows an empty state instead of sample numbers. Future: derived from Tran1 joined with item/density metadata.' }} />
+          <KpiInfoButton info={{ title: 'Biggest amounts owed', what: 'Customers with the largest outstanding balance in Busy right now.', source: 'BUSY DB', tables: ['DailySum', 'Master1'], filter: 'Master1.ParentGrp=116 (Sundry Debtors), Dr minus Cr > 0' }} />
           <SectionCard
             className="h-full"
-            title={t('customers.densityPreference')}
-            subtitle={t('customers.whereVolumeSits')}
+            title={t('customers.topOwedTitle', 'Biggest amounts owed')}
+            subtitle={t('customers.topOwedSub', 'Outstanding balance in Busy today')}
           >
-            <div className="py-10 text-center text-sm text-slate-400">
-              No density breakdown available yet.
-            </div>
+            <CustomerBars rows={topOwed} value={(c) => c.outstanding} tone="#F47651" empty={t('customers.noneOwed', 'No customer owes money in the last Busy read')} />
           </SectionCard>
         </div>
       </div>
     </>
+  );
+}
+
+function CustomerBars({ rows, value, tone = '#0F766E', empty }: {
+  rows: CustomerListItem[];
+  value: (c: CustomerListItem) => number;
+  tone?: string;
+  empty: string;
+}) {
+  if (!rows.length) return <div className="py-10 text-center text-sm text-slate-400">{empty}</div>;
+  const max = Math.max(...rows.map(value), 1);
+  return (
+    <ul className="space-y-2.5 px-1 pb-1">
+      {rows.map((c) => (
+        <li key={`${c.code}-${c.name}`}>
+          <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
+            <span className="truncate text-slate-700" title={c.name}>{c.name}</span>
+            <span className="shrink-0 tabular-nums font-semibold text-slate-800">{fmtINR(value(c))}</span>
+          </div>
+          <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${Math.max(2, (value(c) / max) * 100)}%`, background: tone }} />
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }

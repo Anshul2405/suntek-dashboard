@@ -5,16 +5,20 @@ import { withFallback } from '../lib/fallback.js';
 const router = Router();
 
 const VCH_TYPE_LABELS = {
+  // Busy voucher types as stored on this PC (checked 16 Oct 2026 against
+  // debtor and creditor lines).
   9:  { type: 'sales',    label: 'Sales Invoice' },
-  14: { type: 'purchase', label: 'Purchase Invoice' },
-  2:  { type: 'journal',  label: 'Journal Entry' },
+  2:  { type: 'purchase', label: 'Purchase Invoice' },
+  14: { type: 'sales',    label: 'Receipt Voucher' },
   19: { type: 'purchase', label: 'Payment Voucher' },
-  16: { type: 'sales',    label: 'Receipt Voucher' },
+  16: { type: 'journal',  label: 'Journal Entry' },
+  15: { type: 'journal',  label: 'Contra Entry' },
+  12: { type: 'purchase', label: 'Purchase Order' },
+  13: { type: 'sales',    label: 'Sales Order' },
   6:  { type: 'stock',    label: 'Stock Transfer' },
-  3:  { type: 'purchase', label: 'Purchase Order' },
   5:  { type: 'batch',    label: 'Manufacturing' },
-  12: { type: 'sales',    label: 'Debit Note' },
-  13: { type: 'sales',    label: 'Sales Return' },
+  17: { type: 'journal',  label: 'Debit Note' },
+  18: { type: 'journal',  label: 'Credit Note' },
 };
 
 function formatAmt(amt) {
@@ -37,7 +41,7 @@ function toMovement(r, useRelativeTime = false) {
   return {
     type: meta.type,
     title: `${meta.label} · ${r.partyName || 'Unknown'}`,
-    sub: `${r.VchNo}${r.GrNo ? ' · GR ' + r.GrNo : ''}`,
+    sub: `${String(r.VchNo || "").trim()}${r.GrNo ? ' · GR ' + r.GrNo : ''}`,
     amt: meta.type === 'sales' || meta.type === 'batch' ? `+${fmtAmt}` : `-${fmtAmt}`,
     col: meta.type === 'sales' ? '#16A34A' : meta.type === 'purchase' ? '#DC2626' : '#475569',
     when,
@@ -76,6 +80,7 @@ router.get('/recent', withFallback('movements-recent', async (req) => {
       LEFT JOIN Master1 m ON t.MasterCode1 = m.Code
       LEFT JOIN VchOtherInfo o ON t.VchCode = o.VchCode
       WHERE t.[Date] >= DATEADD(DAY, -${days}, CAST(GETDATE() AS DATE))
+        AND t.[Date] <= CAST(GETDATE() AS DATE)
         AND t.Cancelled = 0
       ORDER BY t.CreationTime DESC
     `);

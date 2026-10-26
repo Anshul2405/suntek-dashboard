@@ -10,17 +10,15 @@ import type React from 'react';
  * stays on the right, and never gets cut off.
  */
 export function dropdownStyle(btn: HTMLElement | null, width: number, maxHeight: number): React.CSSProperties {
-  if (typeof window !== 'undefined' && window.innerWidth < 768) {
-    const bottom = Math.round(btn?.getBoundingClientRect().bottom ?? 56);
-    const capped = Math.min(width, 340);
-    return {
-      position: 'fixed',
-      top: bottom + 8,
-      right: 12,
-      width: `min(${capped}px, calc(100vw - 48px))`,
-      // Compact card — capped so it never spans the whole screen height.
-      maxHeight: `min(440px, calc(100dvh - ${bottom + 28}px))`,
-    };
-  }
-  return { position: 'absolute', top: 'calc(100% + 8px)', right: 0, width, maxHeight };
+  const bottom = Math.round(btn?.getBoundingClientRect().bottom ?? 56);
+  const right = Math.round(window.innerWidth - (btn?.getBoundingClientRect().right ?? window.innerWidth - 16));
+  const capped = window.innerWidth < 768 ? Math.min(width, 340) : width;
+  return {
+    position: 'fixed',
+    top: bottom + 8,
+    right: Math.max(8, right),
+    width: window.innerWidth < 768 ? `min(${capped}px, calc(100vw - 24px))` : width,
+    maxHeight: `min(${maxHeight}px, calc(100dvh - ${bottom + 24}px))`,
+    zIndex: 400,
+  };
 }

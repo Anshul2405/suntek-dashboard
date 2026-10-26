@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Building2, TrendingDown, Factory } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { useQuery } from '@tanstack/react-query';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
@@ -47,7 +48,7 @@ export function Benchmarking() {
   const stats = useMemo<PlantStats[]>(() => {
     const byPlant = new Map<string, BatchRow[]>();
     for (const b of data ?? []) {
-      const key = b.plants?.name || 'Unassigned';
+      const key = displayLocationName(b.plants?.name) || 'Unassigned';
       const arr = byPlant.get(key) ?? [];
       arr.push(b);
       byPlant.set(key, arr);

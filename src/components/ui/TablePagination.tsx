@@ -28,7 +28,7 @@ export function TablePagination({
   if (!alwaysShow && total === 0) return null;
 
   const btn: React.CSSProperties = {
-    minWidth: 30, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid #E2E8F0',
+    minWidth: 40, height: 40, padding: '0 10px', borderRadius: 8, border: '1px solid #E2E8F0',
     background: '#fff', color: '#334155', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
   };

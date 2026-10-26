@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Boxes, Layers, Package, Fuel, Plus } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { fetchActivePlants } from '../../lib/plants';
+import { displayLocationName } from '../../lib/plantLabels';
 import { insertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../components/ui/states';
@@ -77,7 +78,7 @@ export function CPMStock() {
   );
   const storeSort = useSortable(filteredItems, {
     product: i => i.product,
-    plant: i => i.plants?.name,
+    plant: i => displayLocationName(i.plants?.name),
     density: i => i.density,
     quantity: i => i.quantity,
     date: i => (i.date ? new Date(i.date) : null),
@@ -283,7 +284,7 @@ export function CPMStock() {
               {storeSort.sorted.map(i => (
                 <tr key={i.id} style={{ cursor: 'pointer' }}>
                   <td className="font-semibold">{i.product}</td>
-                  <td>{i.plants?.name || '—'}</td>
+                  <td>{displayLocationName(i.plants?.name) || '—'}</td>
                   <td className="num">{i.density || '—'}</td>
                   <td className="num font-bold">{i.quantity}</td>
                   <td className="text-slate-500 text-xs">{i.date}</td>
@@ -331,7 +332,7 @@ export function CPMStock() {
                   onChange={e => setBulkPlant(e.target.value)}
                   className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition w-full"
                 >
-                  {dbPlants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {dbPlants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
                 </select>
               </div>
             )}

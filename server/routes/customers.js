@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getPool } from '../db.js';
 import { withFallback } from '../lib/fallback.js';
+import { canonicalSupplier } from '../lib/supplierAlias.js';
 
 const router = Router();
 
@@ -25,7 +26,7 @@ router.get('/top', withFallback('customers-top', async (req) => {
       ORDER BY SUM(t.VchAmtBaseCur) DESC
     `);
 
-    return result.recordset;
+    return result.recordset.map(row => ({ ...row, name: canonicalSupplier(row.name) }));
 }));
 
 // KPI #10 Customer outstanding per party (via DailySum + Folio1 opening)
@@ -57,7 +58,7 @@ router.get('/outstanding', withFallback('customers-outstanding', async () => {
     return daily.recordset.map(d => {
       const fo = folioMap[d.code] || { drOpen: 0, crOpen: 0 };
       const outstanding = (fo.drOpen - fo.crOpen) + (d.totalDr - d.totalCr);
-      return { code: d.code, name: d.name, outstanding };
+      return { code: d.code, name: canonicalSupplier(d.name), outstanding };
     }).filter(c => c.outstanding > 0)
       .sort((a, b) => b.outstanding - a.outstanding);
 }));
@@ -100,7 +101,7 @@ router.get('/list', withFallback('customers-list', async () => {
 
     return sales.recordset.map(c => ({
       code: c.code,
-      name: c.name,
+      name: canonicalSupplier(c.name),
       fyRevenue: c.fyRevenue,
       mtdRevenue: c.mtdRevenue,
       fyInvoices: c.fyInvoices,

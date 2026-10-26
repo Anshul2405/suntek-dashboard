@@ -1,0 +1,261 @@
+import { companyShort } from './busyCompanies';
+
+export interface CompanyPart {
+  code: string;
+  data: unknown;
+}
+
+const RATIOS = new Set([
+  'grossMarginPct', 'purchaseToCostPct', 'dso', 'debtorTurnover',
+  'momRevGrowthPct', 'momInvoiceGrowthPct', 'top5ConcentrationPct',
+  'collectionRatioMTD', 'paymentCompletionPct', 'top5SupplierConcentrationPct',
+  'invoiceFrequency', 'dpo', 'cashConversionCycle', 'avgTicketFY', 'avgTicketPrevMonth',
+  'revenuePerCustomer', 'fyPct', 'recentPct', 'priorPct', 'sharePct', 'z',
+]);
+
+function num(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function weightOf(row: Record<string, unknown>): number {
+  return num(row.fyRevenue) || num(row.salesMTD) || num(row.totalSalesMTD) || num(row.spend) || 1;
+}
+
+function weighted(rows: Record<string, unknown>[], key: string): number {
+  let wsum = 0;
+  let vsum = 0;
+  for (const row of rows) {
+    const value = row[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const w = weightOf(row);
+    wsum += w;
+    vsum += value * w;
+  }
+  return wsum ? vsum / wsum : 0;
+}
+
+/** Combined rates are real divisions. Round them so 15.475 does not print as 15.475000000000001. */
+function roundRatio(key: string, value: number): number {
+  const digits = key === 'debtorTurnover' || key === 'invoiceFrequency' ? 2 : 1;
+  const scale = 10 ** digits;
+  return Math.round(value * scale) / scale;
+}
+
+function tag(name: unknown, code: string): string {
+  const text = String(name ?? '').trim();
+  const short = companyShort(code);
+  if (!text) return short;
+  if (text.endsWith(`· ${short}`)) return text;
+  return `${text} · ${short}`;
+}
+
+function sumBy(rows: Record<string, unknown>[], labelKey: string, fields: string[]) {
+  const map = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const label = String(row[labelKey] ?? '');
+    let acc = map.get(label);
+    if (!acc) {
+      acc = { ...row, [labelKey]: label };
+      for (const field of fields) if (typeof acc[field] === 'number') acc[field] = 0;
+      map.set(label, acc);
+    }
+    for (const field of fields) {
+      if (typeof row[field] === 'number') acc[field] = num(acc[field]) + num(row[field]);
+    }
+  }
+  return [...map.values()];
+}
+
+function sumRecord(rows: Record<string, unknown>[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const keys = new Set(rows.flatMap((row) => Object.keys(row)));
+  for (const key of keys) {
+    const present = rows.filter((row) => row[key] != null);
+    if (!present.length) continue;
+    const values = present.map((row) => row[key]);
+    if (values.every((value) => typeof value === 'number')) {
+      out[key] = RATIOS.has(key) ? roundRatio(key, weighted(present, key)) : values.reduce<number>((sum, value) => sum + num(value), 0);
+    } else if (key === 'overdueAging' && values.every((value) => value && typeof value === 'object' && !Array.isArray(value))) {
+      out[key] = sumRecord(values as Record<string, unknown>[]);
+    } else if ((key === 'monthly' || key === 'monthlyPurchase') && values.every(Array.isArray)) {
+      const flat = values.flat() as Record<string, unknown>[];
+      out[key] = sumBy(flat, 'label', ['revenue', 'invoiceCount', 'uniqueCustomers', 'purchase']);
+    } else if ((key === 'top5' || key === 'top5Suppliers') && values.every(Array.isArray)) {
+      out[key] = values.flat();
+    } else if (typeof values[0] === 'string' || typeof values[0] === 'boolean') {
+      out[key] = values[0];
+    }
+  }
+  for (const key of ['top5', 'top5Suppliers'] as const) {
+    const list = out[key];
+    if (!Array.isArray(list)) continue;
+    const amountKey = key === 'top5' ? 'fyRevenue' : 'fyPurchase';
+    const ranked = [...list].sort((a, b) => num(b[amountKey]) - num(a[amountKey])).slice(0, 5);
+    const total = ranked.reduce((sum, row) => sum + num(row[amountKey]), 0);
+    out[key] = ranked.map((row) => ({
+      ...row,
+      sharePct: total ? (num(row[amountKey]) / total) * 100 : 0,
+    }));
+  }
+  return out;
+}
+
+function tagRows(parts: CompanyPart[], nameKey: string): Record<string, unknown>[] {
+  return parts.flatMap((part) => {
+    if (!Array.isArray(part.data)) return [];
+    return (part.data as Record<string, unknown>[]).map((row) => ({
+      ...row,
+      [nameKey]: tag(row[nameKey], part.code),
+    }));
+  });
+}
+
+function mergeSites(parts: CompanyPart[]) {
+  const desks = ['shd', 'kolkata'] as const;
+  const out: Record<string, unknown> = {};
+  for (const desk of desks) {
+    const rows = parts
+      .map((part) => {
+        const block = (part.data as { shd?: Record<string, unknown>; kolkata?: Record<string, unknown> } | null)?.[desk];
+        if (!block) return null;
+        const top = Array.isArray(block.top)
+          ? (block.top as Record<string, unknown>[]).map((row) => ({ ...row, name: tag(row.name, part.code) }))
+          : [];
+        return { ...block, top } as Record<string, unknown>;
+      })
+      .filter((row): row is Record<string, unknown> => row != null);
+    const top = rows.flatMap((row) => (Array.isArray(row.top) ? row.top as Record<string, unknown>[] : []));
+    top.sort((a, b) => num(b.salesMTD) - num(a.salesMTD));
+    out[desk] = {
+      site: desk,
+      salesMTD: rows.reduce((sum, row) => sum + num(row.salesMTD), 0),
+      invoiceCount: rows.reduce((sum, row) => sum + num(row.invoiceCount), 0),
+      top: top.slice(0, 5),
+    };
+  }
+  return out;
+}
+
+function mergeScan(parts: CompanyPart[]) {
+  const scans = parts.filter((part) => part.data && typeof part.data === 'object') as { code: string; data: Record<string, unknown> }[];
+  const findings = scans.flatMap((part) => {
+    const list = Array.isArray(part.data.findings) ? part.data.findings as Record<string, unknown>[] : [];
+    return list.map((finding) => ({
+      ...finding,
+      id: `${part.code}:${finding.id}`,
+      title: tag(finding.title, part.code),
+    }));
+  });
+  const summary = { urgent: 0, warning: 0, info: 0, total: 0, levels: {} as Record<string, number> };
+  for (const part of scans) {
+    const s = (part.data.summary ?? {}) as Record<string, unknown>;
+    summary.urgent += num(s.urgent);
+    summary.warning += num(s.warning);
+    summary.info += num(s.info);
+    summary.total += num(s.total);
+    const levels = (s.levels ?? {}) as Record<string, unknown>;
+    for (const [level, count] of Object.entries(levels)) summary.levels[level] = num(summary.levels[level]) + num(count);
+  }
+  const kpiMap = new Map<string, Record<string, unknown>[]>();
+  for (const part of scans) {
+    const kpis = Array.isArray(part.data.kpis) ? part.data.kpis as Record<string, unknown>[] : [];
+    for (const kpi of kpis) {
+      const key = String(kpi.key ?? '');
+      kpiMap.set(key, [...(kpiMap.get(key) ?? []), kpi]);
+    }
+  }
+  const kpis = [...kpiMap.entries()].map(([, group]) => {
+    const first = group[0];
+    const raw = first.fmt === 'pct' ? weighted(group, 'raw') : group.reduce((sum, kpi) => sum + num(kpi.raw), 0);
+    return { ...first, raw, value: first.fmt === 'pct' ? `${raw.toFixed(1)}%` : String(Math.round(raw)) };
+  });
+  return { ...(scans[0]?.data ?? {}), summary, kpis, findings };
+}
+
+function mergeAnalytics(parts: CompanyPart[]) {
+  const rows = parts.map((part) => part.data).filter((data): data is Record<string, unknown> => !!data && typeof data === 'object');
+  const first = rows[0] ?? {};
+  const salesPurchase = sumBy(rows.flatMap((row) => Array.isArray(row.salesPurchase) ? row.salesPurchase as Record<string, unknown>[] : []), 'label', ['sales', 'purchase']);
+  const cashflow = sumBy(rows.flatMap((row) => Array.isArray(row.cashflow) ? row.cashflow as Record<string, unknown>[] : []), 'label', ['receipts', 'payments', 'net']);
+  const vendors: Record<string, unknown>[] = parts.flatMap((part) => {
+    const list = (part.data as { vendors?: Record<string, unknown>[] } | null)?.vendors ?? [];
+    return list.map((row): Record<string, unknown> => ({ ...row, name: tag(row.name, part.code) }));
+  }).sort((a, b) => num(b.spend) - num(a.spend)).slice(0, 8);
+  const vendorTotal = vendors.reduce((sum, row) => sum + num(row.spend), 0);
+  const debtors: Record<string, unknown>[] = parts.flatMap((part) => {
+    const list = (part.data as { debtors?: Record<string, unknown>[] } | null)?.debtors ?? [];
+    return list.map((row): Record<string, unknown> => ({ ...row, name: tag(row.name, part.code) }));
+  }).sort((a, b) => num(b.outstanding) - num(a.outstanding)).slice(0, 8);
+  const margins = rows.map((row) => row.margin).filter((row): row is Record<string, unknown> => !!row && typeof row === 'object');
+  return {
+    ...first,
+    margin: margins.length ? sumRecord(margins) : first.margin,
+    salesPurchase,
+    cashflow,
+    vendors: vendors.map((row) => ({ ...row, sharePct: vendorTotal ? (num(row.spend) / vendorTotal) * 100 : 0 })),
+    debtors,
+  };
+}
+
+function mergeSeries(parts: CompanyPart[]) {
+  const rows = parts.map((part) => part.data).filter((data): data is Record<string, unknown> => !!data && typeof data === 'object');
+  const first = rows[0];
+  if (!first) return null;
+  const unit = (first.meta as { unit?: string } | undefined)?.unit;
+  const points = sumBy(
+    rows.flatMap((row) => Array.isArray(row.points) ? row.points as Record<string, unknown>[] : []),
+    'period',
+    unit === 'pct' ? [] : ['value', 'baseline', 'ewma', 'upper', 'lower'],
+  );
+  if (unit === 'pct') {
+    const grouped = new Map<string, Record<string, unknown>[]>();
+    for (const row of rows.flatMap((item) => Array.isArray(item.points) ? item.points as Record<string, unknown>[] : [])) {
+      const period = String(row.period ?? '');
+      grouped.set(period, [...(grouped.get(period) ?? []), row]);
+    }
+    return {
+      ...first,
+      points: [...grouped.entries()].map(([period, group]) => ({ ...group[0], period, value: weighted(group, 'value') })),
+    };
+  }
+  return { ...first, points };
+}
+
+export function mergeCompanyPayloads(path: string, parts: CompanyPart[]): unknown {
+  const ready = parts.filter((part) => part.data != null);
+  if (!ready.length) return null;
+  const q = path.indexOf('?');
+  const pathname = q === -1 ? path : path.slice(0, q);
+  const params = new URLSearchParams(q === -1 ? '' : path.slice(q + 1));
+
+  if (pathname === '/api/kpis/revenue-trend') {
+    return sumBy(ready.flatMap((part) => Array.isArray(part.data) ? part.data as Record<string, unknown>[] : []), 'month', ['revenue', 'invoiceCount']);
+  }
+  if (pathname === '/api/customers/top') {
+    const limit = Number(params.get('limit') || 5);
+    return tagRows(ready, 'name').sort((a, b) => num(b.mtdRevenue) - num(a.mtdRevenue)).slice(0, Number.isFinite(limit) ? limit : 5);
+  }
+  if (pathname === '/api/customers/outstanding') {
+    return tagRows(ready, 'name').sort((a, b) => num(b.outstanding) - num(a.outstanding));
+  }
+  if (pathname === '/api/customers/list') return tagRows(ready, 'name');
+  if (pathname === '/api/sales/contracts') return tagRows(ready, 'customer');
+  if (pathname === '/api/sales/sites') return mergeSites(ready);
+  if (pathname === '/api/movements/recent' || pathname === '/api/movements/today') {
+    return tagRows(ready, 'title');
+  }
+  if (pathname === '/api/purchases/recent') {
+    return ready
+      .flatMap((part) => Array.isArray(part.data) ? part.data as Record<string, unknown>[] : [])
+      .sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')))
+      .slice(0, 80);
+  }
+  if (pathname === '/api/anomaly/scan') return mergeScan(ready);
+  if (pathname === '/api/anomaly/analytics') return mergeAnalytics(ready);
+  if (pathname === '/api/anomaly/metrics') return ready[0].data;
+  if (pathname === '/api/anomaly/timeseries') return mergeSeries(ready);
+  if (ready.every((part) => part.data && typeof part.data === 'object' && !Array.isArray(part.data))) {
+    return sumRecord(ready.map((part) => part.data as Record<string, unknown>));
+  }
+  return ready[0].data;
+}

@@ -4,6 +4,7 @@ import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
 import { humanizeError as errMsg } from '../../../lib/errors';
 import { fetchActivePlants } from '../../../lib/plants';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { insertRows } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
@@ -11,6 +12,7 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import { parseMaintenanceFile, type PMTemplate } from '../../../lib/pm/parseMaintenanceFile';
 import { matchAsset, type AssetLite } from '../../../lib/far/assets';
+import { fetchAllRows } from '../../../lib/fetchAll';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import { FREQ_LABEL, calculateNextDue } from './maintenance/shared';
 
@@ -55,7 +57,11 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
     (async () => {
       const { data: pl } = await fetchActivePlants<Plant>('id, name');
       const base = allowedPlants.length ? (allowedPlants as Plant[]) : (pl || []);
-      const { data: fa } = await supabase.from('fixed_assets').select('id, name, identification_mark, plant_id').returns<(AssetLite & { plant_id: string | null })[]>();
+      const { data: fa } = await fetchAllRows<AssetLite & { plant_id: string | null }>((from, to) =>
+        supabase.from('fixed_assets').select('id, name, identification_mark, plant_id').is('deleted_at', null)
+          .order('name').order('id').range(from, to)
+          .returns<(AssetLite & { plant_id: string | null })[]>(),
+      );
       const { data: sc } = await supabase.from('maintenance_schedules').select('equipment_mark, frequency, plant_id').returns<{ equipment_mark: string | null; frequency: string; plant_id: string | null }[]>();
       // Technicians (for the default assignee) with their plant.
       const { data: tech } = await supabase.from('user_accounts')
@@ -118,7 +124,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
       return (
         <div style={{ marginBottom: compact ? 8 : 12 }}>
           <div style={label}>{t('far.pmFactoryLabel', 'Factory this workbook applies to')}</div>
-          <span className="chip active" style={{ cursor: 'default', marginTop: 2, display: 'inline-block' }}>{plants[0].name}</span>
+          <span className="chip active" style={{ cursor: 'default', marginTop: 2, display: 'inline-block' }}>{displayLocationName(plants[0].name)}</span>
         </div>
       );
     }
@@ -128,7 +134,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
         <div className="flex gap-2 flex-wrap" style={{ marginTop: 2 }}>
           {plants.map(p => {
             const on = plantIds.includes(p.id);
-            return <button key={p.id} type="button" onClick={() => setPlantIds(ids => on ? ids.filter(x => x !== p.id) : [...ids, p.id])} className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{p.name}</button>;
+            return <button key={p.id} type="button" onClick={() => setPlantIds(ids => on ? ids.filter(x => x !== p.id) : [...ids, p.id])} className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{displayLocationName(p.name)}</button>;
           })}
         </div>
         {!plantIds.length && (
@@ -199,7 +205,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
             is_active: true, next_due_at: nowStart,
             far_asset_id: match?.asset.id ?? null, equipment_mark: realMark || null,
             start_date: startDate, until_date: untilDate || null,
-            checklist: tpl.checklist, requires_approval: tpl.frequency !== 'daily',
+            checklist: tpl.checklist, requires_approval: true,
             unmatched_justification: match ? null : justification.trim(), source: 'pm_import',
             import_batch_id: batchByPlant.get(pid) ?? null,
           });

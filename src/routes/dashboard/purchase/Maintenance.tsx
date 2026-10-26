@@ -1,20 +1,23 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
 import { freeQty } from '../../../lib/store/registers';
 import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
+import { issueLineValue, storeIssueNeedsPhoto } from '../../../lib/store/issuePhoto';
+import { canEditRaisedTicket, ticketEditMinutesLeft } from '../../../lib/ticketEditWindow';
 import { unwindStoreRequests, unwindStoreRequestsForTickets } from '../../../lib/store/unwindStoreRequests';
 import { insertRows, updateRows } from '../../../lib/db';
 import { resizeImageToDataUrl, extractSupplierBill, type SupplierBillLine } from '../../../lib/nvidiaOcr';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
-import { fetchAllRows } from '../../../lib/fetchAll';
-import { isAdminProfile, type RoleRow } from '../../../lib/profiles';
+import { fetchAllRows, fetchAllRowsProgressive } from '../../../lib/fetchAll';
+import { isAdminProfile, profileHasCapability, canSeeScheduleSetup, STORE_MANAGER_ROLE_IDS, type RoleRow } from '../../../lib/profiles';
+import { canDeleteModule, canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { useBlacklist } from '../../../contexts/BlacklistContext';
-import { uploadMaintenancePhoto } from '../../../lib/cloudinary';
+import { uploadMaintenancePhoto, uploadMaintenancePhotos } from '../../../lib/cloudinary';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, PanelFooter } from '../../../components/SlidePanel';
 import { MentionText, NotesButton, ReadReceipt } from '../../../components/mentions';
 import { useToast } from '../../../components/ui/toast';
@@ -25,8 +28,11 @@ import { useDirectory, useMentionNotifier, notifyWatchers, postNote, extractMent
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
 import { similarity } from '../../../lib/blacklist/similarity';
 import { PMScheduleImport } from './PMScheduleImport';
-import { suggestAssets } from '../../../lib/far/assets';
-import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, ticketShort } from '../../../lib/jobNo';
+import { IncidentReports } from './IncidentReports';
+import { plantUsesCategories } from '../../../lib/valueCategory';
+import { displayLocationName } from '../../../lib/plantLabels';
+import { matchAsset, suggestAssets } from '../../../lib/far/assets';
+import { jobNoFar, isPlaceholderMark, stripPlaceholderParen, labelWithRealMark, ticketShort } from '../../../lib/jobNo';
 import { pickReplacementChecklist } from '../../../lib/pm/parseMaintenanceFile';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import type { AppNotification } from '../../../contexts/NotificationsContext';
@@ -40,12 +46,12 @@ import {
   FREQ_OPTIONS, FREQ_LABEL, freqSortRank, STATUS_CFG, STAGE_LABELS, STAGE_LABEL_KEYS, INHOUSE_STAGE_LABEL_KEYS,
   statusBadge, formatDate, daysFromNow, dueDateLabel, calculateNextDue,
   PhotoUploader, StageStrip, EMERGENCY_STAGES, INHOUSE_STAGES, INHOUSE_STAGE_LABELS, AVAILABLE_STAGES,
-  partDecisionLabel,
+  partDecisionLabel, listedPhotoUrls,
 } from './maintenance/shared';
 import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
-import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
+import { SegmentTabs, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
+import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2, MoreHorizontal } from 'lucide-react';
 
 type EntityNoteRow = Database['public']['Tables']['entity_notes']['Row'];
 
@@ -55,6 +61,11 @@ type StoreStockItem = {
   /** Claimed by approved-but-not-handed-over requests. Free = on_hand - reserved_qty.
    *  Absent before migration 59. */
   reserved_qty?: number | null;
+  equipment?: string | null;
+  model?: string | null;
+  store_id?: string | null;
+  value_category?: string | null;
+  last_rate?: number | null;
 };
 
 
@@ -63,23 +74,57 @@ type StoreStockItem = {
 const STORE_UNITS = [...UNIT_OPTIONS, 'Units', 'mg', 'g', 'kg', 'mL', 'L']
   .filter((u, i, arr) => arr.indexOf(u) === i);
 
+const ticketFactLabel: React.CSSProperties = {
+  fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#94A3B8', marginBottom: 2,
+};
+
+function ticketMenuItem(color: string): React.CSSProperties {
+  return {
+    display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
+    padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13, color, fontFamily: 'inherit',
+  };
+}
+
+function outcomeColor(decision: string | null | undefined): string {
+  if (decision === 'scrap') return '#DC2626';
+  if (decision === 'repair' || decision === 'mixed') return '#B45309';
+  if (decision === 'consumed') return '#15803D';
+  return '#64748B';
+}
+
 function unitFromStock(item: StoreStockItem | null | undefined): string {
   return normalizeUnit(item?.unit);
 }
 
-/** Rank the plant's stock items against what the technician is typing. */
+/** Rank stock-register rows against what the technician is typing. Name, equipment, and model all count. */
 function suggestParts(query: string, stock: StoreStockItem[]): StoreStockItem[] {
   const q = query.trim().toLowerCase();
   if (q.length < 2) return [];
   return stock
-    .map(s => ({ s, score: s.item_name.toLowerCase().includes(q) ? 1 : similarity(q, s.item_name) }))
+    .map(s => {
+      const fields = [s.item_name, s.equipment, s.model].filter((x): x is string => !!x && x.trim().length > 0);
+      const hit = fields.some(f => f.toLowerCase().includes(q));
+      const score = hit ? 1 : Math.max(0, ...fields.map(f => similarity(q, f)));
+      return { s, score };
+    })
     .filter(x => x.score > 0.34)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
+    .sort((a, b) => b.score - a.score || a.s.item_name.localeCompare(b.s.item_name))
+    .slice(0, 12)
     .map(x => x.s);
 }
 
-type FarAssetLite = { id: string; name: string; identification_mark: string | null; plant_id: string | null };
+type FarAssetLite = { id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null };
+
+/** A consumable line that is really a FAR asset. High bar so a loose word does not flag. */
+function consumableFarMatch<T extends FarAssetLite>(text: string, assets: T[]): T | null {
+  const q = text.trim();
+  if (q.length < 2) return null;
+  const named = matchAsset(q, assets);
+  if (named && (named.via === 'mark' || named.score >= 0.8)) return named.asset;
+  const top = suggestAssets(q, assets, 1)[0];
+  if (top && top.score >= 0.85) return top.asset;
+  return null;
+}
 
 /** Equipment field backed by the FAR — pick a registered asset (links it) or type
  *  free text (allowed, flagged as not-in-FAR). */
@@ -178,7 +223,7 @@ function PartNameField({ value, stock, onChange, onPick }: {
         style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', outline: 'none' }}
       />
       {focus && suggestions.length > 0 && (
-        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, background: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, marginTop: 4, boxShadow: '0 10px 30px rgba(0,0,0,0.15)', maxHeight: 240, overflowY: 'auto' }}>
+        <div style={{ position: 'relative', zIndex: 30, background: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, marginTop: 4, boxShadow: '0 10px 30px rgba(0,0,0,0.12)', maxHeight: 240, overflowY: 'auto' }}>
           {suggestions.map((s, i) => (
             <button key={s.id} type="button"
               onMouseEnter={() => setActive(i)}
@@ -186,6 +231,8 @@ function PartNameField({ value, stock, onChange, onPick }: {
               style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '8px 12px', border: 'none', borderBottom: '1px solid #F1F5F9', background: i === active ? '#F1F5F9' : '#fff', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}>
               <span style={{ color: '#334155', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {s.item_name}
+                {s.equipment && s.equipment.trim().toLowerCase() !== s.item_name.trim().toLowerCase()
+                  ? <span style={{ color: '#94A3B8', fontWeight: 500 }}> · {s.equipment}</span> : null}
                 {s.unit ? <span style={{ color: '#94A3B8', fontWeight: 500 }}> · {normalizeUnit(s.unit)}</span> : null}
               </span>
               {/* FREE stock, not raw on-hand: on a register shared by several
@@ -275,7 +322,7 @@ function itemStage(r: StoreReqRow): ItemStage {
   const decision = (r.store_decision as string | null) ?? 'pending';
   if (r.unit_head_approval === 'rejected') return 'rejected';
   if (!decision || decision === 'pending') return 'store';
-  if (r.unit_head_approval !== 'approved') return 'unit_head';
+  if (r.unit_head_approval !== 'approved' && r.value_category !== 'C') return 'unit_head';
   // approved:
   if (decision === 'available') {
     return r.handover_confirmed_at ? 'done' : 'handover';
@@ -294,8 +341,11 @@ const STAGE_TO_TICKET: Record<string, TicketStatus> = {
   purchase_manager: 'pending_purchase_manager', handover: 'pending_handover',
 };
 
-/** Roll the item stages up to a single ticket status (least-advanced open item). */
+/** Roll the item stages up to a single ticket status (least-advanced open item).
+ *  A ticket that is already closed stays closed. Handed-over parts would
+ *  otherwise look like Used / Return again, while the list still says Closed. */
 function rollupStatus(reqs: StoreReqRow[], current: TicketStatus): TicketStatus {
+  if (current === 'closed') return current;
   if (!reqs.length) return current;
   const open = reqs.filter(r => { const s = itemStage(r); return s !== 'done' && s !== 'rejected'; });
   if (!open.length) {
@@ -310,7 +360,59 @@ function rollupStatus(reqs: StoreReqRow[], current: TicketStatus): TicketStatus 
 // ── Domain write helpers (use Supabase; kept local) ────────────────────────────
 
 function notify(payload: NotificationInsert) {
-  insertRows('notifications', payload).then(() => {}, () => {});
+  return insertRows('notifications', payload).then(
+    () => true,
+    (err: unknown) => { console.error('[notify] failed', err); return false; },
+  );
+}
+
+/** Notify Unit Heads (and Admin) that a periodic job needs verification.
+ *  One plant-tagged broadcast for in-scope Unit Heads, plus a personal ping
+ *  (no plant gate) to each Unit Head person — the bell matches that personal
+ *  id even when their plant scope would hide the broadcast. */
+function notifyUnitHeadVerify(opts: {
+  unitHeadRoleIds: string[];
+  allProfiles: { id: string; baseRoleId?: string; plant?: string }[];
+  title: string;
+  body: string;
+  ticketId: string;
+  plantId: string | null;
+  plantName?: string | null;
+  actorName: string;
+  actorRole: string;
+}) {
+  const heads = opts.allProfiles.filter(p => p.baseRoleId === 'unit_head' || p.id === 'unit_head');
+  const plantKey = (opts.plantName || '').trim().toLowerCase();
+  // This plant's Unit Head, plus any Unit Head with no plant set (they cover
+  // more than one site). If the name doesn't match anyone, ping every Unit Head
+  // so the request is not lost.
+  const matched = plantKey
+    ? heads.filter(p => !p.plant || p.plant.trim().toLowerCase() === plantKey)
+    : heads;
+  const personalIds = [...new Set((matched.length ? matched : heads).map(p => p.id))];
+  const base = {
+    title: opts.title,
+    body: opts.body,
+    type: 'warning' as const,
+    route: `/dashboard/purchase/maint?ticket=${opts.ticketId}`,
+    actor_name: opts.actorName,
+    actor_role: opts.actorRole,
+    read_by: [] as string[],
+    unit_id: null as string | null,
+  };
+  // Role broadcast stays plant-tagged. Personal copies also include the role
+  // id in target_roles so a profile switch still matches, and plant_id is null
+  // so a narrow plant scope cannot hide the verify request.
+  const sends = [
+    notify({ ...base, target_roles: opts.unitHeadRoleIds, plant_id: opts.plantId }),
+    ...personalIds.map(id => notify({
+      ...base,
+      target_roles: [...new Set([id, 'unit_head'])],
+      scope: 'personal' as const,
+      plant_id: null,
+    })),
+  ];
+  return Promise.all(sends).then(results => results.some(Boolean));
 }
 
 /** Deep-link a maintenance notification to the exact ticket so clicking the bell
@@ -325,6 +427,10 @@ function maintRoute(ticketId?: string | null) {
 async function updateTicketStatus(ticketId: string, status: TicketStatus, extra?: TicketUpdate) {
   await updateRows('maintenance_tickets', { status, ...extra })
     .eq('id', ticketId);
+}
+
+function chosenBlobs(many: Blob[], one: Blob | null): Blob[] {
+  return many.length ? many : (one ? [one] : []);
 }
 
 // Role ids whose (real) holders an admin can assign a maintenance task to. The
@@ -360,7 +466,7 @@ const CHANGE_TAG_KEYS: Record<string, string> = {
 // and they share one register, so routing by unit is routing by a distinction
 // that no longer exists. It also relied on substring-matching the plant NAME
 // for "chlorid"/"plastic" — exactly the name-as-logic this model removed.
-const ALL_STORE_MANAGER_IDS = ['store_manager_maint', 'warehouse_manager'];
+const ALL_STORE_MANAGER_IDS: string[] = [...STORE_MANAGER_ROLE_IDS];
 
 /** The technician's persisted first decision for an emergency ticket — the single
  *  source of truth for both the stage strip and the action body, so a reopened ticket
@@ -391,9 +497,11 @@ function matchBillLine(partName: string, lines: SupplierBillLine[]): SupplierBil
 
 // ── Row actions menu (gear → dropdown) ─────────────────────────────────────────
 // Replaces a row of inline buttons with one gear icon that opens a compact menu.
-function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, onDelete }: {
+function ScheduleRowMenu({ isActive, deleting, canAdminActions = true, onRevise, onToggle, onDuplicate, onDelete }: {
   isActive: boolean;
   deleting: boolean;
+  /** Pause / Delete stay Admin-only; Technical keeps Revise + Duplicate. */
+  canAdminActions?: boolean;
   onRevise: () => void;
   onToggle: () => void;
   onDuplicate: () => void;
@@ -471,23 +579,29 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
             {t('maint.revise', 'Revise')}
           </button>
-          <button role="menuitem" style={item} onClick={run(onToggle)} onMouseEnter={e => (e.currentTarget.style.background = '#F1F5F9')} onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
-            {isActive ? (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-            ) : (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-            )}
-            {isActive ? t('maint.pause', 'Pause') : t('maint.resume', 'Resume')}
-          </button>
+          {canAdminActions && (
+            <button role="menuitem" style={item} onClick={run(onToggle)} onMouseEnter={e => (e.currentTarget.style.background = '#F1F5F9')} onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
+              {isActive ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+              )}
+              {isActive ? t('maint.pause', 'Pause') : t('maint.resume', 'Resume')}
+            </button>
+          )}
           <button role="menuitem" style={item} onClick={run(onDuplicate)} onMouseEnter={e => (e.currentTarget.style.background = '#F1F5F9')} onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
             {t('maint.duplicate', 'Duplicate')}
           </button>
-          <div style={{ height: 1, background: '#F1F5F9', margin: '4px 0' }} />
-          <button role="menuitem" disabled={deleting} style={{ ...item, color: '#DC2626' }} onClick={run(onDelete)} onMouseEnter={e => (e.currentTarget.style.background = '#FEF2F2')} onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-            {deleting ? t('maint.deleting', 'Deleting…') : t('maint.delete', 'Delete')}
-          </button>
+          {canAdminActions && (
+            <>
+              <div style={{ height: 1, background: '#F1F5F9', margin: '4px 0' }} />
+              <button role="menuitem" disabled={deleting} style={{ ...item, color: '#DC2626' }} onClick={run(onDelete)} onMouseEnter={e => (e.currentTarget.style.background = '#FEF2F2')} onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                {deleting ? t('maint.deleting', 'Deleting…') : t('maint.delete', 'Delete')}
+              </button>
+            </>
+          )}
         </div>,
         document.body
       )}
@@ -498,8 +612,8 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function Maintenance() {
-  const { activeProfile, allProfiles, roles, can } = useRoleContext();
-  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor } = usePlantScope();
+  const { activeProfile, allProfiles, roles, can, activePersonId } = useRoleContext();
+  const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor, storeQuery } = usePlantScope();
   const { isPersonBlacklisted, notifyActivity, tableReady: blacklistReady } = useBlacklist();
   const toast = useToast();
   const { t } = useTranslation();
@@ -561,14 +675,38 @@ export function Maintenance() {
   // Admin is excluded so the capability (which admins hold implicitly) doesn't
   // demote them into a technician view and hide Schedule Setup from them.
   const isTechnician = role === 'technician_shd' || (!isAdmin && can('perform_maintenance'));
-  const isUnitHead = role === 'unit_head';
-  const isStoreManager = ALL_STORE_MANAGER_IDS.includes(role);
-  const isPurchaseManager = role === 'purchase_manager';
+  const isUnitHead = role === 'unit_head' || activeProfile.baseRoleId === 'unit_head';
+  // A real login's profile id is db_<uuid>. The role they hold is baseRoleId
+  // (store_manager_maint, purchase_manager). Checking only profile.id hid every
+  // store action from Sanju Pal and every other provisioned store manager.
+  const heldRoleIds = [role, activeProfile.baseRoleId].filter(Boolean) as string[];
+  const isStoreManager = heldRoleIds.some(id => ALL_STORE_MANAGER_IDS.includes(id));
+  const isPurchaseManager = heldRoleIds.includes('purchase_manager');
+  // Technical / Unit Head / Admin can revise schedules. Pause & delete stay Admin.
+  const ops = useOpsSettings();
+  const canEditSchedule = (isAdmin || isUnitHead || isTechnician) && canEditModule(ops, activeProfile, 'maintenance');
+  const canEditTickets = canEditModule(ops, activeProfile, 'maintenance');
+  const canDeleteTickets = canDeleteModule(ops, activeProfile, 'maintenance', activePersonId);
+  const canManageScheduleSetup = isAdmin || profileHasCapability(activeProfile, 'manage_schedules');
+  const showScheduleSetup = canSeeScheduleSetup(activeProfile);
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.
   const maintenanceRoleIds = useMemo(
     () => [...new Set(['technician_shd', ...roles.filter(r => (r.capabilities ?? []).includes('perform_maintenance')).map(r => r.id)])],
     [roles],
+  );
+  // Unit Head + any custom roles that inherit / alias the unit_head slug, so
+  // verify notifications are not stuck on the literal 'unit_head' id only.
+  const unitHeadRoleIds = useMemo(
+    () => [...new Set([
+      'unit_head',
+      'admin',
+      ...roles.filter(r => r.id === 'unit_head' || (r as { base_role_id?: string }).base_role_id === 'unit_head').map(r => r.id),
+      ...allProfiles
+        .filter(p => p.baseRoleId === 'unit_head' || p.id === 'unit_head')
+        .flatMap(p => [p.id, p.baseRoleId].filter(Boolean) as string[]),
+    ])],
+    [roles, allProfiles],
   );
   // POC: Mark Complete + upload is a Manage Roles toggle — assignable to any role.
   const canMarkPeriodicComplete = can('complete_periodic_maintenance') || isAdmin;
@@ -593,7 +731,7 @@ export function Maintenance() {
   };
 
   // Data
-  const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule'>('periodic');
+  const [tab, setTab] = useState<'periodic' | 'emergency' | 'schedule' | 'incidents'>('periodic');
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
@@ -603,11 +741,12 @@ export function Maintenance() {
   // Panel state
   const [completingSchedule, setCompletingSchedule] = useState<ScheduleRow | null>(null);
   const [overdueReason, setOverdueReason] = useState('');
-  const [periodicFocus, setPeriodicFocus] = useState<'today' | 'week' | 'overdue' | 'upcoming' | null>(null);
+  const [periodicFocus, setPeriodicFocus] = useState<'today' | 'verify' | 'overdue' | 'upcoming' | 'completed'>('today');
   const dueTodayRef = useRef<HTMLDivElement>(null);
-  const weeklyRef = useRef<HTMLDivElement>(null);
+  const verifyRef = useRef<HTMLDivElement>(null);
   const overdueRef = useRef<HTMLDivElement>(null);
   const upcomingRef = useRef<HTMLDivElement>(null);
+  const completedRef = useRef<HTMLDivElement>(null);
   const [selectedTicket, setSelectedTicket] = useState<TicketRow | null>(null);
   const [ticketStepNotifs, setTicketStepNotifs] = useState<{ title: string; actor_name: string | null; created_at: string }[]>([]);
   // Evidence photos opened from the ticket panel's thumbnail strip.
@@ -615,6 +754,7 @@ export function Maintenance() {
   // All store-request rows (items) for the selected ticket. A ticket can need
   // several parts at once; each row is one item with its own per-item lifecycle.
   const [storeReqs, setStoreReqs] = useState<StoreReqRow[]>([]);
+  const [storeReqError, setStoreReqError] = useState<string | null>(null);
   const patchDefectiveLine = (i: number, patch: Partial<DefectiveSplitLine>) =>
     setDefectiveLines(prev => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const selectedStoreReq = storeReqs[0] ?? null; // kept for the read-only timeline detail
@@ -624,6 +764,7 @@ export function Maintenance() {
   const [showSchedulePanel, setShowSchedulePanel] = useState(false);
   const [showPMImport, setShowPMImport] = useState(false);
   const [schedPlantFilter, setSchedPlantFilter] = useState<string[]>([]); // empty = all plants
+  const [schedQ, setSchedQ] = useState('');
   // When set, the schedule panel is in "revise" mode editing this row; null = creating new.
   const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null);
   const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
@@ -633,7 +774,7 @@ export function Maintenance() {
   // unit is NOT seeded from the legacy plant_name (that mis-tagged non-Jharkhand users
   // with Plasticiser/Chlorides). Plant defaults from the real data scope; unit only
   // applies when the chosen plant is a Jharkhand plant.
-  const [raiseForm, setRaiseForm] = useState({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '' });
+  const [raiseForm, setRaiseForm] = useState({ equipment: '', plant: '', description: '', assessment: 'needs_part', unit: '', farAssetId: '', equipmentMark: '', materialKind: '' as '' | 'spare' | 'consumable' });
   const BLANK_CHECKPOINT = { component: '', activity: '' };
   const [scheduleForm, setScheduleForm] = useState({ title: '', equipment: '', plant: '', frequency: 'weekly', description: '', firstDue: today, assignedTo: '', farAssetId: '', equipmentMark: '', until: '', unmatchedReason: '', checklist: [{ ...BLANK_CHECKPOINT }] });
   const [farAssets, setFarAssets] = useState<{ id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null }[]>([]);
@@ -659,7 +800,9 @@ export function Maintenance() {
 
   // Handover form (store manager uploads invoice + product photo)
   const [handoverInvoiceBlob, setHandoverInvoiceBlob] = useState<Blob | null>(null);
+  const [handoverInvoiceBlobs, setHandoverInvoiceBlobs] = useState<Blob[]>([]);
   const [handoverPhotoBlob, setHandoverPhotoBlob] = useState<Blob | null>(null);
+  const [handoverPhotoBlobs, setHandoverPhotoBlobs] = useState<Blob[]>([]);
   const [dispatchBlob, setDispatchBlob] = useState<Blob | null>(null); // purchase manager bill photo
   const [handoverNotes, setHandoverNotes] = useState('');
 
@@ -672,6 +815,8 @@ export function Maintenance() {
   const [supplierName, setSupplierName] = useState(''); // external vendor → recorded as a Purchase Order
   const [purchaseQty, setPurchaseQty] = useState(''); // how many were actually bought (bulk ≥ shortfall)
   const [defectiveDecision, setDefectiveDecision] = useState<'repair' | 'scrap' | ''>('');
+  const [scrapNotes, setScrapNotes] = useState('');
+  const [scrapConfirm, setScrapConfirm] = useState(false);
   // After store handover the operator picks Consumed (used up, nothing to return)
   // or Defective return (old part → Repair / Scrap). Empty until they choose.
   const [partOutcome, setPartOutcome] = useState<'consumed' | 'defective' | ''>('');
@@ -682,11 +827,14 @@ export function Maintenance() {
 
   // Upload
   const [completionBlob, setCompletionBlob] = useState<Blob | null>(null);
+  const [completionBlobs, setCompletionBlobs] = useState<Blob[]>([]);
   const [completionNotes, setCompletionNotes] = useState('');
   const [completionChecklist, setCompletionChecklist] = useState<{ component: string; activity: string; done: boolean }[]>([]);
   const [verifyingTicket, setVerifyingTicket] = useState<TicketRow | null>(null); // unit-head verification of a completed periodic ticket
   const [defectiveBlob, setDefectiveBlob] = useState<Blob | null>(null);
+  const [defectiveBlobs, setDefectiveBlobs] = useState<Blob[]>([]);
   const [raisePhotoBlob, setRaisePhotoBlob] = useState<Blob | null>(null); // optional defective-item photo at raise
+  const [raisePhotoBlobs, setRaisePhotoBlobs] = useState<Blob[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   // Distinguishes the two slow steps of a bill submit: the AI read/verify (no % yet)
@@ -702,6 +850,7 @@ export function Maintenance() {
 
   // Admin edit + report
   const [editingTicket, setEditingTicket] = useState(false);
+  const [ticketMenu, setTicketMenu] = useState(false);
   const [editForm, setEditForm] = useState({ equipment: '', description: '', plant: '', status: '' });
 
   // Request Changes (reviewer) + Revise & Resubmit (technician) — the same ticket
@@ -710,11 +859,18 @@ export function Maintenance() {
   const [changeReason, setChangeReason] = useState('');
   const [changeTags, setChangeTags] = useState<string[]>([]);
   const [resubmitting, setResubmitting] = useState(false);
-  const [resubmitForm, setResubmitForm] = useState({ equipment: '', description: '', plant: '', assessment: 'repairable', farAssetId: '', equipmentMark: '' });
+  const [resubmitForm, setResubmitForm] = useState({ equipment: '', description: '', plant: '', assessment: 'needs_part', farAssetId: '', equipmentMark: '' });
   const [resubmitPhotoBlob, setResubmitPhotoBlob] = useState<Blob | null>(null);
+  const [resubmitPhotoBlobs, setResubmitPhotoBlobs] = useState<Blob[]>([]);
   const [savingRevision, setSavingRevision] = useState(false); // shared submit guard
   const [rejectReason, setRejectReason] = useState(''); // optional reason on a part-level reject
   const [viewStage, setViewStage] = useState<string | null>(null); // clicked stage in the timeline
+  const [stageDetailOpen, setStageDetailOpen] = useState(false);
+  // A newly opened ticket starts with the stage history folded. The arrow opens it.
+  useEffect(() => {
+    setViewStage(null);
+    setStageDetailOpen(false);
+  }, [selectedTicket?.id]);
   const [showReport, setShowReport] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [reportForm, setReportForm] = useState({ emergency: true, periodic: true, status: 'all', from: '', to: '', includeNotes: true });
@@ -724,23 +880,38 @@ export function Maintenance() {
   const loadData = useCallback(async () => {
     let ticketsData: TicketRow[] | null = null;
     let schedulesData: ScheduleRow[] | null = null;
+    // List columns. checklist and the OCR dump stay off this query — they are
+    // the bulk of the payload and are only needed once a row is opened.
+    const since = new Date(Date.now() - 120 * 86400000).toISOString();
+    const ticketSelect = 'id, ticket_no, type, status, title, equipment, plant_id, unit, unit_id, schedule_id, description, due_date, raised_by, raised_role, assigned_to, far_asset_id, material_kind, completion_photo_url, completion_photo_urls, defective_part_photo_url, defective_part_photo_urls, defective_part_decision, repair_qty, repair_returned_qty, defective_raise_photo_url, defective_raise_photo_urls, pm_items_count, pm_bill_total, pm_bill_url, pm_billed_by, pm_billed_at, requires_approval, pm_ocr_total, pm_ocr_items, pm_ocr_status, pm_mismatch, revision_reason, revision_requested_by, revision_requested_at, revision_count, revision_prev_status, assessed_by, submitted_by, submitted_at, verified_by, defective_decided_by, closed_by, closed_at, created_at';
+    const scheduleSelect = 'id, title, equipment, plant_id, frequency, description, assigned_to, is_active, next_due_at, last_completed_at, far_asset_id, equipment_mark, start_date, until_date, requires_approval, unmatched_justification, source, import_batch_id, created_at';
+    const ticketPage = (select: string) => (from: number, to: number) =>
+      scopeQuery(supabase.from('maintenance_tickets').select(`${select}, plants(name)`), { unitCol: 'unit_id' })
+        .or(`status.neq.closed,closed_at.gte.${since}`)
+        .order('created_at', { ascending: false }).order('id', { ascending: false })
+        .range(from, to).returns<TicketRow[]>();
     try {
       const [tRes, sRes, pRes] = await Promise.all([
         withEmbedFallback(
           // PAGED: this factory already holds ~1,300 tickets and PostgREST caps a
-          // response at 1000 SILENTLY — which is why the OVERDUE card could never
-          // read above 1000 and the oldest tickets were invisible entirely.
-          fetchAllRows<TicketRow>((from, to) =>
-            scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' })
-              .order('created_at', { ascending: false }).range(from, to).returns<TicketRow[]>()),
-          () => fetchAllRows<TicketRow>((from, to) =>
-            scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' })
-              .order('created_at', { ascending: false }).range(from, to).returns<TicketRow[]>()),
+          // response at 1000 SILENTLY. The first page paints the tab; later
+          // pages fill the overdue counts.
+          fetchAllRowsProgressive<TicketRow>(ticketPage(ticketSelect), rows => {
+            setTickets(rows);
+            setLoading(false);
+          }),
+          () => fetchAllRowsProgressive<TicketRow>(
+            (from, to) => scopeQuery(supabase.from('maintenance_tickets').select(ticketSelect), { unitCol: 'unit_id' })
+              .or(`status.neq.closed,closed_at.gte.${since}`)
+              .order('created_at', { ascending: false }).order('id', { ascending: false })
+              .range(from, to).returns<TicketRow[]>(),
+            rows => { setTickets(rows); setLoading(false); },
+          ),
           'Maintenance.tickets',
         ),
         withEmbedFallback(
-          scopeQuery(supabase.from('maintenance_schedules').select('*, plants(name)')).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
-          () => scopeQuery(supabase.from('maintenance_schedules').select('*')).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
+          scopeQuery(supabase.from('maintenance_schedules').select(`${scheduleSelect}, plants(name)`)).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
+          () => scopeQuery(supabase.from('maintenance_schedules').select(scheduleSelect)).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
           'Maintenance.schedules',
         ),
         fetchActivePlants<{ id: string; name: string }>('id, name'),
@@ -762,8 +933,17 @@ export function Maintenance() {
 
     // Materialise due periodic tickets — batched, so importing hundreds of schedules
     // doesn't fire hundreds of sequential inserts/notifications on load.
+    // Checklists were left off the list query. Pull them now, after the tab
+    // is already on screen, and only so due tasks can be spawned.
     if (schedulesData) {
       try {
+        const lists = await fetchAllRows<{ id: string; checklist: ScheduleRow['checklist'] }>((from, to) =>
+          supabase.from('maintenance_schedules').select('id, checklist')
+            .order('id', { ascending: true }).range(from, to)
+            .returns<{ id: string; checklist: ScheduleRow['checklist'] }[]>());
+        const checklistById = new Map((lists.data || []).map(row => [row.id, row.checklist]));
+        schedulesData = schedulesData.map(s => ({ ...s, checklist: checklistById.get(s.id) ?? s.checklist ?? null }));
+        setSchedules(schedulesData);
         const nowTs = Date.now();
         const toCreate: Record<string, unknown>[] = [];
         const toDeactivate: string[] = [];
@@ -791,7 +971,13 @@ export function Maintenance() {
         }
         if (toDeactivate.length) await (supabase.from('maintenance_schedules') as never as { update: (v: unknown) => { in: (c: string, v: string[]) => Promise<unknown> } }).update({ is_active: false }).in('id', toDeactivate);
         if (toCreate.length) {
-          for (let i = 0; i < toCreate.length; i += 200) await insertRows('maintenance_tickets', toCreate.slice(i, i + 200) as never);
+          const inserted: TicketRow[] = [];
+          for (let i = 0; i < toCreate.length; i += 200) {
+            const { data } = await insertRows('maintenance_tickets', toCreate.slice(i, i + 200) as never)
+              .select(`${ticketSelect}, plants(name)`);
+            if (data?.length) inserted.push(...(data as TicketRow[]));
+          }
+          if (inserted.length) setTickets(prev => [...inserted, ...prev]);
           notify({
             target_roles: ['admin', 'unit_head', ...maintenanceRoleIds],
             title: `${toCreate.length} periodic maintenance task${toCreate.length === 1 ? '' : 's'} due`,
@@ -800,9 +986,6 @@ export function Maintenance() {
             actor_name: 'System', actor_role: 'system', read_by: [],
             plant_id: null, unit_id: null,
           });
-          // Reflect the new tickets without a full reload loop.
-          const { data: refreshed } = await scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>();
-          if (refreshed) setTickets(refreshed);
         }
       } catch (e) { console.error('[Maintenance] periodic generation failed', e); }
     }
@@ -820,13 +1003,22 @@ export function Maintenance() {
   }, [uploading]);
 
   // Deep-link: a notification's "?ticket=<id>" opens that ticket directly.
+  // `from` is an in-app path (the stock register) so closing the panel returns there.
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const openedFromRef = useRef<string | null>(null);
+  function safeInternalPath(raw: string | null): string | null {
+    if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.includes('://')) return null;
+    return raw;
+  }
   useEffect(() => {
     const tid = searchParams.get('ticket');
     if (!tid) return;
+    const from = safeInternalPath(searchParams.get('from'));
     const clearTicketParam = () => {
       const next = new URLSearchParams(searchParams);
       next.delete('ticket');
+      next.delete('from');
       setSearchParams(next, { replace: true });
     };
     const matched = tickets.find((x) => x.id === tid);
@@ -852,15 +1044,18 @@ export function Maintenance() {
           // Deleted / out of scope — bare Periodic list with no explanation looked
           // like a broken flow after clicking To-Do / bell.
           toast.info(t('maint.ticketGoneDeepLink', 'That ticket is no longer available — it may have been deleted.'));
+          openedFromRef.current = null;
           clearTicketParam();
           return;
         }
+        if (from) openedFromRef.current = from;
         setSelectedTicket(found);
         setTab(found.type === 'periodic' ? 'periodic' : 'emergency');
         clearTicketParam();
       })();
       return () => { cancelled = true; };
     }
+    if (from) openedFromRef.current = from;
     setSelectedTicket(matched);
     setTab(matched.type === 'periodic' ? 'periodic' : 'emergency');
     clearTicketParam();
@@ -871,6 +1066,8 @@ export function Maintenance() {
   useEffect(() => {
     if (searchParams.get('raise') !== '1') return;
     const farId = searchParams.get('far');
+    const from = safeInternalPath(searchParams.get('from'));
+    if (from) openedFromRef.current = from;
     if (!farId) return;
     const asset = farAssets.find(a => a.id === farId);
     const equip = searchParams.get('equip') || (asset ? `${asset.name}${asset.identification_mark ? ` (${asset.identification_mark})` : ''}` : '');
@@ -880,25 +1077,51 @@ export function Maintenance() {
     setShowRaisePanel(true);
     setRaiseForm(f => ({
       ...f,
+      materialKind: 'spare',
       equipment: equip || f.equipment,
       plant: plant || f.plant,
       farAssetId: farId,
       equipmentMark: asset?.identification_mark || f.equipmentMark,
     }));
     const next = new URLSearchParams(searchParams);
-    next.delete('raise'); next.delete('far'); next.delete('equip'); next.delete('plant');
+    next.delete('raise'); next.delete('far'); next.delete('equip'); next.delete('plant'); next.delete('from');
     setSearchParams(next, { replace: true });
   }, [searchParams, farAssets, setSearchParams]);
 
   const loadStoreReqs = useCallback(async (ticketId: string) => {
-    const { data } = await supabase.from('maintenance_store_requests')
+    const { data, error } = await supabase.from('maintenance_store_requests')
       .select('*').eq('ticket_id', ticketId).order('created_at', { ascending: true })
       .returns<StoreReqRow[]>();
-    setStoreReqs(data || []);
+    if (error) {
+      console.error('[Maintenance] store requests', error);
+      setStoreReqError(error.message);
+      return;
+    }
+    setStoreReqError(null);
+    const reqs = data || [];
+    setStoreReqs(reqs);
+    // The open ticket can still say Store Check after the part line has moved
+    // on (unit head, handover). Drive the strip from the part lines.
+    if (reqs.length) {
+      setSelectedTicket(t => {
+        if (!t || t.id !== ticketId) return t;
+        const next = rollupStatus(reqs, t.status);
+        return next === t.status ? t : { ...t, status: next };
+      });
+    }
   }, []);
 
   useEffect(() => {
-    if (!selectedTicket) { setStoreReqs([]); setTicketStepNotifs([]); return; }
+    if (!selectedTicket) { setStoreReqs([]); setStoreReqError(null); setTicketStepNotifs([]); return; }
+    if (selectedTicket.checklist === undefined) {
+      const ticketId = selectedTicket.id;
+      void supabase.from('maintenance_tickets').select('checklist').eq('id', ticketId).maybeSingle()
+        .then(({ data }) => {
+          const checklist = ((data as { checklist?: TicketRow['checklist'] } | null)?.checklist ?? null);
+          setSelectedTicket(t => t && t.id === ticketId ? { ...t, checklist } : t);
+          setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, checklist } : t));
+        });
+    }
     loadStoreReqs(selectedTicket.id);
     void (async () => {
       const { data } = await supabase.from('notifications')
@@ -942,26 +1165,22 @@ export function Maintenance() {
     setDefectiveLines(lines);
   }, [selectedTicket?.id, storeReqs]);
 
-  // Load the register of the STORE this ticket's factory draws from → powers
-  // the part-name type-ahead.
-  //
-  // Keyed on the store, not the factory. At Rehla, SCPL / SPPL / SPPL(K) all
-  // resolve to the same Rehla Common Store, so a technician at any of them sees
-  // the one shared register — stock held once, not three copies. Everywhere
-  // else a factory maps to its own store, so this is identical to the old
-  // `.eq('plant_id', pid)` behaviour.
+  // Part-name type-ahead reads the same stock register as the Stock Register
+  // page. A single unpaged query stops at 1000 rows, so names later in the
+  // alphabet (and anything outside the ticket factory's one store) never appeared.
   useEffect(() => {
     const pid = selectedTicket?.plant_id;
     if (!pid) { setStoreStock([]); return; }
     let alive = true;
-    const storeId = storeIdFor(pid);
-    const q = supabase.from('store_items').select('id, item_name, on_hand, reserved_qty, unit');
-    // Before migration 59 there are no stores; fall back to the factory's own rows.
-    (storeId ? q.eq('store_id', storeId) : q.eq('plant_id', pid))
-      .order('item_name')
-      .returns<StoreStockItem[]>().then(({ data }) => { if (alive) setStoreStock(data || []); });
+    const select = 'id, item_name, on_hand, reserved_qty, unit, equipment, model, store_id, value_category';
+    const page = (from: number, to: number) =>
+      storeQuery(supabase.from('store_items').select(select))
+        .order('item_name', { ascending: true }).order('id', { ascending: true })
+        .range(from, to)
+        .returns<StoreStockItem[]>();
+    fetchAllRows<StoreStockItem>(page).then(({ data }) => { if (alive) setStoreStock(data || []); });
     return () => { alive = false; };
-  }, [selectedTicket?.plant_id, storeIdFor]);
+  }, [selectedTicket?.plant_id, storeQuery]);
 
   // FAR assets → the equipment dropdown when creating a schedule (validation
   // against the register). SCOPED: an unscoped fetch would pull every factory's
@@ -970,25 +1189,49 @@ export function Maintenance() {
   // not just in the picker below. RLS on fixed_assets is the real boundary;
   // this keeps the client from ever holding what it may not show.
   useEffect(() => {
+    // Wait until the ticket list is on screen. This register is only needed
+    // for the equipment picker and job numbers, and it was competing with
+    // the ticket query on every open.
+    if (loading) return;
     let alive = true;
-    scopeQuery(supabase.from('fixed_assets').select('id, name, identification_mark, plant_id, job_no'))
-      .order('name')
-      .returns<{ id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null }[]>()
-      .then(({ data, error }) => {
-        if (!error) { if (alive) setFarAssets(data || []); return; }
-        return scopeQuery(supabase.from('fixed_assets').select('id, name, identification_mark, plant_id'))
-          .order('name')
-          .returns<{ id: string; name: string; identification_mark: string | null; plant_id: string | null }[]>()
-          .then(({ data: fallback }) => { if (alive) setFarAssets(fallback || []); });
-      });
+    type FarLite = { id: string; name: string; identification_mark: string | null; plant_id: string | null; job_no?: string | null };
+    const apply = (rows: FarLite[]) => { if (alive) setFarAssets(rows); };
+    const page = (cols: string) => (from: number, to: number) =>
+      scopeQuery(supabase.from('fixed_assets').select(cols).is('deleted_at', null))
+        .order('name').order('id')
+        .range(from, to)
+        .returns<FarLite[]>();
+    void fetchAllRowsProgressive<FarLite>(
+      page('id, name, identification_mark, plant_id, job_no'),
+      apply,
+    ).then(async ({ error }) => {
+      if (!alive || !error) return;
+      const fallback = await fetchAllRowsProgressive<FarLite>(
+        page('id, name, identification_mark, plant_id'),
+        apply,
+      );
+      if (alive && fallback.error) apply([]);
+    });
     return () => { alive = false; };
-  }, [scopeQuery]);
+  }, [loading, scopeQuery]);
 
   // Seed the completion checklist from the open ticket (preserves prior ticks) or the schedule.
   // Ganjam Daily workbooks stored calendar dates as "activities"; swap those
   // for the real sibling checklist (monthly Reactor No.-01, etc.).
   useEffect(() => {
     if (!completingSchedule) { setCompletionNotes(''); return; }
+    if (completingSchedule.checklist === undefined) {
+      const id = completingSchedule.id;
+      let alive = true;
+      void supabase.from('maintenance_schedules').select('checklist').eq('id', id).maybeSingle()
+        .then(({ data }) => {
+          if (!alive) return;
+          const checklist = ((data as { checklist?: ScheduleRow['checklist'] } | null)?.checklist ?? null);
+          setSchedules(prev => prev.map(s => s.id === id ? { ...s, checklist: s.checklist ?? checklist } : s));
+          setCompletingSchedule(s => s && s.id === id ? { ...s, checklist } : s);
+        });
+      return () => { alive = false; };
+    }
     const lt = tickets.find(t => t.schedule_id === completingSchedule.id && t.status !== 'closed');
     const raw = (lt?.checklist as { component: string; activity: string; done?: boolean }[] | null) || completingSchedule.checklist || [];
     const replacement = pickReplacementChecklist(
@@ -1061,21 +1304,54 @@ export function Maintenance() {
   // is also the fastest way to spot a factory nobody has set up yet.
   const schedulePlants = useMemo(() => {
     const withData = new Set(schedules.map(s => s.plant_id).filter(Boolean) as string[]);
-    return plantOptions.map(p => ({ id: p.id, name: p.name, hasData: withData.has(p.id) }));
+    return plantOptions.map(p => ({ id: p.id, name: displayLocationName(p.name), hasData: withData.has(p.id) }));
   }, [plantOptions, schedules]);
-  const shownSchedules = schedPlantFilter.length ? schedules.filter(s => s.plant_id && schedPlantFilter.includes(s.plant_id)) : schedules;
+  const shownSchedules = (schedPlantFilter.length ? schedules.filter(s => s.plant_id && schedPlantFilter.includes(s.plant_id)) : schedules)
+    .filter(s => {
+      const q = schedQ.trim().toLowerCase();
+      if (!q) return true;
+      return [s.title, s.equipment, displayLocationName(s.plants?.name), s.plants?.name, s.assigned_to, s.frequency].some(v => (v || '').toLowerCase().includes(q));
+    });
   const emergencyTickets = tickets.filter(t => t.type === 'emergency');
 
   // ── v2 filter bar (client-side; resets when switching tabs) ───────────────
   const [fltQ, setFltQ] = useState('');
   const [fltPlant, setFltPlant] = useState('all');
   const [fltStatus, setFltStatus] = useState('all');
-  useEffect(() => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); }, [tab]);
+  // Follow ?tab= only when that value changes. Other params (ticket, from) change
+  // while the user works and must not drag the tab back to an old link.
+  const seenTabParam = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const raw = searchParams.get('tab');
+    if (raw !== seenTabParam.current) {
+      seenTabParam.current = raw;
+      if (raw === 'periodic' || raw === 'emergency' || raw === 'schedule' || raw === 'incidents') setTab(raw);
+    }
+    const q = (searchParams.get('q') || '').trim();
+    if (q) setFltQ(q);
+    const status = searchParams.get('status');
+    if (status) setFltStatus(status);
+  }, [searchParams]);
+  useEffect(() => {
+    if (searchParams.get('q')) return;
+    setFltQ('');
+    setFltPlant('all');
+    setFltStatus(searchParams.get('status') || 'all');
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chooseTab = (k: typeof tab) => {
+    setTab(k);
+    seenTabParam.current = k;
+    setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', k); return p; }, { replace: true });
+  };
   const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); };
+
+  /** Open ticket linked to a schedule (not closed). */
+  const openTicketFor = (s: ScheduleRow) =>
+    tickets.find(t => t.schedule_id === s.id && t.status !== 'closed');
 
   /** Derived schedule state — same classification the periodic rows render. */
   const schedStatusOf = (s: ScheduleRow): string => {
-    const linked = tickets.find(t => t.schedule_id === s.id && t.status !== 'closed');
+    const linked = openTicketFor(s);
     if (linked?.status === 'pending_unit_head') return 'verify';
     if (linked) return 'ticket';
     const d = daysFromNow(s.next_due_at);
@@ -1087,41 +1363,90 @@ export function Maintenance() {
     const q = fltQ.trim().toLowerCase();
     return !q || txt.some(x => (x || '').toLowerCase().includes(q));
   };
-  /** Ticket # is shown as the first 8 chars of the UUID — search must match that too. */
+  /** Ticket # is STK0001. The old 8-character id still matches a search. */
   const ticketSearchHaystack = (t: TicketRow) => {
     const id = t.id.toLowerCase();
     const linked = t.far_asset_id ? farAssets.find(a => a.id === t.far_asset_id) : undefined;
     const job = t.far_asset_id ? jobNoFar(t.far_asset_id, linked?.identification_mark, linked?.job_no) : '';
-    return [t.equipment, t.title, t.description, t.plants?.name, t.raised_by, t.assigned_to, id, id.slice(0, 8), id.replace(/-/g, ''), job];
+    return [t.equipment, t.title, t.description, displayLocationName(t.plants?.name), t.plants?.name, t.raised_by, t.assigned_to, t.ticket_no, id, id.slice(0, 8), id.replace(/-/g, ''), job];
   };
-  const fltPeriodic = schedules.filter(s =>
-    matchQ(s.title, s.equipment, s.plants?.name, s.equipment_mark, s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : '')
-    && (fltPlant === 'all' || s.plant_id === fltPlant)
+
+  // KPI / list plant scope — Admin "All Plants" = every schedule in data scope;
+  // a single plant selection narrows every card and list together.
+  // Search / status filters apply to lists only so KPI totals stay truthful.
+  const plantSchedules = useMemo(
+    () => schedules.filter(s => fltPlant === 'all' || s.plant_id === fltPlant),
+    [schedules, fltPlant],
+  );
+  const plantTickets = useMemo(
+    () => tickets.filter(t => fltPlant === 'all' || t.plant_id === fltPlant),
+    [tickets, fltPlant],
+  );
+  const plantPeriodicTickets = useMemo(
+    () => plantTickets.filter(t => t.type === 'periodic'),
+    [plantTickets],
+  );
+  const plantEmergencyTickets = useMemo(
+    () => plantTickets.filter(t => t.type === 'emergency'),
+    [plantTickets],
+  );
+
+  const awaitingVerifySchedules = plantSchedules.filter(s => openTicketFor(s)?.status === 'pending_unit_head');
+  const dueTodaySchedules = plantSchedules.filter(s => {
+    if (openTicketFor(s)?.status === 'pending_unit_head') return false; // Technical done → UH queue, not Due Today
+    return daysFromNow(s.next_due_at) === 0;
+  });
+  const overdueSchedules = plantSchedules.filter(s => {
+    if (openTicketFor(s)?.status === 'pending_unit_head') return false;
+    const d = daysFromNow(s.next_due_at);
+    return d !== null && d < 0;
+  });
+  const upcomingSchedules = plantSchedules.filter(s => {
+    if (openTicketFor(s)?.status === 'pending_unit_head') return false;
+    const d = daysFromNow(s.next_due_at);
+    return d !== null && d > 0 && d <= 30;
+  });
+
+  // Table rows: plant scope + search + status chip.
+  const fltPeriodic = plantSchedules.filter(s =>
+    matchQ(s.title, s.equipment, displayLocationName(s.plants?.name), s.plants?.name, s.equipment_mark, s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : '')
     && (fltStatus === 'all' || schedStatusOf(s) === fltStatus));
-  const dueTodaySchedules = fltPeriodic.filter(s => daysFromNow(s.next_due_at) === 0);
-  const overdueSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d < 0; });
-  const dueWeekSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d >= 0 && d <= 7; });
-  const weeklyListSchedules = fltPeriodic.filter(s => s.frequency === 'weekly' && (() => { const d = daysFromNow(s.next_due_at); return d !== null && d >= 0 && d <= 7; })());
-  const upcomingSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d > 7 && d <= 30; });
+  const listDueToday = fltPeriodic.filter(s => dueTodaySchedules.some(d => d.id === s.id));
+  const listOverdue = fltPeriodic.filter(s => overdueSchedules.some(d => d.id === s.id));
+  const listUpcoming = fltPeriodic.filter(s => upcomingSchedules.some(d => d.id === s.id));
+  const listAwaitingVerify = fltPeriodic.filter(s => awaitingVerifySchedules.some(d => d.id === s.id));
+
   const dueScopeLabel = (() => {
-    if (fltPlant !== 'all') return dbPlants.find(p => p.id === fltPlant)?.name || t('common.allPlants');
-    const names = [...new Set(fltPeriodic.map(s => s.plants?.name).filter(Boolean))];
+    if (fltPlant !== 'all') return plantOptions.find(p => p.id === fltPlant)?.name || dbPlants.find(p => p.id === fltPlant)?.name || t('common.allPlants');
+    const names = [...new Set(plantSchedules.map(s => displayLocationName(s.plants?.name)).filter(Boolean))];
     if (names.length === 1) return names[0];
     if (names.length > 1) return t('maint.nPlantsScope', { defaultValue: '{{n}} plants', n: names.length });
     return t('common.allPlants');
   })();
   const dueItemPreview = (rows: ScheduleRow[]) => {
-    const names = rows.slice(0, 3).map(s => stripPlaceholderParen(s.equipment || s.title));
+    const names = rows.slice(0, 3).map(s => shownName(s.equipment || s.title, s.far_asset_id, s.equipment_mark));
     const extra = rows.length > 3 ? ` +${rows.length - 3}` : '';
     return names.length ? `${names.join(', ')}${extra} · ${dueScopeLabel}` : dueScopeLabel;
   };
-  const fltEmergency = emergencyTickets.filter(t =>
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  // KPI cards count a queue, not one database status. The list has to use the same queues.
+  const STORE_QUEUE = ['pending_store', 'pending_unit_head'];
+  const PURCHASE_QUEUE = ['pending_purchase', 'pending_purchase_manager', 'pending_handover'];
+  const emergencyInQueue = (t: TicketRow, flt: string) => {
+    if (flt === 'all') return true;
+    if (flt === 'open') return t.status !== 'closed';
+    if (flt === 'store_queue') return STORE_QUEUE.includes(t.status);
+    if (flt === 'purchase_queue') return PURCHASE_QUEUE.includes(t.status);
+    if (flt === 'closed_mtd') return t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart;
+    return t.status === flt;
+  };
+  const fltEmergency = plantEmergencyTickets.filter(t =>
     matchQ(...ticketSearchHaystack(t))
-    && (fltPlant === 'all' || t.plant_id === fltPlant)
-    && (fltStatus === 'all' || t.status === fltStatus));
+    && emergencyInQueue(t, fltStatus));
   const plantFilterOptions = [
     { value: 'all', label: t('common.allPlants') },
-    ...dbPlants.map(p => ({ value: p.id, label: p.name })),
+    ...plantOptions.map(p => ({ value: p.id, label: displayLocationName(p.name) })),
   ];
   const statusFilterOptions = tab === 'periodic'
     ? [
@@ -1129,30 +1454,35 @@ export function Maintenance() {
         { value: 'overdue', label: t('maint.schedStatusOverdue') },
         { value: 'due-soon', label: t('maint.schedStatusDueSoon') },
         { value: 'on-track', label: t('maint.schedStatusOnTrack') },
+        { value: 'verify', label: t('maint.schedStatusVerify', 'Awaiting verification') },
         { value: 'ticket', label: t('maint.schedStatusTicketOpen') },
       ]
     : [
         { value: 'all', label: t('common.allStatus') },
-        ...[...new Set(emergencyTickets.map(tk => tk.status))].map(s => ({ value: s, label: statusLabel(s) })),
+        { value: 'open', label: t('maint.openTickets') },
+        { value: 'store_queue', label: t('maint.pendingStoreApproval') },
+        { value: 'purchase_queue', label: t('maint.purchaseHandover') },
+        { value: 'closed_mtd', label: t('maint.closedMtd') },
+        ...[...new Set(plantEmergencyTickets.map(tk => tk.status))].map(s => ({ value: s, label: statusLabel(s) })),
       ];
 
   // Click-to-sort for the three maintenance tables (sorts feed pagination below).
   const periodicSortKeys = {
     task: (s: ScheduleRow) => s.title,
     equipment: (s: ScheduleRow) => s.equipment,
-    plant: (s: ScheduleRow) => s.plants?.name,
+    plant: (s: ScheduleRow) => displayLocationName(s.plants?.name),
     frequency: (s: ScheduleRow) => freqSortRank(s.frequency),
     lastDone: (s: ScheduleRow) => (s.last_completed_at ? new Date(s.last_completed_at) : null),
     due: (s: ScheduleRow) => (s.next_due_at ? new Date(s.next_due_at) : null),
   };
-  const dueTodaySort = useSortable(dueTodaySchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const overdueSort = useSortable(overdueSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const weeklyListSort = useSortable(weeklyListSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const upcomingSort = useSortable(upcomingSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
+  const dueTodaySort = useSortable(listDueToday, periodicSortKeys, { key: 'due', dir: 'asc' });
+  const overdueSort = useSortable(listOverdue, periodicSortKeys, { key: 'due', dir: 'asc' });
+  const upcomingSort = useSortable(listUpcoming, periodicSortKeys, { key: 'due', dir: 'asc' });
+  const verifySort = useSortable(listAwaitingVerify, periodicSortKeys, { key: 'due', dir: 'asc' });
   const emergencySort = useSortable(fltEmergency, {
-    ticket: t => t.id,
+    ticket: t => t.ticket_no || t.id,
     equipment: t => t.equipment,
-    plant: t => t.plants?.name,
+    plant: t => displayLocationName(t.plants?.name),
     issue: t => t.description || t.title,
     status: t => t.status,
     raisedBy: t => t.raised_by,
@@ -1161,7 +1491,7 @@ export function Maintenance() {
   const scheduleSort = useSortable(shownSchedules, {
     task: s => s.title,
     equipment: s => s.equipment,
-    plant: s => s.plants?.name,
+    plant: s => displayLocationName(s.plants?.name),
     frequency: s => freqSortRank(s.frequency),
     assignedTo: s => s.assigned_to,
     due: s => (s.next_due_at ? new Date(s.next_due_at) : null),
@@ -1172,27 +1502,49 @@ export function Maintenance() {
   const fltKey = `${fltQ}|${fltPlant}|${fltStatus}`;
   const dueTodayPg = usePagination(dueTodaySort.sorted, { resetKey: `${fltKey}|today|${dueTodaySort.sort.key}|${dueTodaySort.sort.dir}` });
   const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}` });
-  const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}` });
   const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
-  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencyTickets.length}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
-  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${schedPlantFilter.join(',')}|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const verifyPg = usePagination(verifySort.sorted, { resetKey: `${fltKey}|verify|${verifySort.sort.key}|${verifySort.sort.dir}` });
+  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${plantEmergencyTickets.length}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
+  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${schedPlantFilter.join(',')}|${schedQ}|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
 
-  const openEmergency = emergencyTickets.filter(t => t.status !== 'closed').length;
-  const pendingStore = emergencyTickets.filter(t => ['pending_store', 'pending_unit_head'].includes(t.status)).length;
-  const pendingPurchase = emergencyTickets.filter(t => ['pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(t.status)).length;
-  const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  // Emergency KPIs follow the plant filter (All Plants = combined) and the same queues as the list.
+  const openEmergency = plantEmergencyTickets.filter(t => emergencyInQueue(t, 'open')).length;
+  const pendingStore = plantEmergencyTickets.filter(t => emergencyInQueue(t, 'store_queue')).length;
+  const pendingPurchase = plantEmergencyTickets.filter(t => emergencyInQueue(t, 'purchase_queue')).length;
+  const closedMTD = plantEmergencyTickets.filter(t => emergencyInQueue(t, 'closed_mtd')).length;
 
   const dueToday = dueTodaySchedules.length;
-  const dueWeek = dueWeekSchedules.length;
+  const awaitingVerify = awaitingVerifySchedules.length;
+  const upcoming = upcomingSchedules.length;
   const overdue = overdueSchedules.length;
-  const closedPeriodicMTD = periodicTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  // Unit Head verification is what completes a periodic task. A photo with
+  // nobody in verified_by / closed_by is still awaiting verification.
+  const completedMtdSource = plantPeriodicTickets.filter(t =>
+    t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart
+    && !!(t.verified_by || t.closed_by)
+    && !!(t.completion_photo_url || t.submitted_at));
+  const completedMtdList = completedMtdSource.filter(t => matchQ(t.title, t.equipment, displayLocationName(t.plants?.name), t.plants?.name, t.closed_by, t.verified_by));
+  const completedMtdSort = useSortable(completedMtdList, {
+    task: (t: TicketRow) => t.title,
+    equipment: (t: TicketRow) => t.equipment,
+    plant: (t: TicketRow) => displayLocationName(t.plants?.name),
+    by: (t: TicketRow) => t.closed_by || t.verified_by,
+    closed: (t: TicketRow) => (t.closed_at ? new Date(t.closed_at) : null),
+  }, { key: 'closed', dir: 'desc' });
+  const completedMtdPg = usePagination(completedMtdSort.sorted, { resetKey: `${fltKey}|mtd|${completedMtdSort.sort.key}|${completedMtdSort.sort.dir}` });
+  const closedPeriodicMTD = completedMtdSource.length;
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
   async function handleRaiseTicket() {
-    if (!raiseForm.equipment.trim() || raising) return;
+    if (raising) return;
+    if (raiseForm.materialKind === 'spare' && !raiseForm.farAssetId) {
+      toast.error(t('maint.spareNeedPick', 'Pick the equipment from the FAR'));
+      return;
+    }
+    if (raiseForm.materialKind !== 'spare' && raiseForm.materialKind !== 'consumable') return;
+    if (!raiseForm.equipment.trim()) return;
+    const farFlag = raiseForm.materialKind === 'consumable' ? consumableFarMatch(raiseForm.equipment, farAssets) : null;
     setRaising(true);
     try {
     const plant = dbPlants.find(p => p.id === raiseForm.plant);
@@ -1201,14 +1553,21 @@ export function Maintenance() {
     const unitRow = raiseForm.unit
       ? scopeUnits.find(u => u.plant_id === plant?.id && (u.code === raiseForm.unit || u.name.toLowerCase() === raiseForm.unit.toLowerCase()))
       : undefined;
+    const kindLabel = raiseForm.materialKind === 'spare' ? 'Material Spare' : 'Material Consumable';
+    const flagLine = farFlag
+      ? `Flagged: "${raiseForm.equipment.trim()}" matches FAR asset ${farFlag.name}. This belongs under Material Spare.`
+      : '';
+    const { data: ticketNo } = await (supabase as unknown as { rpc: (fn: string) => Promise<{ data: string | null }> }).rpc('next_ticket_no');
     const { data: newTicket, error } = await insertRows('maintenance_tickets', {
       type: 'emergency', status: 'open',
-      title: `${raiseForm.equipment} — ${raiseForm.assessment === 'repairable' ? 'Repairable' : 'Needs part'}`,
+      ...(typeof ticketNo === 'string' ? { ticket_no: ticketNo } : {}),
+      title: `${kindLabel}: ${raiseForm.equipment} — Needs part`,
       equipment: raiseForm.equipment,
+      material_kind: raiseForm.materialKind,
       plant_id: plant?.id || null,
       unit: raiseForm.unit || null,
       unit_id: unitRow?.id || null,
-      description: raiseForm.description || null,
+      description: [raiseForm.description, flagLine].filter(Boolean).join('\n') || null,
       // Reliable FAR link when the equipment was picked from the type-ahead — powers
       // the asset QR profile's history (was previously captured but dropped).
       far_asset_id: raiseForm.farAssetId || null,
@@ -1220,15 +1579,20 @@ export function Maintenance() {
     if (error) { toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: error.message })); return; }
 
     // Optional: photo of the broken/defective item(s) attached at raise time.
-    if (newTicket && raisePhotoBlob) {
+    const raiseBlobs = chosenBlobs(raisePhotoBlobs, raisePhotoBlob);
+    if (newTicket && raiseBlobs.length) {
       try {
         setUploading(true);
-        const r = await uploadMaintenancePhoto(raisePhotoBlob, {
+        const urls = await uploadMaintenancePhotos(raiseBlobs, {
           ticketId: newTicket.id, plantName: newTicket.plants?.name || 'Plant',
           photoType: 'defective', creator: activeProfile.name, onProgress: setUploadPct,
         });
-        await updateRows('maintenance_tickets', { defective_raise_photo_url: r.secure_url }).eq('id', newTicket.id);
-        newTicket.defective_raise_photo_url = r.secure_url;
+        await updateRows('maintenance_tickets', {
+          defective_raise_photo_url: urls[0],
+          defective_raise_photo_urls: urls,
+        }).eq('id', newTicket.id);
+        newTicket.defective_raise_photo_url = urls[0];
+        newTicket.defective_raise_photo_urls = urls;
       } catch { /* non-blocking — the ticket is already raised */ }
       finally { setUploading(false); setUploadPct(0); }
     }
@@ -1236,7 +1600,7 @@ export function Maintenance() {
     notify({
       target_roles: ['admin', 'unit_head', 'store_manager_maint'],
       title: `Maintenance ticket raised: ${raiseForm.equipment}`,
-      body: `${activeProfile.name} · ${raiseForm.assessment === 'repairable' ? 'Repairable in-house' : 'Needs store part'}${raiseForm.farAssetId ? '' : ' · ⚠ Equipment not in FAR (entered manually)'}`,
+      body: `${activeProfile.name} · ${kindLabel} · Needs store part${flagLine ? ` · ⚠ ${flagLine}` : ''}`,
       type: 'urgent', route: maintRoute(newTicket?.id),
       actor_name: activeProfile.name, actor_role: role, read_by: [],
       // Scope the ticket to its plant/unit so only that plant's unit head +
@@ -1269,11 +1633,11 @@ export function Maintenance() {
 
     setRaiseSaved(true);
     await loadData();
-    const needsPart = raiseForm.assessment === 'needs_part';
+    const needsPart = true;
     const ticketForStore = newTicket;
     setTimeout(() => {
-      setShowRaisePanel(false); setRaiseSaved(false); setRaisePhotoBlob(null);
-      setRaiseForm({ equipment: '', plant: '', description: '', assessment: 'repairable', unit: '', farAssetId: '', equipmentMark: '' });
+      setShowRaisePanel(false); setRaiseSaved(false); setRaisePhotoBlob(null); setRaisePhotoBlobs([]);
+      setRaiseForm({ equipment: '', plant: '', description: '', assessment: 'needs_part', unit: '', farAssetId: '', equipmentMark: '', materialKind: '' });
       // Always open the store parts form when "Need a part from store" was chosen
       // (meeting 3.2 — flow must not stop after ticket create).
       if (ticketForStore && needsPart) {
@@ -1285,21 +1649,35 @@ export function Maintenance() {
   }
 
   // ── Admin: edit / delete a ticket ───────────────────────────────────────────
-  function startEdit(t: TicketRow) {
-    setEditForm({ equipment: t.equipment || '', description: t.description || '', plant: t.plant_id || '', status: t.status });
+  function canCorrectTicket(t: TicketRow | null | undefined) {
+    if (!t || t.status === 'closed') return false;
+    if (!canEditRaisedTicket(t.created_at)) return false;
+    const me = activeProfile.name?.trim().toLowerCase();
+    const raiser = (t.raised_by || '').trim().toLowerCase();
+    return canEditTickets || isAdmin || (!!me && me === raiser);
+  }
+
+  function startEdit(tk: TicketRow) {
+    if (!canCorrectTicket(tk)) {
+      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      return;
+    }
+    setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status });
     setEditingTicket(true);
   }
 
   async function saveEdit() {
-    if (!selectedTicket) return;
+    if (!selectedTicket || !canCorrectTicket(selectedTicket)) {
+      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      return;
+    }
     const plant = dbPlants.find(p => p.id === editForm.plant);
     await updateRows('maintenance_tickets', {
       equipment: editForm.equipment,
       description: editForm.description || null,
       plant_id: plant?.id ?? selectedTicket.plant_id ?? null,
-      status: editForm.status as TicketStatus,
     }).eq('id', selectedTicket.id);
-    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, status: editForm.status as TicketStatus, plants: plant ? { name: plant.name } : t.plants } : t);
+    setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, plants: plant ? { name: plant.name } : t.plants } : t);
     await notifyMentions(editForm.description, {
       entityType: 'maintenance_ticket', entityId: selectedTicket.id,
       entityLabel: editForm.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
@@ -1310,7 +1688,7 @@ export function Maintenance() {
   }
 
   async function handleDeleteTicket(tk: TicketRow) {
-    if (!isAdmin) return;
+    if (!canDeleteTickets) return;
     if (!window.confirm(t('maint.confirmDeleteTicket', { defaultValue: 'Delete ticket "{{name}}"? This permanently removes it and cannot be undone. Any stock issued or reserved for this ticket will be restored to the register.', name: tk.equipment || tk.title }))) return;
     // Reverse stock first (unissue / release), then drop dependent store-request rows.
     const unwind = await unwindStoreRequestsForTickets([tk.id], { actorName: activeProfile.name });
@@ -1396,13 +1774,12 @@ export function Maintenance() {
 
   // Technician: open the revise form seeded from the current ticket.
   function startResubmit(t: TicketRow) {
-    const assessment = /needs part/i.test(t.title || '') ? 'needs_part' : 'repairable';
     const linked = t.far_asset_id ? farAssets.find(a => a.id === t.far_asset_id) : undefined;
     setResubmitForm({
       equipment: t.equipment || '',
       description: t.description || '',
       plant: t.plant_id || '',
-      assessment,
+      assessment: 'needs_part',
       farAssetId: t.far_asset_id || '',
       equipmentMark: linked?.identification_mark || '',
     });
@@ -1418,7 +1795,7 @@ export function Maintenance() {
         }))
         : [{ ...BLANK_ITEM }],
     );
-    setResubmitPhotoBlob(null);
+    setResubmitPhotoBlob(null); setResubmitPhotoBlobs([]);
     setResubmitting(true);
   }
 
@@ -1438,14 +1815,15 @@ export function Maintenance() {
     }
     setSavingRevision(true);
     try {
-      let newPhotoUrl: string | null = null;
+      let newPhotoUrls: string[] = [];
       const priorPhoto = selectedTicket.defective_raise_photo_url;
-      if (resubmitPhotoBlob) {
+      const resubmitBlobs = chosenBlobs(resubmitPhotoBlobs, resubmitPhotoBlob);
+      if (resubmitBlobs.length) {
         setUploading(true);
-        const r = await uploadMaintenancePhoto(resubmitPhotoBlob, { ticketId: selectedTicket.id, plantName: plantNameById.get(resubmitForm.plant) || selectedTicket.plants?.name || '', photoType: 'completion', creator: activeProfile.name });
-        newPhotoUrl = r.secure_url;
+        newPhotoUrls = await uploadMaintenancePhotos(resubmitBlobs, { ticketId: selectedTicket.id, plantName: plantNameById.get(resubmitForm.plant) || selectedTicket.plants?.name || '', photoType: 'completion', creator: activeProfile.name });
         setUploading(false);
       }
+      const newPhotoUrl = newPhotoUrls[0] ?? null;
       const plant = dbPlants.find((p) => p.id === resubmitForm.plant);
       const title = `${resubmitForm.equipment} — ${needsPart ? 'Needs part' : 'Repairable'}`;
 
@@ -1513,7 +1891,10 @@ export function Maintenance() {
         assessed_by: needsPart ? activeProfile.name : selectedTicket.assessed_by,
         assigned_to: needsPart ? activeProfile.name : selectedTicket.assigned_to,
       };
-      if (newPhotoUrl) patch.defective_raise_photo_url = newPhotoUrl;
+      if (newPhotoUrl) {
+        patch.defective_raise_photo_url = newPhotoUrl;
+        patch.defective_raise_photo_urls = newPhotoUrls;
+      }
       await updateRows('maintenance_tickets', patch).eq('id', selectedTicket.id);
       const photoNote = newPhotoUrl ? ` · replaced photo${priorPhoto ? ` (prev: ${priorPhoto})` : ''}` : '';
       const partsNote = needsPart ? ` · parts: ${partItems.map(i => i.partName).join(', ')}` : '';
@@ -1521,8 +1902,8 @@ export function Maintenance() {
       await notifyMentions(resubmitForm.description, ticketRef(selectedTicket));
       notify({ target_roles: needsPart ? ['admin', 'store_manager_maint', 'warehouse_manager', 'unit_head'] : ['unit_head', 'admin'], title: `Ticket resubmitted: ${resubmitForm.equipment}`, body: needsPart ? `${activeProfile.name} updated parts (${partItems.map(i => i.partName).join(', ')}) — store to re-check.` : `${activeProfile.name} updated the ticket and resubmitted it for review.`, type: 'info', route: maintRoute(selectedTicket.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: needsPart ? null : (selectedTicket.plant_id ?? null), unit_id: selectedTicket.unit_id ?? null });
       await notifyTicketWatchers(selectedTicket, `Ticket resubmitted: ${resubmitForm.equipment}`, 'Updated and resubmitted for review', 'info');
-      setSelectedTicket((t) => t ? { ...t, equipment: resubmitForm.equipment, title, description: resubmitForm.description || null, status: restoreStatus, revision_reason: null, plants: plant ? { name: plant.name } : t.plants, defective_raise_photo_url: newPhotoUrl ?? t.defective_raise_photo_url } : t);
-      setResubmitting(false); setResubmitPhotoBlob(null); setStoreItems([{ ...BLANK_ITEM }]);
+      setSelectedTicket((t) => t ? { ...t, equipment: resubmitForm.equipment, title, description: resubmitForm.description || null, status: restoreStatus, revision_reason: null, plants: plant ? { name: plant.name } : t.plants, defective_raise_photo_url: newPhotoUrl ?? t.defective_raise_photo_url, defective_raise_photo_urls: newPhotoUrls.length ? newPhotoUrls : t.defective_raise_photo_urls } : t);
+      setResubmitting(false); setResubmitPhotoBlob(null); setResubmitPhotoBlobs([]); setStoreItems([{ ...BLANK_ITEM }]);
       toast.success(t('maint.resubmittedForReview', 'Resubmitted for review'));
       await loadStoreReqs(selectedTicket.id);
       await loadData();
@@ -1532,7 +1913,7 @@ export function Maintenance() {
 
   // Bulk-delete every emergency ticket currently shown (admin cleanup tool).
   async function handleDeleteAllEmergency() {
-    if (!isAdmin) return;
+    if (!canDeleteTickets) return;
     const ids = emergencyTickets.map((t) => t.id);
     if (!ids.length) return;
     if (!window.confirm(t('maint.confirmDeleteAllTickets', { defaultValue: 'Delete ALL {{count}} emergency tickets? This permanently removes every emergency ticket and cannot be undone. Stock issued or reserved for them will be restored.', count: ids.length }))) return;
@@ -1618,10 +1999,10 @@ export function Maintenance() {
           : (sr ? 'Awaiting part / approval' : 'In progress');
         return {
           id: t.id,
-          shortId: t.id.slice(0, 8),
+          shortId: t.ticket_no || t.id.slice(0, 8),
           type: t.type,
           equipment: t.equipment || '',
-          plant: t.plants?.name || '',
+          plant: displayLocationName(t.plants?.name),
           issue: t.description || t.title || '',
           status: STATUS_CFG[t.status]?.label || t.status,
           stage: STAGE_LABELS[t.status] || '',
@@ -1698,7 +2079,8 @@ export function Maintenance() {
   }
 
   async function handleCompletePeriodicTicket() {
-    if (!completingSchedule || !completionBlob) return;
+    const periodicBlobs = chosenBlobs(completionBlobs, completionBlob);
+    if (!completingSchedule || !periodicBlobs.length) return;
     const daysLate = daysFromNow(completingSchedule.next_due_at);
     const late = daysLate !== null && daysLate < 0;
     if (late && !overdueReason.trim()) {
@@ -1707,7 +2089,9 @@ export function Maintenance() {
     }
     setUploading(true);
     try {
-      const requiresApproval = completingSchedule.requires_approval ?? (completingSchedule.frequency !== 'daily');
+      // Every frequency — including daily — waits for Unit Head verification.
+      // next_due stays put until they approve, so the row sits in Awaiting
+      // verification instead of jumping straight into Upcoming.
       const notes = [
         late ? `[Overdue reason] ${overdueReason.trim()}` : '',
         completionNotes.trim(),
@@ -1724,45 +2108,41 @@ export function Maintenance() {
           assigned_to: completingSchedule.assigned_to || null,
           description: notes,
           checklist: completionChecklist,
-          requires_approval: requiresApproval,
+          requires_approval: true,
         }).select('*, plants(name)').single();
         ticket = data ?? undefined;
       }
       if (!ticket) throw new Error('Could not create ticket');
-      const result = await uploadMaintenancePhoto(completionBlob, {
+      const completionUrls = await uploadMaintenancePhotos(periodicBlobs, {
         ticketId: ticket.id, plantName: ticket.plants?.name || completingSchedule.plants?.name || 'Plant',
         photoType: 'completion', creator: activeProfile.name, onProgress: setUploadPct,
       });
+      const submittedAt = new Date().toISOString();
       const ticketPatch = {
-        completion_photo_url: result.secure_url,
+        completion_photo_url: completionUrls[0],
+        completion_photo_urls: completionUrls,
         checklist: completionChecklist,
-        assigned_to: completingSchedule.assigned_to || activeProfile.name,
+        assigned_to: activeProfile.name,
+        submitted_by: activeProfile.name,
+        submitted_at: submittedAt,
         description: notes,
+        requires_approval: true,
       };
-      if (requiresApproval) {
-        // ≥ weekly → technician submits; the unit head must verify before it closes.
-        await updateRows('maintenance_tickets', { ...ticketPatch, status: 'pending_unit_head' }).eq('id', ticket.id);
-        notify({
-          target_roles: ['unit_head', 'admin'],
-          title: `Verify maintenance: ${completingSchedule.title}`,
-          body: `${completingSchedule.equipment} · completed by ${activeProfile.name} · awaiting verification${notes ? ` · ${notes.slice(0, 80)}` : ''}`,
-          type: 'warning', route: `/dashboard/purchase/maint?ticket=${ticket.id}`,
-          actor_name: activeProfile.name, actor_role: role, read_by: [],
-          plant_id: completingSchedule.plant_id ?? null, unit_id: null,
-        });
-      } else {
-        // Daily → auto-close on submit + advance immediately.
-        await updateRows('maintenance_tickets', { ...ticketPatch, status: 'closed', closed_at: new Date().toISOString() }).eq('id', ticket.id);
-        await advanceSchedule(completingSchedule);
-        notify({
-          target_roles: ['admin', 'unit_head'],
-          title: `Periodic done: ${completingSchedule.title}`,
-          body: `${completingSchedule.equipment} · By ${activeProfile.name}${notes ? ` · ${notes.slice(0, 80)}` : ''}`,
-          type: 'info', route: maintRoute(ticket?.id),
-          actor_name: activeProfile.name, actor_role: role, read_by: [],
-          plant_id: completingSchedule.plant_id ?? null, unit_id: null,
-        });
-      }
+      const { error: saveErr } = await updateRows('maintenance_tickets', { ...ticketPatch, status: 'pending_unit_head' }).eq('id', ticket.id);
+      if (saveErr) throw new Error(saveErr.message);
+      const notified = await notifyUnitHeadVerify({
+        unitHeadRoleIds,
+        allProfiles,
+        title: `Verify maintenance: ${completingSchedule.title}`,
+        body: `${completingSchedule.equipment} · ${displayLocationName(completingSchedule.plants?.name) || 'Plant'} · completed by ${activeProfile.name} · awaiting verification${notes ? ` · ${notes.slice(0, 80)}` : ''}`,
+        ticketId: ticket.id,
+        plantId: completingSchedule.plant_id ?? null,
+        plantName: displayLocationName(completingSchedule.plants?.name) || null,
+        actorName: activeProfile.name,
+        actorRole: role,
+      });
+      if (!notified) toast.error(t('maint.unitHeadNotifyFailed', 'Submitted, but the Unit Head notification did not send. Ask them to open Awaiting verification.'));
+      toast.success(t('maint.sentForVerify', 'Submitted — Unit Head will verify'));
       if (notes) {
         await notifyMentions(notes, {
           entityType: 'maintenance_ticket', entityId: ticket.id,
@@ -1770,23 +2150,35 @@ export function Maintenance() {
           route: `/dashboard/purchase/maint?ticket=${ticket.id}`,
         });
       }
-      setCompletingSchedule(null); setCompletionBlob(null); setCompletionNotes(''); setOverdueReason(''); setUploadPct(0); setCompletionChecklist([]);
+      setCompletingSchedule(null); setCompletionBlob(null); setCompletionBlobs([]); setCompletionNotes(''); setOverdueReason(''); setUploadPct(0); setCompletionChecklist([]);
       await loadData();
     } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
     finally { setUploading(false); }
   }
 
-  // Unit-head verification of a submitted (≥weekly) periodic ticket.
+  // Unit-head verification. Approving is what advances next due into Upcoming.
   async function verifyPeriodicTicket(ticket: TicketRow, approve: boolean) {
     const sched = schedules.find(s => s.id === ticket.schedule_id);
     try {
       if (approve) {
-        await updateRows('maintenance_tickets', { status: 'closed', closed_at: new Date().toISOString() }).eq('id', ticket.id);
+        const verifiedAt = new Date().toISOString();
+        await updateRows('maintenance_tickets', {
+          status: 'closed',
+          closed_at: verifiedAt,
+          verified_by: activeProfile.name,
+          closed_by: activeProfile.name,
+        }).eq('id', ticket.id);
+        // Next due moves only after Unit Head verifies — that is what puts the
+        // schedule into Upcoming.
         if (sched) await advanceSchedule(sched);
+        setSelectedTicket((tk) => tk && tk.id === ticket.id
+          ? { ...tk, status: 'closed', closed_at: verifiedAt, verified_by: activeProfile.name, closed_by: activeProfile.name }
+          : tk);
         notify({ target_roles: [...maintenanceRoleIds, 'admin'], title: `Maintenance verified: ${ticket.title}`, body: `${ticket.equipment} · verified by ${activeProfile.name}`, type: 'info', route: maintRoute(ticket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: ticket.plant_id ?? null, unit_id: null });
         toast.success(t('maint.verifiedClosed', 'Verified & closed'));
       } else {
         await updateRows('maintenance_tickets', { status: 'open' }).eq('id', ticket.id);
+        setSelectedTicket((tk) => tk && tk.id === ticket.id ? { ...tk, status: 'open' } : tk);
         notify({ target_roles: [...maintenanceRoleIds, 'admin'], title: `Maintenance sent back: ${ticket.title}`, body: `${ticket.equipment} · ${activeProfile.name} asked for rework`, type: 'warning', route: maintRoute(ticket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: ticket.plant_id ?? null, unit_id: null });
         toast.success(t('maint.sentBackForRework', 'Sent back for rework'));
       }
@@ -1804,8 +2196,13 @@ export function Maintenance() {
     try {
     const plant = dbPlants.find(p => p.id === selectedTicket.plant_id);
     // One store-request row per item — a ticket can need several parts at once.
-    const rows = items.map(it => ({
+    const rows = items.map(it => {
+      const stock = it.storeItemId ? storeStock.find(s => s.id === it.storeItemId) : undefined;
+      const plantOn = plantUsesCategories(plant?.id || selectedTicket.plant_id, ops.valueCategories);
+      const category = plantOn ? (stock?.value_category || null) : null;
+      return {
       ticket_id: selectedTicket.id, part_name: it.partName,
+      value_category: category,
       quantity: parseFloat(it.quantity) || null,
       unit: normalizeUnit(it.unit || 'Pcs'),
       specification: it.specification || null,
@@ -1815,9 +2212,10 @@ export function Maintenance() {
       // At Rehla these differ (three factories, one shared store); everywhere
       // else they resolve to the same site, which is why nothing changes there.
       plant_id: plant?.id || selectedTicket.plant_id || null,
-      source_store_id: storeIdFor(selectedTicket.plant_id),
+      source_store_id: (it.storeItemId ? storeStock.find(s => s.id === it.storeItemId)?.store_id : null) || storeIdFor(selectedTicket.plant_id),
       store_item_id: it.storeItemId || null,
-    }));
+    };
+    });
     await insertRows('maintenance_store_requests', rows);
     await updateTicketStatus(selectedTicket.id, 'pending_store', { assessed_by: activeProfile.name, assigned_to: activeProfile.name });
     setSelectedTicket((t) => t ? { ...t, status: 'pending_store' } : t);
@@ -1861,15 +2259,17 @@ export function Maintenance() {
   // Previously this wrote 'closed' directly, so an in-house repair was the one path
   // in the module that no reviewer ever saw.
   async function closeInHouse() {
-    if (!selectedTicket || !completionBlob) return;
+    const doneBlobs = chosenBlobs(completionBlobs, completionBlob);
+    if (!selectedTicket || !doneBlobs.length) return;
     setUploading(true);
     try {
-      const result = await uploadMaintenancePhoto(completionBlob, {
+      const completionUrls = await uploadMaintenancePhotos(doneBlobs, {
         ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
         photoType: 'completion', creator: activeProfile.name, onProgress: setUploadPct,
       });
       await updateTicketStatus(selectedTicket.id, 'pending_unit_head', {
-        completion_photo_url: result.secure_url,
+        completion_photo_url: completionUrls[0],
+        completion_photo_urls: completionUrls,
       });
       notify({
         target_roles: ['unit_head', 'admin'],
@@ -1880,8 +2280,8 @@ export function Maintenance() {
         plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id,
       });
       await notifyTicketWatchers(selectedTicket, `Awaiting verification: ${selectedTicket.equipment}`, `${activeProfile.name} finished the in-house repair — sent to the unit head to verify.`, 'warning');
-      setSelectedTicket((tk) => tk ? { ...tk, status: 'pending_unit_head', completion_photo_url: result.secure_url } : tk);
-      setCompletionBlob(null); setUploadPct(0);
+      setSelectedTicket((tk) => tk ? { ...tk, status: 'pending_unit_head', completion_photo_url: completionUrls[0], completion_photo_urls: completionUrls } : tk);
+      setCompletionBlob(null); setCompletionBlobs([]); setUploadPct(0);
       toast.success(t('maint.sentForVerification', 'Sent for verification'));
       await loadData();
     } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
@@ -1981,6 +2381,7 @@ export function Maintenance() {
         plant_id: selectedTicket.plant_id,
         source_store_id: storeIdFor(selectedTicket.plant_id),
         store_item_id: req.store_item_id ?? null,
+        value_category: req.value_category ?? null,
         store_decision: 'unavailable', purchase_required: true, split_group: splitGroup,
       });
       notify({
@@ -2189,32 +2590,35 @@ export function Maintenance() {
   async function confirmHandover(req: StoreReqRow) {
     if (!selectedTicket) return;
     const fromOwnStore = req.store_decision === 'available';
+    const photoBlobs = chosenBlobs(handoverPhotoBlobs, handoverPhotoBlob);
+    const invoiceBlobs = chosenBlobs(handoverInvoiceBlobs, handoverInvoiceBlob);
+    const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
     if (fromOwnStore) {
-      if (!handoverNotes.trim() && !handoverPhotoBlob) { toast.error(t('maint.handoverNeedDescription', "Please add a short description (why you're providing this part) or a part photo before confirming handover.")); return; }
-    } else if (!handoverInvoiceBlob && !handoverPhotoBlob) {
+      if (storeIssueNeedsPhoto(issueValue) && !photoBlobs.length) {
+        toast.error(t('maint.handoverNeedPhotoOver1k', 'Photo is required for store issues worth more than ₹1,000.'));
+        return;
+      }
+      if (!handoverNotes.trim() && !photoBlobs.length) { toast.error(t('maint.handoverNeedDescription', "Please add a short description (why you're providing this part) or a part photo before confirming handover.")); return; }
+    } else if (!invoiceBlobs.length && !photoBlobs.length) {
       toast.error(t('maint.handoverNeedInvoice', 'Please upload at least the invoice or part photo before confirming handover.')); return;
     }
     setUploading(true);
     try {
-      let invoiceUrl: string | null = null;
-      let photoUrl: string | null = null;
-      if (handoverInvoiceBlob) {
-        const r = await uploadMaintenancePhoto(handoverInvoiceBlob, {
+      const invoiceUrls = invoiceBlobs.length
+        ? await uploadMaintenancePhotos(invoiceBlobs, {
           ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
           photoType: 'bill', creator: activeProfile.name, onProgress: pct => setUploadPct(Math.round(pct / 2)),
-        });
-        invoiceUrl = r.secure_url;
-      }
-      if (handoverPhotoBlob) {
-        const r = await uploadMaintenancePhoto(handoverPhotoBlob, {
+        })
+        : [];
+      const photoUrls = photoBlobs.length
+        ? await uploadMaintenancePhotos(photoBlobs, {
           ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
           photoType: 'completion', creator: activeProfile.name, onProgress: pct => setUploadPct(50 + Math.round(pct / 2)),
-        });
-        photoUrl = r.secure_url;
-      }
+        })
+        : [];
       await updateRows('maintenance_store_requests', {
-          ...(invoiceUrl ? { handover_invoice_url: invoiceUrl } : {}),
-          ...(photoUrl ? { handover_photo_url: photoUrl } : {}),
+          ...(invoiceUrls.length ? { handover_invoice_url: invoiceUrls[0], handover_invoice_urls: invoiceUrls } : {}),
+          ...(photoUrls.length ? { handover_photo_url: photoUrls[0], handover_photo_urls: photoUrls } : {}),
           ...(handoverNotes.trim() ? { handover_notes: handoverNotes } : {}),
           handover_confirmed_at: new Date().toISOString(),
           handover_confirmed_by: activeProfile.name,
@@ -2297,49 +2701,159 @@ export function Maintenance() {
         entityType: 'maintenance_ticket', entityId: selectedTicket.id,
         entityLabel: selectedTicket.equipment || 'Ticket', route: `/dashboard/purchase/maint?ticket=${selectedTicket.id}`,
       });
-      setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); setUploadPct(0); setActingReqId(null);
+      setHandoverInvoiceBlob(null); setHandoverInvoiceBlobs([]); setHandoverPhotoBlob(null); setHandoverPhotoBlobs([]); setHandoverNotes(''); setUploadPct(0); setActingReqId(null);
       await refreshAfterItemChange();
     } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
     finally { setUploading(false); }
   }
 
-  async function submitDefectiveReturn() {
-    if (!selectedTicket || !defectiveBlob) return;
-    // Client-side mirror of the DB rule: every removed part must be accounted
-    // for as either repair or scrap before the ticket can close.
-    const splitErrors = validateSplit(defectiveLines);
-    if (splitErrors.length) {
-      const first = splitErrors[0];
-      toast.error(first.code === 'unbalanced' && first.difference != null
-        ? t('maint.splitErrUnbalanced', {
-            defaultValue: '{{part}}: repair + scrap must equal the {{replaced}} replaced ({{n}} unaccounted for).',
-            part: first.partName ?? '', replaced: defectiveLines[first.index]?.replacedQty ?? 0,
-            n: Math.abs(first.difference),
-          })
-        : t('maint.splitErrInvalid', 'Check the repair / scrap quantities before closing.'));
+  function peopleForRoles(tk: TicketRow, roleIds: string[]) {
+    const people = allProfiles.filter(p => {
+      const ids = [p.id, p.baseRoleId].filter(Boolean) as string[];
+      return p.name.trim() && ids.some(id => roleIds.includes(id));
+    });
+    const plantKey = (tk.plants?.name || '').trim().toLowerCase();
+    const matched = plantKey
+      ? people.filter(p => !p.plant || p.plant.trim().toLowerCase() === plantKey)
+      : people;
+    const list = matched.length ? matched : people;
+    const real = list.filter(p => p.id.startsWith('db_'));
+    return real.length ? real : list;
+  }
+
+  function assignedToRole(tk: TicketRow, roleIds: string[]) {
+    const name = (tk.assigned_to || '').trim().toLowerCase();
+    if (!name) return false;
+    return allProfiles.some(p => {
+      const ids = [p.id, p.baseRoleId].filter(Boolean) as string[];
+      return p.name.trim().toLowerCase() === name && ids.some(id => roleIds.includes(id));
+    });
+  }
+
+  const assignedToUnitHead = (tk: TicketRow) => assignedToRole(tk, ['unit_head']);
+  const assignedToStore = (tk: TicketRow) => assignedToRole(tk, ALL_STORE_MANAGER_IDS);
+
+  // Technical chose defective return. Store accepts the old part first.
+  // Only after that can the unit head decide scrap or repairable.
+  async function sendDefectiveReturnToStore() {
+    if (!selectedTicket || actionBusyRef.current) return;
+    const store = peopleForRoles(selectedTicket, ALL_STORE_MANAGER_IDS)[0];
+    if (!store) {
+      toast.error(t('maint.noStoreManager'));
       return;
     }
+    actionBusyRef.current = true;
     setUploading(true);
     try {
-      const result = await uploadMaintenancePhoto(defectiveBlob, {
-        ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
-        photoType: 'defective', creator: activeProfile.name, onProgress: setUploadPct,
+      const { error } = await updateRows('maintenance_tickets', { assigned_to: store.name }).eq('id', selectedTicket.id);
+      if (error) throw new Error(error.message);
+      await auditNote(selectedTicket, `Defective return — sent to store (${store.name}) to accept the old part.`);
+      const note = {
+        title: `Accept returned part: ${selectedTicket.equipment}`,
+        body: `${activeProfile.name} sent a defective part back. Accept it into the store. The unit head will decide scrap or repairable.`,
+        type: 'warning' as const,
+        route: maintRoute(selectedTicket.id),
+        actor_name: activeProfile.name,
+        actor_role: role,
+        read_by: [] as string[],
+        unit_id: selectedTicket.unit_id,
+      };
+      const storePeople = peopleForRoles(selectedTicket, ALL_STORE_MANAGER_IDS);
+      await Promise.all([
+        notify({ ...note, target_roles: ['admin', ...ALL_STORE_MANAGER_IDS], plant_id: selectedTicket.plant_id }),
+        ...storePeople.map(p => notify({
+          ...note,
+          target_roles: [...new Set([p.id, 'store_manager_maint'])],
+          scope: 'personal' as const,
+          plant_id: null,
+        })),
+      ]);
+      toast.success(t('maint.sentToUnitHead'));
+      setSelectedTicket(tk => tk ? { ...tk, assigned_to: store.name } : tk);
+      setPartOutcome('');
+      await loadData();
+    } catch (err) {
+      toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setUploading(false);
+      actionBusyRef.current = false;
+    }
+  }
+
+  // Store has the old part. Hand it to the unit head for scrap vs repairable.
+  async function acceptReturnedItem() {
+    if (!selectedTicket || actionBusyRef.current) return;
+    const head = peopleForRoles(selectedTicket, ['unit_head'])[0];
+    if (!head) {
+      toast.error(t('maint.noUnitHead'));
+      return;
+    }
+    actionBusyRef.current = true;
+    setUploading(true);
+    try {
+      const { error } = await updateRows('maintenance_tickets', { assigned_to: head.name }).eq('id', selectedTicket.id);
+      if (error) throw new Error(error.message);
+      await auditNote(selectedTicket, `Store accepted the old part (${activeProfile.name}). Unit head ${head.name} to decide scrap or repairable.`);
+      const notified = await notifyUnitHeadVerify({
+        unitHeadRoleIds,
+        allProfiles,
+        title: `Scrap or repairable: ${selectedTicket.equipment}`,
+        body: `Store accepted the old part on ${selectedTicket.equipment}. Only the unit head can decide scrap or repairable.`,
+        ticketId: selectedTicket.id,
+        plantId: selectedTicket.plant_id,
+        plantName: selectedTicket.plants?.name ?? null,
+        actorName: activeProfile.name,
+        actorRole: role,
       });
-      // One transaction: writes the per-part split, mirrors the ticket totals
-      // and closes it. Replaces the old single-decision ticket update.
-      const totals = splitTotals(defectiveLines);
+      if (!notified) toast.error(t('maint.unitHeadNotifyFailed', 'Submitted, but the Unit Head notification did not send. Ask them to open Awaiting verification.'));
+      toast.success(t('maint.storeAccepted'));
+      setSelectedTicket(tk => tk ? { ...tk, assigned_to: head.name } : tk);
+      await loadData();
+    } catch (err) {
+      toast.error(t('maint.failedMsg', { defaultValue: 'Failed: {{message}}', message: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setUploading(false);
+      actionBusyRef.current = false;
+    }
+  }
+
+  // Unit head closes a defective return. Repairable puts every removed unit on
+  // the repair track; scrap writes them all off. Store cannot make this choice.
+  async function submitUnitHeadDisposition(choice: 'repairable' | 'scrap') {
+    if (!selectedTicket || actionBusyRef.current) return;
+    if (choice === 'scrap' && !scrapNotes.trim()) {
+      toast.error(t('maint.scrapNotesRequired', 'Add notes before moving this item to scrap.'));
+      return;
+    }
+    const lines = defectiveLines.filter(l => l.partName.trim() && Number(l.replacedQty) > 0);
+    if (!lines.length) {
+      toast.error(t('maint.splitErrInvalid', 'Check the repair / scrap quantities before closing.'));
+      return;
+    }
+    actionBusyRef.current = true;
+    setUploading(true);
+    try {
+      const defectBlobs = chosenBlobs(defectiveBlobs, defectiveBlob);
+      let photoUrls: string[] = [];
+      if (defectBlobs.length) {
+        photoUrls = await uploadMaintenancePhotos(defectBlobs, {
+          ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
+          photoType: 'defective', creator: activeProfile.name, onProgress: setUploadPct,
+        });
+      }
+      const photoUrl = photoUrls[0] ?? '';
       const { error } = await callRpc('record_defective_disposition', {
         payload: {
           ticket_id: selectedTicket.id,
           plant_id: selectedTicket.plant_id,
-          photo_url: result.secure_url,
+          photo_url: photoUrl,
           actor_name: activeProfile.name,
-          lines: defectiveLines.map(l => ({
+          lines: lines.map(l => ({
             store_request_id: l.storeRequestId,
             part_name: l.partName.trim(),
             replaced_qty: Number(l.replacedQty),
-            repair_qty: Number(l.repairQty),
-            scrap_qty: Number(l.scrapQty),
+            repair_qty: choice === 'repairable' ? Number(l.replacedQty) : 0,
+            scrap_qty: choice === 'scrap' ? Number(l.replacedQty) : 0,
             store_item_id: l.storeItemId ?? null,
           })),
         },
@@ -2348,21 +2862,30 @@ export function Maintenance() {
       await updateRows('maintenance_tickets', {
         defective_decided_by: activeProfile.name,
         closed_by: activeProfile.name,
+        ...(photoUrls.length ? { defective_part_photo_url: photoUrls[0], defective_part_photo_urls: photoUrls } : {}),
       }).eq('id', selectedTicket.id);
-      const summary = `${totals.repair} ${t('maint.toRepair', 'to repair')} · ${totals.scrap} ${t('maint.scrapped', 'scrapped')}`;
+      const word = choice === 'repairable' ? t('maint.dispositionReturn') : t('maint.dispositionScrap');
       notify({
-        target_roles: ['admin', 'unit_head', 'store_manager_maint'],
+        target_roles: ['admin', 'unit_head', 'store_manager_maint', ...maintenanceRoleIds],
         title: `Ticket closed: ${selectedTicket.equipment}`,
-        body: `Defective parts → ${summary} · By ${activeProfile.name}`,
-        type: 'info', route: maintRoute(selectedTicket?.id),
+        body: `Defective parts → ${word} · By ${activeProfile.name}`,
+        type: 'info', route: maintRoute(selectedTicket.id),
         actor_name: activeProfile.name, actor_role: role, read_by: [],
         plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id,
       });
-      await notifyTicketWatchers(selectedTicket, `Ticket closed: ${selectedTicket.equipment}`, `Defective parts → ${summary} · closed by ${activeProfile.name}.`);
-      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setUploadPct(0);
+      await notifyTicketWatchers(selectedTicket, `Ticket closed: ${selectedTicket.equipment}`, `Defective parts → ${word} · closed by ${activeProfile.name}.`);
+      await auditNote(selectedTicket, choice === 'scrap'
+        ? `Unit head chose ${word} and closed the ticket. Scrap notes: ${scrapNotes.trim()}`
+        : `Unit head chose ${word} and closed the ticket.`);
+      toast.success(choice === 'repairable' ? t('maint.dispositionReturnClosed') : t('maint.dispositionScrapClosed'));
+      setSelectedTicket(null); setDefectiveBlob(null); setDefectiveBlobs([]); setDefectiveDecision(''); setDefectiveLines([]); setPartOutcome(''); setUploadPct(0); setScrapNotes(''); setScrapConfirm(false);
       await loadData();
-    } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
-    finally { setUploading(false); }
+    } catch (err) {
+      toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setUploading(false);
+      actionBusyRef.current = false;
+    }
   }
 
   // Consumables (grease, oil, tape, one-use gaskets) have no old part to return.
@@ -2439,7 +2962,16 @@ export function Maintenance() {
 
   // Open the panel pre-filled to revise an existing schedule — reassign owner,
   // change frequency, reschedule next due, edit the checklist, etc.
-  function openEditSchedule(s: ScheduleRow) {
+  async function withScheduleChecklist(s: ScheduleRow): Promise<ScheduleRow> {
+    if (s.checklist !== undefined) return s;
+    const { data } = await supabase.from('maintenance_schedules').select('checklist').eq('id', s.id).maybeSingle();
+    const checklist = ((data as { checklist?: ScheduleRow['checklist'] } | null)?.checklist ?? null);
+    setSchedules(prev => prev.map(row => row.id === s.id ? { ...row, checklist: row.checklist ?? checklist } : row));
+    return { ...s, checklist };
+  }
+
+  async function openEditSchedule(s: ScheduleRow) {
+    s = await withScheduleChecklist(s);
     setEditingSchedule(s);
     setScheduleForm({
       title: s.title,
@@ -2459,7 +2991,8 @@ export function Maintenance() {
   }
 
   // Clone an existing schedule into a new draft (calendar-style "duplicate event").
-  function openDuplicateSchedule(s: ScheduleRow) {
+  async function openDuplicateSchedule(s: ScheduleRow) {
+    s = await withScheduleChecklist(s);
     setEditingSchedule(null);
     setScheduleForm({
       title: `${s.title} (copy)`,
@@ -2551,7 +3084,7 @@ export function Maintenance() {
       equipment_mark: scheduleForm.equipmentMark || null,
       until_date: scheduleForm.until || null,
       start_date: scheduleForm.firstDue || null,
-      requires_approval: scheduleForm.frequency !== 'daily',
+      requires_approval: true,
       unmatched_justification: (!scheduleForm.farAssetId && scheduleForm.unmatchedReason) ? scheduleForm.unmatchedReason : null,
       checklist: scheduleForm.checklist
         .map(r => ({ component: r.component.trim(), activity: r.activity.trim() }))
@@ -2583,20 +3116,27 @@ export function Maintenance() {
     } finally { setSavingSchedule(false); }
   }
 
-  // ── Read-only stage history (click a stage in the strip) ────────────────────
-  function renderStageDetail(stage: string) {
+  // ── Read-only stage history. The body stays folded until the arrow is clicked.
+  function renderStageDetail(stage: string, open: boolean, onToggle: () => void) {
     const tk = selectedTicket;
     if (!tk) return null;
     const sr = selectedStoreReq;
     const label = STAGE_LABEL_KEYS[stage] ? t(STAGE_LABEL_KEYS[stage], STAGE_LABELS[stage]) : (STAGE_LABELS[stage] || stage);
 
-    const photo = (url: string | null | undefined, cap: string) => url ? (
-      <div style={{ marginTop: 8 }}>
-        <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 4 }}>{cap}</div>
-        <img src={url} alt={cap} style={{ width: '100%', maxHeight: 180, objectFit: 'cover', borderRadius: 10, border: '1px solid #E2E8F0' }} />
-        <a href={url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#2563EB', display: 'block', marginTop: 4 }}>{t('maint.openFullImage', 'Open full image ↗')}</a>
-      </div>
-    ) : null;
+    const photo = (urlOrUrls: string | string[] | null | undefined, cap: string) => {
+      const urls = (Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls]).filter((u): u is string => !!u);
+      if (!urls.length) return null;
+      return (
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {urls.map((url, i) => (
+            <div key={url} style={{ width: urls.length > 1 ? 140 : '100%', maxWidth: '100%' }}>
+              <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 4 }}>{urls.length > 1 ? `${cap} ${i + 1}` : cap}</div>
+              <img src={url} alt={cap} style={{ width: '100%', height: urls.length > 1 ? 96 : undefined, maxHeight: 180, objectFit: 'cover', borderRadius: 10, border: '1px solid #E2E8F0' }} />
+            </div>
+          ))}
+        </div>
+      );
+    };
     const line = (k: string, v: React.ReactNode) => (v || v === 0) ? (
       <div style={{ fontSize: 12.5, color: '#334155', marginTop: 5 }}><span style={{ color: '#94A3B8' }}>{k}: </span><strong>{v}</strong></div>
     ) : null;
@@ -2638,7 +3178,7 @@ export function Maintenance() {
         </>;
         else body = <>
           {doneBy(tk.verified_by || notifActor('Repair verified:'), tk.closed_at)}
-          {line(t('maint.handledBy', 'Handled by'), tk.assigned_to || tk.raised_by)}{line(t('maint.unitHeadDecision', 'Unit head decision'), tk.status === 'closed' ? t('maint.verifiedClosed', 'Verified & closed') : t('maint.awaitingVerification', 'Awaiting verification'))}{photo(tk.completion_photo_url, t('maint.completionPhoto', 'Completion photo'))}
+          {line(t('maint.handledBy', 'Handled by'), tk.assigned_to || tk.raised_by)}{line(t('maint.unitHeadDecision', 'Unit head decision'), tk.status === 'closed' ? t('maint.verifiedClosed', 'Verified & closed') : t('maint.awaitingVerification', 'Awaiting verification'))}{photo(listedPhotoUrls(tk.completion_photo_url, tk.completion_photo_urls), t('maint.completionPhoto', 'Completion photo'))}
         </>;
         break;
       case 'pending_purchase': {
@@ -2654,38 +3194,203 @@ export function Maintenance() {
         const amount = tk.pm_bill_total ?? pr?.total_price ?? null;
         if (pr) body = <>
           {doneBy(tk.pm_billed_by)}
-          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.purchaseAmount', 'Purchase amount'), amount != null ? `₹ ${Number(amount).toLocaleString('en-IN')}` : null)}{line(t('maint.itemsOnBill', 'Items on bill'), tk.pm_items_count)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.busyRefLabel', 'BUSY ref'), pr.busy_transaction_ref)}{line(t('maint.purchaseManagerLabel', 'Purchase Manager'), tk.pm_billed_by)}{line(t('maint.billedOn', 'Billed on'), tk.pm_billed_at ? formatDate(tk.pm_billed_at) : null)}{line(t('maint.billVerifiedLabel', 'Bill verified'), pr.bill_verified ? t('maint.yes', 'Yes') : '—')}{photo(tk.pm_bill_url || pr.handover_invoice_url, t('maint.supplierBillPmCaption', 'Supplier bill (Purchase Manager)'))}
+          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.purchaseAmount', 'Purchase amount'), amount != null ? `₹ ${Number(amount).toLocaleString('en-IN')}` : null)}{line(t('maint.itemsOnBill', 'Items on bill'), tk.pm_items_count)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.busyRefLabel', 'BUSY ref'), pr.busy_transaction_ref)}{line(t('maint.purchaseManagerLabel', 'Purchase Manager'), tk.pm_billed_by)}{line(t('maint.billedOn', 'Billed on'), tk.pm_billed_at ? formatDate(tk.pm_billed_at) : null)}{line(t('maint.billVerifiedLabel', 'Bill verified'), pr.bill_verified ? t('maint.yes', 'Yes') : '—')}{photo(listedPhotoUrls(tk.pm_bill_url || pr.handover_invoice_url, pr.handover_invoice_urls), t('maint.supplierBillPmCaption', 'Supplier bill (Purchase Manager)'))}
         </>;
         break;
       }
-      case 'pending_handover':
-        if (sr) body = <>
-          {doneBy(sr.handover_confirmed_by || notifActor('Part handed over:'), sr.handover_confirmed_at)}
-          {line(t('maint.receiptConfirmed', 'Receipt confirmed'), sr.handover_confirmed_at ? formatDate(sr.handover_confirmed_at) : '—')}{line(t('maint.notesLabel', 'Notes'), sr.handover_notes)}{photo(sr.handover_invoice_url, t('maint.billInvoiceCaption', 'Bill / invoice'))}{photo(sr.handover_photo_url, t('maint.partReceivedPhoto', 'Part received photo'))}
+      case 'pending_handover': {
+        const handed = storeReqs.filter(r => r.handover_confirmed_at || r.handover_photo_url || r.handover_invoice_url);
+        if (handed.length) body = <>
+          {handed.map(r => (
+            <div key={r.id} style={{ marginTop: 8 }}>
+              {doneBy(r.handover_confirmed_by || notifActor('Part handed over:'), r.handover_confirmed_at)}
+              {line(t('maint.partRequested', 'Part requested'), r.part_name)}
+              {line(t('maint.notesLabel', 'Notes'), r.handover_notes)}
+              {photo(listedPhotoUrls(r.handover_invoice_url, r.handover_invoice_urls), t('maint.billInvoiceCaption', 'Bill / invoice'))}
+              {photo(listedPhotoUrls(r.handover_photo_url, r.handover_photo_urls), t('maint.partReceivedPhoto', 'Part received photo'))}
+            </div>
+          ))}
         </>;
         break;
+      }
       case 'pending_defective_return':
         body = <>
           {doneBy(tk.defective_decided_by || tk.closed_by || notifActor('Ticket closed:'))}
-          {line(t('maint.partOutcomeLabel', 'Part outcome'), partDecisionLabel(tk.defective_part_decision, t) || tk.defective_part_decision)}{photo(tk.defective_part_photo_url, t('maint.defectivePartPhoto', 'Defective part photo'))}
+          {line(t('maint.partOutcomeLabel', 'Part outcome'), partDecisionLabel(tk.defective_part_decision, t) || tk.defective_part_decision)}{photo(listedPhotoUrls(tk.defective_part_photo_url, tk.defective_part_photo_urls), t('maint.defectivePartPhoto', 'Defective part photo'))}
         </>;
         break;
       case 'closed':
         body = <>
           {doneBy(tk.closed_by || tk.verified_by || tk.defective_decided_by || notifActor('Ticket closed:', 'Repair verified:'), tk.closed_at)}
-          {line(t('maint.closedAtLabel', 'Closed at'), tk.closed_at ? formatDate(tk.closed_at) : '—')}{line(t('maint.partOutcomeLabel', 'Part outcome'), partDecisionLabel(tk.defective_part_decision, t) || tk.defective_part_decision)}{photo(tk.completion_photo_url, t('maint.completionPhoto', 'Completion photo'))}
+          {line(t('maint.closedAtLabel', 'Closed at'), tk.closed_at ? formatDate(tk.closed_at) : '—')}{line(t('maint.partOutcomeLabel', 'Part outcome'), partDecisionLabel(tk.defective_part_decision, t) || tk.defective_part_decision)}{photo(listedPhotoUrls(tk.completion_photo_url, tk.completion_photo_urls), t('maint.completionPhoto', 'Completion photo'))}
         </>;
         break;
     }
 
     return (
-      <div style={{ border: '1px solid #E2E8F0', borderRadius: 14, padding: 16, marginBottom: 16, background: '#FCFCFD' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: '#0F172A' }}>{t('maint.stageWhatHappened', { defaultValue: '{{stage}} — what happened', stage: label })} <span style={{ fontWeight: 500, color: '#94A3B8' }}>{t('maint.readOnlySuffix', '(read-only)')}</span></div>
-          <button onClick={() => setViewStage(null)} style={{ border: 'none', background: 'transparent', color: '#94A3B8', cursor: 'pointer', fontSize: 16, lineHeight: 1, fontFamily: 'inherit' }}>×</button>
-        </div>
-        {body}
+      <div style={{ border: '1px solid #E2E8F0', borderRadius: 14, marginBottom: 16, background: '#FCFCFD', overflow: 'hidden' }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit' }}
+        >
+          <span aria-hidden style={{ color: '#64748B', fontSize: 11, width: 14, flexShrink: 0 }}>{open ? '▼' : '▶'}</span>
+          <span style={{ fontSize: 12, fontWeight: 800, color: '#0F172A' }}>{t('maint.stageWhatHappened', { defaultValue: '{{stage}} — what happened', stage: label })} <span style={{ fontWeight: 500, color: '#94A3B8' }}>{t('maint.readOnlySuffix', '(read-only)')}</span></span>
+        </button>
+        {open && <div style={{ padding: '0 16px 16px' }}>{body}</div>}
       </div>
+    );
+  }
+
+  const ticketWasSubmitted = (t: TicketRow) => !!(t.completion_photo_url || t.submitted_at || t.submitted_by);
+  const visitVerified = (t: TicketRow) => t.status === 'closed' && !!(t.verified_by || t.closed_by);
+
+  function earlierCompletions(scheduleId: string | null | undefined, exceptId: string) {
+    if (!scheduleId) return [];
+    return tickets
+      .filter(t => t.schedule_id === scheduleId && t.id !== exceptId && visitVerified(t))
+      .sort((a, b) => (b.closed_at || b.submitted_at || '').localeCompare(a.closed_at || a.submitted_at || ''))
+      .slice(0, 3);
+  }
+
+  // PM workbooks stored "(XXX)" where the reactor number belongs. The FAR asset
+  // linked to the schedule holds the real mark (GLC-1, HCL AB.).
+  function shownName(label: string | null | undefined, farAssetId?: string | null, fallbackMark?: string | null) {
+    const asset = farAssetId ? farAssets.find(a => a.id === farAssetId) : undefined;
+    const fromAsset = asset?.identification_mark;
+    const mark = fromAsset && !isPlaceholderMark(fromAsset) ? fromAsset : fallbackMark;
+    return labelWithRealMark(label || '', mark);
+  }
+
+  // One visit's checklist, photo, and the two timestamps. History cards pass
+  // actions=false so an older awaiting job is not verified from the wrong panel.
+  function renderCompletionRecord(record: TicketRow, actions: boolean) {
+    const checks = Array.isArray(record.checklist) ? record.checklist : [];
+    const techName = record.submitted_by || record.assigned_to || record.raised_by || '—';
+    const verified = !!(record.verified_by || record.closed_by);
+    const when = (d: string | null | undefined) => fmtDT(d) || '—';
+    return (
+      <>
+        <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
+          <div style={{ fontWeight: 800, fontSize: 15 }}>{shownName(record.title || record.equipment, record.far_asset_id)}</div>
+          <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
+            {shownName(record.equipment, record.far_asset_id)} · {displayLocationName(record.plants?.name) || '—'} · #{record.id.slice(0, 8)}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginBottom: 6 }}>
+            {t('maint.checkpointsAssessed', { defaultValue: 'Checklist assessed by {{name}}', name: techName })}
+          </div>
+          {checks.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: '#94A3B8' }}>{t('maint.noChecklist', 'No checklist on this task.')}</div>
+          ) : (
+            <div style={{ border: '1px solid #E2E8F0', borderRadius: 10 }}>
+              {checks.map((c, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '8px 12px', borderBottom: i < checks.length - 1 ? '1px solid #F1F5F9' : 'none' }}>
+                  <span style={{ color: c.done ? '#16A34A' : '#CBD5E1', fontWeight: 800 }}>{c.done ? '✓' : '○'}</span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: '#334155' }}>{c.component}</span>
+                    {c.activity && <span style={{ fontSize: 11.5, color: '#94A3B8' }}> · {c.activity}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginBottom: 6 }}>{t('maint.completionPhoto', 'Completion photo')}</div>
+          {listedPhotoUrls(record.completion_photo_url, record.completion_photo_urls).length ? (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {listedPhotoUrls(record.completion_photo_url, record.completion_photo_urls).map((url, i, all) => (
+                <button
+                  key={url}
+                  type="button"
+                  onClick={() => setTicketLightbox({ images: all.map(u => ({ url: u, label: t('maint.completionPhoto', 'Completion photo') })), index: i })}
+                  style={{ padding: 0, border: '1px solid #E2E8F0', borderRadius: 10, overflow: 'hidden', cursor: 'pointer', background: '#fff', width: all.length > 1 ? 140 : '100%' }}
+                >
+                  <img src={url} alt="" style={{ width: '100%', height: all.length > 1 ? 96 : undefined, maxHeight: 220, objectFit: 'cover', display: 'block' }} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: '#94A3B8' }}>{t('maint.noCompletionPhoto', 'No completion photo.')}</div>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+          <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>{verified ? t('maint.technicalCompleted', 'Technical completed') : t('maint.technicalSubmitted', 'Submitted by technical')}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginTop: 4 }}>{techName}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginTop: 2 }}>{when(record.submitted_at)}</div>
+          </div>
+          <div style={{ background: verified ? '#F0FDF4' : '#F8FAFC', border: `1px solid ${verified ? '#BBF7D0' : '#E2E8F0'}`, borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>{t('maint.unitHeadVerified', 'Unit Head verified')}</div>
+            {verified ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginTop: 4 }}>{record.verified_by || record.closed_by}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginTop: 2 }}>{when(record.closed_at)}</div>
+              </>
+            ) : (
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#B45309', marginTop: 4 }}>{t('maint.awaitingVerification', 'Awaiting verification')}</div>
+            )}
+          </div>
+        </div>
+
+        {record.description && (
+          <div style={{ fontSize: 12.5, color: '#334155', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '10px 12px', whiteSpace: 'pre-wrap', marginBottom: 16 }}>{record.description}</div>
+        )}
+
+        {actions && record.status === 'pending_unit_head' && (isUnitHead || isAdmin) && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => verifyPeriodicTicket(record, false)} style={{ flex: 1, padding: '11px', borderRadius: 12, border: '1px solid #FCA5A5', background: '#FEF2F2', color: '#DC2626', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>{t('maint.sendBack', '↩ Send back')}</button>
+            <button onClick={() => verifyPeriodicTicket(record, true)} style={{ flex: 2, padding: '11px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>{t('maint.verifyAndClose', '✓ Verify & close')}</button>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  function renderPreviousCompletions(scheduleId: string | null | undefined, exceptId: string) {
+    const prior = earlierCompletions(scheduleId, exceptId);
+    if (!prior.length) return null;
+    return (
+      <details style={{ marginTop: 8, marginBottom: 16, border: '1px solid #E2E8F0', borderRadius: 12, background: '#F8FAFC' }}>
+        <summary style={{ cursor: 'pointer', padding: '12px 14px', fontSize: 12.5, fontWeight: 700, color: '#475569' }}>
+          {t('maint.previousCompletions', { defaultValue: 'Previous completions ({{n}})', n: prior.length })}
+        </summary>
+        <div style={{ padding: '0 12px 12px' }}>
+          <div style={{ fontSize: 12, color: '#64748B', lineHeight: 1.45, marginBottom: 10 }}>
+            {t('maint.previousCompletionsHint', 'Earlier visits on this schedule. This is history, not the task you are completing now.')}
+          </div>
+          {prior.map(p => (
+            <div key={p.id} style={{ background: '#fff', border: '1px solid #E2E8F0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+              {renderCompletionRecord(p, false)}
+            </div>
+          ))}
+        </div>
+      </details>
+    );
+  }
+
+  // The visit on screen. A submission still waiting for the unit head is this
+  // task, never a previous completion. History is only visits they already verified.
+  function renderPeriodicCompletion(tk: TicketRow) {
+    const pendingSibling = tk.status === 'pending_unit_head' ? undefined : tickets.find(t =>
+      !!t.schedule_id && t.schedule_id === tk.schedule_id && t.id !== tk.id && t.status === 'pending_unit_head'
+    );
+    const focus = ticketWasSubmitted(tk) ? tk : pendingSibling;
+    return (
+      <>
+        {focus ? renderCompletionRecord(focus, true) : (
+          <div style={{ fontSize: 13, color: '#64748B', lineHeight: 1.5, marginBottom: 16 }}>
+            {t('maint.notSubmittedYet', 'Technical has not submitted this task yet. Checklist ticks, the photo, and the times appear here after they mark it complete.')}
+          </div>
+        )}
+        {renderPreviousCompletions(tk.schedule_id, focus?.id || tk.id)}
+      </>
     );
   }
 
@@ -2702,14 +3407,17 @@ export function Maintenance() {
       return (
         <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 14, padding: 16 }}>
           <div style={{ fontWeight: 700, color: '#16A34A', marginBottom: 8 }}>{t('maint.ticketClosed', 'Ticket closed')}</div>
-          {selectedTicket.completion_photo_url && (
-            <>
-              <img src={selectedTicket.completion_photo_url} alt="Completion" style={{ width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 10, marginTop: 4 }} />
-              <a href={selectedTicket.completion_photo_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#2563EB', display: 'block', marginTop: 6 }}>{t('maint.viewInCloudinary', 'View in Cloudinary ↗')}</a>
-            </>
+          {listedPhotoUrls(selectedTicket.completion_photo_url, selectedTicket.completion_photo_urls).length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+              {listedPhotoUrls(selectedTicket.completion_photo_url, selectedTicket.completion_photo_urls).map(url => (
+                <a key={url} href={url} target="_blank" rel="noreferrer" style={{ display: 'block', width: 120 }}>
+                  <img src={url} alt="Completion" style={{ width: '100%', height: 88, objectFit: 'cover', borderRadius: 10 }} />
+                </a>
+              ))}
+            </div>
           )}
           {selectedStoreReq?.handover_invoice_url && (
-            <a href={selectedStoreReq.handover_invoice_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#2563EB', display: 'block', marginTop: 4 }}>{t('maint.viewHandoverInvoice', 'View handover invoice ↗')}</a>
+            <a href={selectedStoreReq.handover_invoice_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: '#D84315', display: 'block', marginTop: 4 }}>{t('maint.viewHandoverInvoice', 'View handover invoice ↗')}</a>
           )}
           {selectedTicket.defective_part_decision && (
             <div style={{ fontSize: 12, marginTop: 8, color: '#475569' }}>
@@ -2756,7 +3464,7 @@ export function Maintenance() {
                   />
                   {it.storeItemId
                     ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToStoreStock', '✓ Linked to store stock — availability will be checked automatically.')}</div>
-                    : (storeStock.length > 0 && it.partName.trim().length > 1 && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('maint.notInStoreList', 'Not in store list — will be treated as a new part to procure.')}</div>)}
+                    : (storeStock.length > 0 && it.partName.trim().length > 1 && suggestParts(it.partName, storeStock).length === 0 && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('maint.notInStoreList', 'Not in store list — will be treated as a new part to procure.')}</div>)}
                 </PanelField>
                 <PanelRow>
                   <PanelField label={t('maint.quantityLabel', 'Quantity')}>
@@ -2817,7 +3525,7 @@ export function Maintenance() {
       return (
         <div>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600, marginBottom: 12 }}>{t('maint.uploadPhotoProofVerify', 'Upload photo proof — the unit head verifies before the ticket closes')}</div>
-          <PhotoUploader onBlobReady={setCompletionBlob} label={t('maint.completionPhoto', 'Completion photo')} hint={t('maint.completionPhotoHint', 'Photo of the fixed equipment / completed repair')} />
+          <PhotoUploader onBlobReady={setCompletionBlob} onBlobsReady={setCompletionBlobs} label={t('maint.completionPhoto', 'Completion photo')} hint={t('maint.completionPhotoHint', 'Photo of the fixed equipment / completed repair')} />
           {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
           <button onClick={closeInHouse} disabled={!completionBlob || uploading} style={{ width: '100%', padding: '12px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', opacity: (!completionBlob || uploading) ? 0.5 : 1 }}>
             {uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.sendToUnitHeadVerify', 'Send to unit head for verification')}
@@ -2837,15 +3545,20 @@ export function Maintenance() {
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4, lineHeight: 1.5 }}>
             {t('maint.verifyInhouseSub', { defaultValue: '{{name}} completed the repair and uploaded proof. It stays open until the unit head verifies it.', name: tk.assigned_to || tk.raised_by || '—' })}
           </div>
-          {tk.completion_photo_url && (
+          {listedPhotoUrls(tk.completion_photo_url, tk.completion_photo_urls).length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{t('maint.completionPhoto', 'Completion photo')}</div>
-              <img
-                src={tk.completion_photo_url}
-                alt={t('maint.completionPhoto', 'Completion photo')}
-                onClick={() => setTicketLightbox({ images: [{ url: tk.completion_photo_url!, label: t('maint.completionPhoto', 'Completion photo') }], index: 0 })}
-                style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 10, border: '1px solid #E2E8F0', cursor: 'zoom-in', display: 'block' }}
-              />
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {listedPhotoUrls(tk.completion_photo_url, tk.completion_photo_urls).map((url, i, all) => (
+                  <img
+                    key={url}
+                    src={url}
+                    alt={t('maint.completionPhoto', 'Completion photo')}
+                    onClick={() => setTicketLightbox({ images: all.map(u => ({ url: u, label: t('maint.completionPhoto', 'Completion photo') })), index: i })}
+                    style={{ width: all.length > 1 ? 140 : '100%', height: all.length > 1 ? 96 : undefined, maxHeight: 220, objectFit: 'cover', borderRadius: 10, border: '1px solid #E2E8F0', cursor: 'zoom-in', display: 'block' }}
+                  />
+                ))}
+              </div>
             </div>
           )}
           {canVerify ? (
@@ -2858,7 +3571,7 @@ export function Maintenance() {
               </button>
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: '#0A1628', fontWeight: 600, marginTop: 14 }}>{t('maint.awaitingUnitHead', 'Waiting on the unit head — you will be notified when it is closed.')}</div>
+            <div style={{ fontSize: 12, color: '#161616', fontWeight: 600, marginTop: 14 }}>{t('maint.awaitingUnitHead', 'Waiting on the unit head — you will be notified when it is closed.')}</div>
           )}
         </div>
       );
@@ -2879,10 +3592,10 @@ export function Maintenance() {
 
     const STAGE_BADGE: Record<ItemStage, { label: string; bg: string; color: string }> = {
       store: { label: t('maint.badgeStoreCheck', 'Store check'), bg: '#FFF7ED', color: '#EA580C' },
-      unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F1F5F9', color: '#0A1628' },
-      purchase: { label: t('maint.badgeProcure', 'Procure'), bg: '#EFF6FF', color: '#2563EB' },
-      purchase_manager: { label: t('maint.badgeAwaitingBill', 'Awaiting bill'), bg: '#FDF4FF', color: '#A21CAF' },
-      handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#F8FAFC', color: '#9333EA' },
+      unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F1F5F9', color: '#161616' },
+      purchase: { label: t('maint.badgeProcure', 'Procure'), bg: '#FFF3E6', color: '#D84315' },
+      purchase_manager: { label: t('maint.badgeAwaitingBill', 'Awaiting bill'), bg: '#FFF3E6', color: '#B45309' },
+      handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#F3EFE8', color: '#161616' },
       done: { label: t('common.done', 'Done'), bg: '#F0FDF4', color: '#16A34A' },
       rejected: { label: t('maint.badgeRejected', 'Rejected'), bg: '#FEF2F2', color: '#DC2626' },
     };
@@ -2891,6 +3604,17 @@ export function Maintenance() {
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {storeReqs.length === 0 && decision === 'store' && (
+          <div style={{ border: '1px solid #FDBA74', borderRadius: 14, padding: 14, background: '#FFF7ED' }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: '#9A3412' }}>{t('maint.partLineMissing', { defaultValue: 'No part line on this ticket yet.' })}</div>
+            <div style={{ fontSize: 12, color: '#9A3412', marginTop: 4, lineHeight: 1.45 }}>
+              {storeReqError
+                ? t('maint.partLineLoadFailed', { defaultValue: 'The store request did not load: {{message}}', message: storeReqError })
+                : t('maint.partLineMissingHint', { defaultValue: 'Store check appears once the requested part is saved. Reload if it was just raised.' })}
+            </div>
+            <button type="button" onClick={() => loadStoreReqs(tk.id)} style={{ ...primaryBtn('#EF6C00'), width: '100%', marginTop: 10 }}>{t('maint.reloadPartLine', { defaultValue: 'Reload part line' })}</button>
+          </div>
+        )}
         {(() => {
           const renderReq = (req: StoreReqRow, grouped = false) => {
           const s = itemStage(req);
@@ -2898,8 +3622,10 @@ export function Maintenance() {
           const badge = STAGE_BADGE[s];
           // Available-from-store items skip procurement → no bill; procured items carry one.
           const fromOwnStore = req.store_decision === 'available';
+          const issueValue = issueLineValue(req.total_price, req.unit_price, req.quantity);
+          const needIssuePhoto = fromOwnStore && storeIssueNeedsPhoto(issueValue);
           const canConfirmHandover = fromOwnStore
-            ? (!!handoverNotes.trim() || !!handoverPhotoBlob)
+            ? ((needIssuePhoto ? !!handoverPhotoBlob : true) && (!!handoverNotes.trim() || !!handoverPhotoBlob))
             : (!!handoverInvoiceBlob || !!handoverPhotoBlob);
           // Map the request to the plant's stock so the store manager confirms
           // rather than re-counts: exact link if the tech picked it, else fuzzy.
@@ -2962,7 +3688,7 @@ export function Maintenance() {
                         <PanelField label={t('maint.shelfBin', 'Shelf / bin')}><PanelInput value={storeDecisionForm.shelfLocation} onChange={e => setStoreDecisionForm(f => ({ ...f, shelfLocation: e.target.value }))} placeholder={t('maint.shelfPlaceholder', 'Rack B-12')} /></PanelField>
                       </PanelRow>
                       {willSplit && (
-                        <div style={{ fontSize: 11.5, color: '#0A1628', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', marginTop: 6 }}>
+                        <div style={{ fontSize: 11.5, color: '#161616', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', marginTop: 6 }}>
                           {t('maint.splitOnlyInStore', { defaultValue: '⤿ Only {{have}} of {{need}} in store → ', have: enteredQty, need: reqQty })}<strong>{t('maint.splitIssuedNow', { defaultValue: '{{n}} issued now', n: enteredQty })}</strong>, <strong>{t('maint.splitSentToProcurement', { defaultValue: '{{n}} sent to procurement', n: reqQty - (enteredQty ?? 0) })}</strong>{t('maint.splitAutomatically', ' automatically.')}
                         </div>
                       )}
@@ -3001,7 +3727,18 @@ export function Maintenance() {
                     <button onClick={() => unitHeadApprove(req, false)} style={{ ...primaryBtn('#DC2626'), flex: 1 }}>{t('maint.reject', 'Reject')}</button>
                   </div>
                 </div>
-              ) : <div style={awaitTxt}>{t('maint.awaitingUnitHeadApproval', 'Awaiting unit head approval…')}</div>)}
+              ) : (
+                <div style={awaitTxt}>
+                  {req.store_decision && (
+                    <div style={{ marginBottom: 4, color: req.store_decision === 'available' ? '#16A34A' : '#DC2626' }}>
+                      {t('maint.storeSays', 'Store says:')} <strong>{req.store_decision === 'available' ? t('maint.inStock', 'In stock') : t('maint.notInStock', 'Not in stock')}</strong>
+                      {req.qty_in_store != null ? ` · ${t('maint.qtyLabel', 'Qty')} ${req.qty_in_store}` : ''}
+                      {req.store_decided_by ? ` · ${req.store_decided_by}` : ''}
+                    </div>
+                  )}
+                  {t('maint.awaitingUnitHeadApproval', 'Awaiting unit head approval…')}
+                </div>
+              ))}
 
               {/* PURCHASE (procurement) */}
               {s === 'purchase' && ((isUnitHead || isAdmin) ? (acting ? (
@@ -3012,17 +3749,17 @@ export function Maintenance() {
                     <PanelField label={t('maint.supplierVendor', 'Supplier / vendor')}><PanelInput value={supplierName} onChange={e => setSupplierName(e.target.value)} placeholder={t('maint.supplierPlaceholder', 'e.g. Madan Chemicals')} /></PanelField>
                   </PanelRow>
                   {req.store_item_id && (parseFloat(purchaseQty) || 0) > (Number(req.quantity) || 0) && (
-                    <div style={{ fontSize: 11.5, color: '#0A1628', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 10px', marginBottom: 8 }}>
+                    <div style={{ fontSize: 11.5, color: '#161616', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 10px', marginBottom: 8 }}>
                       {t('maint.boughtInBulkPrefix', { defaultValue: 'Bought in bulk → {{n}} to the technician, ', n: req.quantity })}<strong>{t('maint.addedToStoreStock', { defaultValue: '{{n}} added to store stock', n: (parseFloat(purchaseQty) || 0) - (Number(req.quantity) || 0) })}</strong>{t('maint.onHandoverSuffix', ' on handover.')}
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => { setActingReqId(null); setBusyRef(''); setSupplierName(''); setPurchaseQty(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
-                    <button onClick={() => markPurchased(req)} disabled={!busyRef.trim()} style={{ ...primaryBtn('#0A1628'), flex: 2, opacity: !busyRef.trim() ? 0.5 : 1 }}>{t('maint.markPurchased', 'Mark purchased')}</button>
+                    <button onClick={() => markPurchased(req)} disabled={!busyRef.trim()} style={{ ...primaryBtn('#161616'), flex: 2, opacity: !busyRef.trim() ? 0.5 : 1 }}>{t('maint.markPurchased', 'Mark purchased')}</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#0A1628'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
+                <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#161616'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
               )) : <div style={awaitTxt}>{t('maint.unitHeadProcuring', 'Unit head procuring…')}</div>)}
 
               {s === 'purchase_manager' && <div style={awaitTxt}>{t('maint.procuredAwaitingBill', { defaultValue: 'Procured ({{ref}}) · awaiting purchase bill below…', ref: req.busy_transaction_ref || t('maint.refPending', 'ref pending') })}</div>}
@@ -3037,17 +3774,24 @@ export function Maintenance() {
                       <textarea value={handoverNotes} onChange={e => setHandoverNotes(e.target.value)} placeholder={t('maint.handoverNotesPlaceholder', 'e.g. Issued from Rack B-12 — spare seal in good condition, replaces the worn one.')} rows={3} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none' }} />
                     </div>
                   ) : (
-                    <PhotoUploader onBlobReady={setHandoverInvoiceBlob} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
+                    <PhotoUploader onBlobReady={setHandoverInvoiceBlob} onBlobsReady={setHandoverInvoiceBlobs} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
                   )}
-                  <PhotoUploader onBlobReady={setHandoverPhotoBlob} label={t('maint.partPhoto', 'Part photo')} hint={t('maint.partPhotoHint', 'Photo of the part being handed over')} />
+                  <PhotoUploader
+                    onBlobReady={setHandoverPhotoBlob}
+                    onBlobsReady={setHandoverPhotoBlobs}
+                    label={needIssuePhoto ? t('maint.partPhotoRequired', 'Part photo *') : t('maint.partPhoto', 'Part photo')}
+                    hint={needIssuePhoto
+                      ? t('maint.partPhotoRequiredHint', 'Required — this issue is worth more than ₹1,000 (or the value is not on file).')
+                      : t('maint.partPhotoHint', 'Photo of the part being handed over')}
+                  />
                   {uploading && <UploadBar pct={uploadPct} color="#9333EA" />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button onClick={() => { setActingReqId(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
+                    <button onClick={() => { setActingReqId(null); setHandoverInvoiceBlob(null); setHandoverInvoiceBlobs([]); setHandoverPhotoBlob(null); setHandoverPhotoBlobs([]); setHandoverNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
                     <button onClick={() => confirmHandover(req)} disabled={!canConfirmHandover || uploading} style={{ ...primaryBtn('#9333EA'), flex: 2, opacity: (!canConfirmHandover || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct }) : t('maint.confirmHandover', 'Confirm handover')}</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => { setActingReqId(req.id); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setHandoverNotes(''); }} style={{ ...primaryBtn('#9333EA'), width: '100%', marginTop: 10 }}>{t('maint.handOverToTechnician', 'Hand over to technician')}</button>
+                <button onClick={() => { setActingReqId(req.id); setHandoverInvoiceBlob(null); setHandoverInvoiceBlobs([]); setHandoverPhotoBlob(null); setHandoverPhotoBlobs([]); setHandoverNotes(''); }} style={{ ...primaryBtn('#9333EA'), width: '100%', marginTop: 10 }}>{t('maint.handOverToTechnician', 'Hand over to technician')}</button>
               )) : <div style={awaitTxt}>{t('maint.storeManagerToHandOver', 'Store manager to hand over…')}</div>)}
 
               {s === 'done' && <div style={{ fontSize: 12, color: '#16A34A', marginTop: 8, fontWeight: 600 }}>{t('maint.handedOver', '✓ Handed over')}{req.handover_confirmed_at ? ` · ${formatDate(req.handover_confirmed_at)}` : ''}</div>}
@@ -3085,7 +3829,7 @@ export function Maintenance() {
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11.5, color: '#64748B', marginTop: 8, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '7px 10px' }}>
                   <span>{t('maint.requestedLabel', 'Requested')} <strong style={{ color: '#334155' }}>{requestedQty}</strong></span>
                   <span>· {t('maint.fromStoreLabel', 'From store')} <strong style={{ color: '#16A34A' }}>{issuedQty}</strong></span>
-                  <span>· {t('maint.procuredLabel', 'Procured')} <strong style={{ color: '#0A1628' }}>{procuredQty}</strong></span>
+                  <span>· {t('maint.procuredLabel', 'Procured')} <strong style={{ color: '#161616' }}>{procuredQty}</strong></span>
                   <span>· {t('maint.deliveredLabel', 'Delivered')} <strong style={{ color: deliveredQty >= requestedQty ? '#16A34A' : '#D97706' }}>{deliveredQty}/{requestedQty}</strong></span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>{sorted.map(r => renderReq(r, true))}</div>
@@ -3120,25 +3864,79 @@ export function Maintenance() {
           </div>
         )}
 
-        {/* After handover the operator chooses Consumed vs Defective return.
-            Same gate as in-house completion: technician, admin, Technical
-            (factory_operator), or the person who raised / is assigned the
-            ticket. Gating on isTechnician alone hid the upload from Technical
-            users who had already done the whole job (e.g. Amit Kumar on the
-            9-watt LED ticket). */}
-        {status === 'pending_defective_return' && ((isTechnician || isAdmin || canWorkEmergency(tk)) ? (
+        {/* After handover the technical person chooses Consumed (closes here) or
+            Defective return. Store accepts the old part. Only the unit head
+            then decides scrap or repairable and closes the ticket. */}
+        {status === 'pending_defective_return' && assignedToUnitHead(tk) && (isUnitHead || isAdmin) && (
+          <div style={{ border: '1px solid #FDBA74', borderRadius: 14, padding: 14, background: '#FFF7ED' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#EA580C', textTransform: 'uppercase', marginBottom: 6 }}>
+              {t('maint.uhChooseHeading')}
+            </div>
+            <div style={{ fontSize: 12, color: '#9A3412', lineHeight: 1.45, marginBottom: 10 }}>
+              {t('maint.uhChooseHint')}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button onClick={() => submitUnitHeadDisposition('repairable')} disabled={uploading} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid #86EFAC', background: '#fff', color: '#15803D', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', opacity: uploading ? 0.5 : 1 }}>
+                {t('maint.dispositionReturn')}
+                <div style={{ fontSize: 11.5, fontWeight: 500, color: '#4B5563', marginTop: 3, lineHeight: 1.4 }}>{t('maint.dispositionReturnHint')}</div>
+              </button>
+              {scrapConfirm ? (
+                <div style={{ border: '1px solid #FECACA', borderRadius: 12, padding: 12, background: '#fff' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#DC2626', marginBottom: 6 }}>{t('maint.scrapNotesTitle', 'Add notes before scrap')}</div>
+                  <div style={{ fontSize: 12, color: '#64748B', marginBottom: 8 }}>{t('maint.scrapNotesHint', 'Why this item is being scrapped. Required.')}</div>
+                  <textarea
+                    value={scrapNotes}
+                    onChange={e => setScrapNotes(e.target.value)}
+                    rows={3}
+                    placeholder={t('maint.scrapNotesPlaceholder', 'e.g. Housing cracked beyond repair, no salvageable parts.')}
+                    style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button type="button" onClick={() => { setScrapConfirm(false); setScrapNotes(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
+                    <button type="button" onClick={() => submitUnitHeadDisposition('scrap')} disabled={uploading || !scrapNotes.trim()} style={{ ...primaryBtn('#DC2626'), flex: 2, opacity: (uploading || !scrapNotes.trim()) ? 0.5 : 1 }}>{uploading ? t('maint.savingEllipsis', 'Saving…') : t('maint.confirmScrap', 'Confirm scrap')}</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setScrapConfirm(true)} disabled={uploading} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid #FECACA', background: '#fff', color: '#DC2626', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', opacity: uploading ? 0.5 : 1 }}>
+                  {t('maint.dispositionScrap')}
+                  <div style={{ fontSize: 11.5, fontWeight: 500, color: '#4B5563', marginTop: 3, lineHeight: 1.4 }}>{t('maint.dispositionScrapHint')}</div>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {status === 'pending_defective_return' && assignedToUnitHead(tk) && !(isUnitHead || isAdmin) && (
+          <div style={awaitTxt}>{t('maint.awaitingUnitHeadDisposition')}</div>
+        )}
+        {status === 'pending_defective_return' && assignedToStore(tk) && (isStoreManager || isAdmin) && (
+          <div style={{ border: '1px solid #FDBA74', borderRadius: 14, padding: 14, background: '#FFF7ED' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#EA580C', textTransform: 'uppercase', marginBottom: 6 }}>
+              {t('maint.acceptReturnedItem')}
+            </div>
+            <div style={{ fontSize: 12, color: '#9A3412', lineHeight: 1.45, marginBottom: 10 }}>
+              {t('maint.sendToUnitHeadHint')}
+            </div>
+            <button onClick={acceptReturnedItem} disabled={uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: uploading ? 0.5 : 1 }}>
+              {uploading ? t('maint.savingEllipsis', 'Saving…') : t('maint.acceptReturnedItem')}
+            </button>
+          </div>
+        )}
+        {status === 'pending_defective_return' && assignedToStore(tk) && !(isStoreManager || isAdmin) && (
+          <div style={awaitTxt}>{t('maint.awaitingStoreAccept')}</div>
+        )}
+        {status === 'pending_defective_return' && !assignedToUnitHead(tk) && !assignedToStore(tk) && ((isTechnician || isAdmin || isOperatorFloor || canWorkEmergency(tk)) && !(isUnitHead && !isAdmin) && !(isStoreManager && !isAdmin) ? (
           <div style={{ border: `1px solid ${partOutcome === 'consumed' ? '#BBF7D0' : '#FED7AA'}`, borderRadius: 14, padding: 14, background: partOutcome === 'consumed' ? '#F0FDF4' : '#FFF7ED' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: partOutcome === 'consumed' ? '#15803D' : '#EA580C', textTransform: 'uppercase' }}>
                 {partOutcome === 'consumed'
-                  ? t('maint.outcomeConsumedTitle', 'Consumed')
+                  ? t('maint.outcomeConsumedTitle')
                   : partOutcome === 'defective'
-                    ? t('maint.returnDefectiveClose', 'Return defective part & close')
-                    : t('maint.outcomeHeading', 'What happened to the issued parts?')}
+                    ? t('maint.outcomeDefectiveTitle')
+                    : t('maint.outcomeHeading')}
               </div>
               {partOutcome && (
                 <button onClick={() => { setPartOutcome(''); setDefectiveBlob(null); }} disabled={uploading} style={{ border: 'none', background: 'transparent', color: '#64748B', cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit' }}>
-                  {t('maint.outcomeChange', 'Change')}
+                  {t('maint.outcomeChange')}
                 </button>
               )}
             </div>
@@ -3146,18 +3944,18 @@ export function Maintenance() {
             {!partOutcome && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ fontSize: 12, color: '#64748B', lineHeight: 1.45 }}>
-                  {t('maint.outcomeHint', 'Pick Consumed if the part was used up (grease, oil, tape). Pick Defective return if an old part was taken off and must go to Repair or Scrap.')}
+                  {t('maint.outcomeHint')}
                 </div>
                 <button onClick={() => setPartOutcome('consumed')} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid #86EFAC', background: '#fff', color: '#15803D', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
-                  {t('maint.outcomeConsumedTitle', 'Consumed')}
+                  {t('maint.outcomeConsumedTitle')}
                   <div style={{ fontSize: 11.5, fontWeight: 500, color: '#4B5563', marginTop: 3, lineHeight: 1.4 }}>
-                    {t('maint.outcomeConsumedHint', 'Used up on the job — no old part to return to store.')}
+                    {t('maint.outcomeConsumedHint')}
                   </div>
                 </button>
                 <button onClick={() => setPartOutcome('defective')} style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid #FDBA74', background: '#fff', color: '#C2410C', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
-                  {t('maint.outcomeDefectiveTitle', 'Defective return')}
+                  {t('maint.outcomeDefectiveTitle')}
                   <div style={{ fontSize: 11.5, fontWeight: 500, color: '#4B5563', marginTop: 3, lineHeight: 1.4 }}>
-                    {t('maint.outcomeDefectiveHint', 'Old part was removed. Split between Repair and Scrap with a photo.')}
+                    {t('maint.outcomeDefectiveHint')}
                   </div>
                 </button>
               </div>
@@ -3166,7 +3964,7 @@ export function Maintenance() {
             {partOutcome === 'consumed' && (
               <div>
                 <div style={{ fontSize: 12, color: '#3F6212', lineHeight: 1.45, marginBottom: 10 }}>
-                  {t('maint.consumedConfirmHint', 'These issued items will be recorded as used up. Nothing is sent to Repair or Scrap.')}
+                  {t('maint.consumedConfirmHint')}
                 </div>
                 {storeReqs.filter(r => itemStage(r) === 'done').length > 0 && (
                   <div style={{ background: '#fff', border: '1px solid #BBF7D0', borderRadius: 10, padding: '8px 10px', marginBottom: 12 }}>
@@ -3179,67 +3977,23 @@ export function Maintenance() {
                   </div>
                 )}
                 <button onClick={submitConsumed} disabled={uploading} style={{ ...primaryBtn('#16A34A'), width: '100%', opacity: uploading ? 0.5 : 1 }}>
-                  {uploading ? t('maint.savingEllipsis', 'Saving…') : t('maint.consumedClose', 'Mark consumed & close ticket')}
+                  {uploading ? t('maint.savingEllipsis', 'Saving…') : t('maint.consumedClose')}
                 </button>
               </div>
             )}
 
             {partOutcome === 'defective' && (
-              <>
-                <PhotoUploader onBlobReady={setDefectiveBlob} label={t('maint.photoOfDefectivePart', 'Photo of defective part')} hint={t('maint.photoOfDefectivePartHint', 'Clear photo of the old/broken part')} />
-
-                {/* Per-part disposition. A job that replaced 5 parts must account for
-                    all 5 — every removed unit is either repaired or scrapped, so the
-                    Repair page and inventory reflect the real quantities. */}
-                <div style={{ margin: '10px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#9A3412' }}>
-                    {t('maint.splitHeading', 'How many of each removed part go to Repair vs Scrap?')}
-                  </div>
-                  {defectiveLines.map((ln, i) => {
-                    const left = unaccounted(ln);
-                    return (
-                      <div key={ln.storeRequestId ?? i} style={{ border: `1px solid ${left === 0 ? '#BBF7D0' : '#FED7AA'}`, background: '#fff', borderRadius: 10, padding: 9 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#334155', marginBottom: 6 }}>{ln.partName}</div>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                          <label style={{ fontSize: 10.5, color: '#64748B', fontWeight: 600 }}>
-                            {t('maint.splitReplaced', 'Replaced')}
-                            <input type="number" min="1" step="any" value={ln.replacedQty}
-                              onChange={e => patchDefectiveLine(i, { replacedQty: Number(e.target.value) })}
-                              style={{ ...numInput, display: 'block', marginTop: 3 }} />
-                          </label>
-                          <span style={{ color: '#CBD5E1', paddingBottom: 8 }}>=</span>
-                          <label style={{ fontSize: 10.5, color: '#16A34A', fontWeight: 700 }}>
-                            🔧 {t('maint.splitRepair', 'Repair')}
-                            <input type="number" min="0" step="any" value={ln.repairQty}
-                              onChange={e => patchDefectiveLine(i, { repairQty: Number(e.target.value) })}
-                              style={{ ...numInput, display: 'block', marginTop: 3, borderColor: '#BBF7D0' }} />
-                          </label>
-                          <span style={{ color: '#CBD5E1', paddingBottom: 8 }}>+</span>
-                          <label style={{ fontSize: 10.5, color: '#DC2626', fontWeight: 700 }}>
-                            🗑 {t('maint.splitScrap', 'Scrap')}
-                            <input type="number" min="0" step="any" value={ln.scrapQty}
-                              onChange={e => patchDefectiveLine(i, { scrapQty: Number(e.target.value) })}
-                              style={{ ...numInput, display: 'block', marginTop: 3, borderColor: '#FECACA' }} />
-                          </label>
-                          <span style={{ fontSize: 11, fontWeight: 700, paddingBottom: 8, color: left === 0 ? '#16A34A' : '#B45309' }}>
-                            {left === 0
-                              ? t('maint.splitBalanced', '✓ all accounted for')
-                              : left > 0
-                                ? t('maint.splitShort', { defaultValue: '{{n}} unaccounted for', n: left })
-                                : t('maint.splitOver', { defaultValue: '{{n}} too many', n: -left })}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
+              <div>
+                <div style={{ fontSize: 12, color: '#9A3412', lineHeight: 1.45, marginBottom: 10 }}>
+                  {t('maint.sendToUnitHeadHint')}
                 </div>
-
-                {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
-                <button onClick={submitDefectiveReturn} disabled={!defectiveBlob || !isSplitValid(defectiveLines) || uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: (!defectiveBlob || !isSplitValid(defectiveLines) || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingEllipsis', 'Uploading…') : t('maint.submitCloseTicket', 'Submit & close ticket')}</button>
-              </>
+                <button onClick={sendDefectiveReturnToStore} disabled={uploading} style={{ ...primaryBtn('#EF6C00'), width: '100%', opacity: uploading ? 0.5 : 1 }}>
+                  {uploading ? t('maint.savingEllipsis', 'Saving…') : t('maint.sendToUnitHead')}
+                </button>
+              </div>
             )}
           </div>
-        ) : <div style={awaitTxt}>{t('maint.awaitingPartOutcome', 'Awaiting operator — consumed or defective return…')}</div>)}
+        ) : status === 'pending_defective_return' && !assignedToUnitHead(tk) && !assignedToStore(tk) ? <div style={awaitTxt}>{t('maint.awaitingPartOutcome')}</div> : null)}
       </div>
     );
   }
@@ -3252,26 +4006,28 @@ export function Maintenance() {
   // freshly-raised part ticket shows the store path even before its store-request row exists.
   function periodicScheduleRows(pageRows: ScheduleRow[]) {
     return pageRows.map(s => {
-      const linkedTicket = tickets.find(tk => tk.schedule_id === s.id && tk.status !== 'closed');
-      const awaitingVerify = linkedTicket?.status === 'pending_unit_head';
+      const openOnSchedule = tickets.filter(tk => tk.schedule_id === s.id && tk.status !== 'closed');
+      const awaitingTicket = openOnSchedule.find(tk => tk.status === 'pending_unit_head');
+      const linkedTicket = awaitingTicket || openOnSchedule[0];
+      const awaitingVerify = !!awaitingTicket;
       const days = daysFromNow(s.next_due_at);
       const due = dueDateLabel(days, t);
       let statusKey = 'maint.schedStatusOnTrack'; let statusBg = '#DCFCE7'; let statusColor = '#16A34A';
-      if (awaitingVerify) { statusKey = ''; statusBg = '#E2E8F0'; statusColor = '#0A1628'; }
-      else if (linkedTicket) { statusKey = 'maint.schedStatusTicketOpen'; statusBg = '#DBEAFE'; statusColor = '#2563EB'; }
+      if (awaitingVerify) { statusKey = ''; statusBg = '#E2E8F0'; statusColor = '#161616'; }
+      else if (linkedTicket) { statusKey = 'maint.schedStatusTicketOpen'; statusBg = '#FFF3E6'; statusColor = '#D84315'; }
       else if (days !== null && days < 0) { statusKey = 'maint.schedStatusOverdue'; statusBg = '#FEE2E2'; statusColor = '#DC2626'; }
       else if (days !== null && days <= 3) { statusKey = 'maint.schedStatusDueSoon'; statusBg = '#FEF3C7'; statusColor = '#D97706'; }
       const job = s.far_asset_id ? jobNoFar(s.far_asset_id, s.equipment_mark, farAssets.find(a => a.id === s.far_asset_id)?.job_no) : (!isPlaceholderMark(s.equipment_mark) ? s.equipment_mark : '');
       const canMarkThis = s.frequency === 'daily' ? canMarkDaily : canMarkPeriodicComplete;
       const showAction = canMarkDaily || canMarkPeriodicComplete || isUnitHead || isAdmin;
       return (
-        <tr key={s.id}>
-          <td className="font-semibold">{stripPlaceholderParen(s.title)}</td>
+        <tr key={s.id} onClick={linkedTicket ? () => setSelectedTicket(linkedTicket) : undefined} style={linkedTicket ? { cursor: 'pointer' } : undefined}>
+          <td className="font-semibold">{shownName(s.title, s.far_asset_id, s.equipment_mark)}</td>
           <td>
-            <div>{stripPlaceholderParen(s.equipment)}</div>
+            <div>{shownName(s.equipment, s.far_asset_id, s.equipment_mark)}</div>
             {job ? <div className="text-[11px] font-mono text-slate-400">{job}</div> : null}
           </td>
-          <td>{s.plants?.name || '—'}</td>
+          <td>{displayLocationName(s.plants?.name) || '—'}</td>
           <td className="text-slate-500">{t('maint.freq_' + s.frequency, FREQ_LABEL[s.frequency] || s.frequency)}</td>
           <td className="text-slate-500 text-xs">{s.last_completed_at ? formatDate(s.last_completed_at) : '—'}</td>
           <td style={{ color: due.color, fontWeight: 600, fontSize: 12 }}>{due.text}</td>
@@ -3280,10 +4036,10 @@ export function Maintenance() {
             <td>
               {awaitingVerify ? (
                 (isUnitHead || isAdmin)
-                  ? <ButtonV2 size="sm" onClick={() => setVerifyingTicket(linkedTicket!)} className="bg-[#0A1628] text-white border-none hover:bg-[#152338]">{t('maint.verify', 'Verify')}</ButtonV2>
-                  : <span className="text-xs" style={{ color: '#0A1628' }}>{t('maint.awaitingVerify', 'Awaiting verify')}</span>
+                  ? <ButtonV2 size="sm" onClick={(e) => { e.stopPropagation(); setSelectedTicket(linkedTicket!); }} className="bg-[#161616] text-white border-none hover:bg-[#152338]">{t('maint.verify', 'Verify')}</ButtonV2>
+                  : <span className="text-xs" style={{ color: '#161616' }}>{t('maint.awaitingVerify', 'Awaiting verify')}</span>
               ) : canMarkThis && (linkedTicket || (days !== null && days <= 0)) ? (
-                <ButtonV2 size="sm" variant="primary" onClick={() => setCompletingSchedule(s)}>
+                <ButtonV2 size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); setSelectedTicket(null); setCompletingSchedule(s); }}>
                   {t('maint.markComplete')}
                 </ButtonV2>
               ) : (
@@ -3353,10 +4109,11 @@ export function Maintenance() {
           { key: 'periodic', label: t('maint.periodic'), icon: <Calendar /> },
           { key: 'emergency', label: t('maint.emergency'), icon: <AlertTriangle /> },
           // Role gate identical to the old strip: hidden for technicians + store managers.
-          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: isTechnician || isStoreManager },
+          { key: 'schedule', label: t('maint.scheduleSetup'), icon: <Settings />, hidden: !showScheduleSetup },
+          { key: 'incidents', label: t('maint.incidents', 'Incidents'), icon: <AlertTriangle /> },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={chooseTab}
       />
 
       {loadError ? (
@@ -3373,25 +4130,32 @@ export function Maintenance() {
       {/* ── PERIODIC TAB ─────────────────────────────────────────────────── */}
       {tab === 'periodic' && (
         <>
-          <div className="grid grid-cols-12 gap-4 mb-4">
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Calendar />} tone="amber"
-              label={t('maint.dueToday')} value={dueToday}
-              caption={dueToday === 0 ? `${t('maint.noDueToday')} · ${dueScopeLabel}` : dueItemPreview(dueTodaySchedules)}
-              onView={() => { setPeriodicFocus('today'); dueTodayRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
-              viewLabel={t('maint.viewDueToday', 'See today’s list')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CalendarDays />} tone="amber"
-              label={t('maint.dueThisWeek')} value={dueWeek}
-              caption={dueWeek === 0 ? `${t('maint.noDueWeek')} · ${dueScopeLabel}` : dueItemPreview(dueWeekSchedules)}
-              onView={() => { setPeriodicFocus('week'); weeklyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
-              viewLabel={t('maint.viewDueWeek', 'See this week')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={overdue > 0 ? 'red' : 'default'}
-              label={t('maint.overdue')} value={overdue}
-              caption={overdue > 0 ? dueItemPreview(overdueSchedules) : `${t('maint.noOverdueSchedules', 'No overdue schedules')} · ${dueScopeLabel}`}
-              onView={() => { setPeriodicFocus('overdue'); overdueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
-              viewLabel={t('maint.viewOverdue', 'See overdue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
-              label={t('maint.completedMtd')} value={closedPeriodicMTD}
-              caption={t('maint.completedThisMonth')} />
+          <div className="erp-query" role="tablist" aria-label={t('maint.periodic')}>
+            <button type="button" role="tab" aria-pressed={periodicFocus === 'today'}
+              onClick={() => { setFltQ(''); setFltStatus('all'); setPeriodicFocus('today'); }}>
+              <span className="erp-q-label">{t('maint.dueToday')}</span>
+              <span className="erp-q-n">{dueToday}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={periodicFocus === 'verify'}
+              onClick={() => { setFltQ(''); setFltStatus('verify'); setPeriodicFocus('verify'); }}>
+              <span className="erp-q-label">{t('maint.awaitingVerifyKpi', 'Awaiting verification')}</span>
+              <span className="erp-q-n">{awaitingVerify}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={periodicFocus === 'overdue'} data-hot={overdue > 0 ? 'true' : undefined}
+              onClick={() => { setFltQ(''); setFltStatus('all'); setPeriodicFocus('overdue'); }}>
+              <span className="erp-q-label">{t('maint.overdue')}</span>
+              <span className="erp-q-n">{overdue}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={periodicFocus === 'upcoming'}
+              onClick={() => { setFltQ(''); setFltStatus('all'); setPeriodicFocus('upcoming'); }}>
+              <span className="erp-q-label">{t('maint.upcomingListTitle', 'Upcoming')}</span>
+              <span className="erp-q-n">{upcomingSort.sorted.length}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={periodicFocus === 'completed'}
+              onClick={() => { setFltQ(''); setFltStatus('all'); setPeriodicFocus('completed'); }}>
+              <span className="erp-q-label">{t('maint.completedMtd')}</span>
+              <span className="erp-q-n">{closedPeriodicMTD}</span>
+            </button>
           </div>
 
           <FilterBar
@@ -3403,6 +4167,7 @@ export function Maintenance() {
             <FilterSelect icon={<Activity />} value={fltStatus} onChange={setFltStatus} options={statusFilterOptions} />
           </FilterBar>
 
+          {periodicFocus === 'today' && (
           <div ref={dueTodayRef}>
           <SectionCard
             flush
@@ -3429,8 +4194,39 @@ export function Maintenance() {
             <TablePaginationV2 controls={dueTodayPg.controls} label={t('maint.tasksNoun')} />
           </SectionCard>
           </div>
+          )}
 
-          <div ref={overdueRef} className="mt-4">
+          {periodicFocus === 'verify' && (
+          <div ref={verifyRef}>
+          <SectionCard
+            flush
+            title={t('maint.awaitingVerifyListTitle', 'Awaiting Unit Head verification')}
+            subtitle={`${t('maint.awaitingVerifyListSub', 'Technical submitted — next due advances after Unit Head verifies.')} · ${dueScopeLabel}`}
+          >
+            <div className="overflow-x-auto scroll-x">
+              <table className="dt2">
+                <thead>
+                  <tr>
+                    <Th sortKey="task" s={verifySort}>{t('maint.colTask')}</Th><Th sortKey="equipment" s={verifySort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={verifySort}>{t('common.plant')}</Th><Th sortKey="frequency" s={verifySort}>{t('maint.colFrequency')}</Th>
+                    <Th sortKey="lastDone" s={verifySort} firstDir="desc">{t('maint.colLastDone')}</Th><Th sortKey="due" s={verifySort} firstDir="desc">{t('maint.colNextDue')}</Th><th>{t('maint.colStatus')}</th>
+                    {(canMarkDaily || canMarkPeriodicComplete || isUnitHead || isAdmin) && <th>{t('maint.colAction')}</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {verifySort.sorted.length === 0 && (
+                    <tr><td colSpan={8} className="text-center text-slate-400 py-6 text-sm">{t('maint.noAwaitingVerify', 'Nothing waiting on Unit Head')}</td></tr>
+                  )}
+                  {periodicScheduleRows(verifyPg.pageRows)}
+                </tbody>
+              </table>
+            </div>
+            <TablePaginationV2 controls={verifyPg.controls} label={t('maint.tasksNoun')} />
+          </SectionCard>
+          </div>
+          )}
+
+          {periodicFocus === 'overdue' && (
+          <div ref={overdueRef}>
           <SectionCard
             flush
             title={t('maint.overdueListTitle', 'Overdue')}
@@ -3456,39 +4252,14 @@ export function Maintenance() {
             <TablePaginationV2 controls={overduePg.controls} label={t('maint.tasksNoun')} />
           </SectionCard>
           </div>
+          )}
 
-          <div ref={weeklyRef} className="mt-4">
-          <SectionCard
-            flush
-            title={t('maint.weeklyListTitle', 'Weekly list')}
-            subtitle={t('maint.weeklyListSub', 'Weekly checks due in the next 7 days — always visible, not only on the due day.')}
-          >
-            <div className="overflow-x-auto scroll-x">
-              <table className="dt2">
-                <thead>
-                  <tr>
-                    <Th sortKey="task" s={weeklyListSort}>{t('maint.colTask')}</Th><Th sortKey="equipment" s={weeklyListSort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={weeklyListSort}>{t('common.plant')}</Th><Th sortKey="frequency" s={weeklyListSort}>{t('maint.colFrequency')}</Th>
-                    <Th sortKey="lastDone" s={weeklyListSort} firstDir="desc">{t('maint.colLastDone')}</Th><Th sortKey="due" s={weeklyListSort} firstDir="desc">{t('maint.colNextDue')}</Th><th>{t('maint.colStatus')}</th>
-                    {(canMarkDaily || canMarkPeriodicComplete || isUnitHead || isAdmin) && <th>{t('maint.colAction')}</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {weeklyListSort.sorted.length === 0 && (
-                    <tr><td colSpan={8} className="text-center text-slate-400 py-6 text-sm">{t('maint.noWeeklyDue', 'No weekly checks due this week')}</td></tr>
-                  )}
-                  {periodicScheduleRows(weeklyListPg.pageRows)}
-                </tbody>
-              </table>
-            </div>
-            <TablePaginationV2 controls={weeklyListPg.controls} label={t('maint.tasksNoun')} />
-          </SectionCard>
-          </div>
-
-          <div ref={upcomingRef} className="mt-4">
+          {periodicFocus === 'upcoming' && (
+          <div ref={upcomingRef}>
           <SectionCard
             flush
             title={t('maint.upcomingListTitle', 'Upcoming')}
-            subtitle={t('maint.upcomingListSub', 'Date sheet — due in 8–30 days. Missed items move to Overdue.')}
+            subtitle={t('maint.upcomingListSub', 'All frequencies due in the next 1–30 days. Frequency is shown on each row. Missed items move to Overdue.')}
           >
             <div className="overflow-x-auto scroll-x">
               <table className="dt2">
@@ -3510,31 +4281,73 @@ export function Maintenance() {
             <TablePaginationV2 controls={upcomingPg.controls} label={t('maint.tasksNoun')} />
           </SectionCard>
           </div>
+          )}
+
+          {periodicFocus === 'completed' && (
+          <div ref={completedRef}>
+          <SectionCard
+            flush
+            title={t('maint.completedMtdListTitle', 'Completed this month')}
+            subtitle={`${t('maint.completedMtdListSub', 'Periodic tasks the unit head verified since the 1st. Newest first.')} · ${dueScopeLabel}`}
+          >
+            <div className="overflow-x-auto scroll-x">
+              <table className="dt2">
+                <thead>
+                  <tr>
+                    <Th sortKey="task" s={completedMtdSort}>{t('maint.colTask')}</Th>
+                    <Th sortKey="equipment" s={completedMtdSort}>{t('maint.colEquipment')}</Th>
+                    <Th sortKey="plant" s={completedMtdSort}>{t('common.plant')}</Th>
+                    <Th sortKey="by" s={completedMtdSort}>{t('maint.colCompletedBy', 'Completed by')}</Th>
+                    <Th sortKey="closed" s={completedMtdSort} firstDir="desc">{t('maint.colCompletedAt', 'Completed')}</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {completedMtdSort.sorted.length === 0 && (
+                    <tr><td colSpan={5} className="text-center text-slate-400 py-6 text-sm">{t('maint.noCompletedMtd', 'Nothing completed this month')}</td></tr>
+                  )}
+                  {completedMtdPg.pageRows.map(tk => (
+                    <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
+                      <td className="font-semibold text-slate-700">{tk.title}</td>
+                      <td className="text-slate-600">{shownName(tk.equipment, tk.far_asset_id)}</td>
+                      <td className="text-slate-500 text-xs">{displayLocationName(tk.plants?.name) || '—'}</td>
+                      <td className="text-slate-600 text-xs">{tk.closed_by || tk.verified_by || '—'}</td>
+                      <td className="text-xs font-bold text-slate-800">{fmtDT(tk.closed_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TablePaginationV2 controls={completedMtdPg.controls} label={t('maint.tasksNoun')} />
+          </SectionCard>
+          </div>
+          )}
         </>
       )}
 
       {/* ── EMERGENCY TAB ─────────────────────────────────────────────────── */}
       {tab === 'emergency' && (
         <>
-          <div className="grid grid-cols-12 gap-4 mb-4">
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
-              label={t('maint.openTickets')} value={openEmergency}
-              caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
-              onView={() => setFltStatus('all')}
-              viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
-              label={t('maint.pendingStoreApproval')} value={pendingStore}
-              onView={() => setFltStatus('pending_store')}
-              viewLabel={t('maint.viewPendingStore', 'See store queue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
-              label={t('maint.purchaseHandover')} value={pendingPurchase}
-              onView={() => setFltStatus('pending_purchase')}
-              viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
-            <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
-              label={t('maint.closedMtd')} value={closedMTD}
-              caption={t('maint.completedThisMonth')}
-              onView={() => setFltStatus('closed')}
-              viewLabel={t('maint.viewClosed', 'See closed')} />
+          <div className="erp-query" role="tablist" aria-label={t('maint.emergency')}>
+            <button type="button" role="tab" aria-pressed={fltStatus === 'open'} data-hot={openEmergency > 0 ? 'true' : undefined}
+              onClick={() => { setFltQ(''); setFltStatus('open'); }}>
+              <span className="erp-q-label">{t('maint.openTickets')}</span>
+              <span className="erp-q-n">{openEmergency}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={fltStatus === 'store_queue'}
+              onClick={() => { setFltQ(''); setFltStatus('store_queue'); }}>
+              <span className="erp-q-label">{t('maint.pendingStoreApproval')}</span>
+              <span className="erp-q-n">{pendingStore}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={fltStatus === 'purchase_queue'}
+              onClick={() => { setFltQ(''); setFltStatus('purchase_queue'); }}>
+              <span className="erp-q-label">{t('maint.purchaseHandover')}</span>
+              <span className="erp-q-n">{pendingPurchase}</span>
+            </button>
+            <button type="button" role="tab" aria-pressed={fltStatus === 'closed_mtd'}
+              onClick={() => { setFltQ(''); setFltStatus('closed_mtd'); }}>
+              <span className="erp-q-label">{t('maint.closedMtd')}</span>
+              <span className="erp-q-n">{closedMTD}</span>
+            </button>
           </div>
 
           <FilterBar
@@ -3552,7 +4365,7 @@ export function Maintenance() {
             subtitle={t('maint.emergencySub')}
             actions={
               <>
-                {isAdmin && emergencyTickets.length > 0 && (
+                {canDeleteTickets && emergencyTickets.length > 0 && (
                   <ButtonV2 variant="outline" icon={<Trash2 />} onClick={handleDeleteAllEmergency} disabled={deletingAll} className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300">
                     {deletingAll ? t('maint.deleting') : t('maint.deleteAll', { count: emergencyTickets.length })}
                   </ButtonV2>
@@ -3574,23 +4387,27 @@ export function Maintenance() {
                   <tr>
                     <Th sortKey="ticket" s={emergencySort}>{t('maint.colTicketNo')}</Th><Th sortKey="equipment" s={emergencySort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={emergencySort}>{t('common.plant')}</Th><Th sortKey="issue" s={emergencySort}>{t('maint.colIssue')}</Th>
                     <Th sortKey="status" s={emergencySort}>{t('maint.colStatus')}</Th><Th sortKey="raisedBy" s={emergencySort}>{t('maint.colRaisedBy')}</Th><Th sortKey="created" s={emergencySort} firstDir="desc">{t('maint.colCreated')}</Th>
-                    {isAdmin && <th></th>}
+                    {canDeleteTickets && <th></th>}
                   </tr>
                 </thead>
                 <tbody>
                   {emergencySort.sorted.length === 0 && (
-                    <tr><td colSpan={isAdmin ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noEmergencyTickets')}</td></tr>
+                    <tr><td colSpan={canDeleteTickets ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noEmergencyTickets')}</td></tr>
                   )}
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} style={{ cursor: 'pointer' }}>
-                      <td className="font-mono text-xs text-slate-400">{tk.id.slice(0, 8)}</td>
-                      <td className="font-semibold">{tk.equipment}</td>
-                      <td>{tk.plants?.name || '—'}</td>
+                      <td className="font-mono text-xs font-semibold text-slate-700">{tk.ticket_no || tk.id.slice(0, 8)}</td>
+                      <td className="font-semibold">
+                        {shownName(tk.equipment, tk.far_asset_id)}
+                        {tk.material_kind === 'spare' && <div style={{ fontSize: 10, fontWeight: 700, color: '#0369A1' }}>{t('maint.materialSpare')}</div>}
+                        {tk.material_kind === 'consumable' && <div style={{ fontSize: 10, fontWeight: 700, color: '#B45309' }}>{t('maint.materialConsumable')}</div>}
+                      </td>
+                      <td>{displayLocationName(tk.plants?.name) || '—'}</td>
                       <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
                       <td>{statusBadge(tk.status, t)}</td>
                       <td className="text-slate-500 text-xs">{tk.raised_by || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(tk.created_at)}</td>
-                      {isAdmin && (
+                      {canDeleteTickets && (
                         <td>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteTicket(tk); }}
@@ -3610,14 +4427,16 @@ export function Maintenance() {
       )}
 
       {/* ── SCHEDULE SETUP TAB ─────────────────────────────────────────────── */}
-      {tab === 'schedule' && !isTechnician && !isStoreManager && (
+      {tab === 'schedule' && showScheduleSetup && (
         <SectionCard
           flush
           title={t('maint.schedulesTitle')}
           subtitle={t('maint.schedulesSub')}
-          actions={(isAdmin || isUnitHead) && (
+          actions={canManageScheduleSetup && (
             <>
-              <ButtonV2 variant="outline" icon={<Upload />} onClick={() => setShowPMImport(true)}>{t('maint.importPmWorkbook', 'Import PM workbook')}</ButtonV2>
+              {(isAdmin || isUnitHead) && (
+                <ButtonV2 variant="outline" icon={<Upload />} onClick={() => setShowPMImport(true)}>{t('maint.importPmWorkbook', 'Import PM workbook')}</ButtonV2>
+              )}
               <ButtonV2 variant="accent" icon={<Plus />} onClick={openAddSchedule}>
                 {t('maint.addSchedule')}
               </ButtonV2>
@@ -3654,18 +4473,26 @@ export function Maintenance() {
               {schedPlantFilter.length > 1 && <span style={{ fontSize: 11, color: '#94A3B8', alignSelf: 'center' }}>{t('maint.combined', 'combined')}</span>}
             </div>
           )}
+          <div className="px-5 mb-3">
+            <input
+              value={schedQ}
+              onChange={e => setSchedQ(e.target.value)}
+              placeholder={t('maint.scheduleSearch', 'Search schedules by task, equipment, plant or person')}
+              style={{ width: '100%', maxWidth: 420, border: '1px solid #E2E8F0', borderRadius: 8, padding: '8px 10px', font: 'inherit', fontSize: 13 }}
+            />
+          </div>
           <div className="overflow-x-auto scroll-x">
             <table className="dt2">
               <thead>
                 <tr>
                   <Th sortKey="task" s={scheduleSort}>{t('maint.colTaskTitle')}</Th><Th sortKey="equipment" s={scheduleSort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={scheduleSort}>{t('common.plant')}</Th><Th sortKey="frequency" s={scheduleSort}>{t('maint.colFrequency')}</Th>
                   <Th sortKey="assignedTo" s={scheduleSort}>{t('maint.colAssignedTo')}</Th><Th sortKey="due" s={scheduleSort} firstDir="desc">{t('maint.colNextDue')}</Th><Th sortKey="status" s={scheduleSort}>{t('maint.colStatus')}</Th>
-                  {(isAdmin || isUnitHead) && <th>{t('maint.colActions')}</th>}
+                  {canManageScheduleSetup && <th>{t('maint.colActions')}</th>}
                 </tr>
               </thead>
               <tbody>
                 {shownSchedules.length === 0 && (
-                  <tr><td colSpan={(isAdmin || isUnitHead) ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noSchedulesDefined')}</td></tr>
+                  <tr><td colSpan={canManageScheduleSetup ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noSchedulesDefined')}</td></tr>
                 )}
                 {schedulePg.pageRows.map(s => {
                   const due = dueDateLabel(daysFromNow(s.next_due_at), t);
@@ -3673,17 +4500,18 @@ export function Maintenance() {
                   return (
                     <tr key={s.id} style={paused ? { opacity: 0.6 } : undefined}>
                       <td className="font-semibold">{s.title}</td>
-                      <td>{s.equipment}</td>
-                      <td>{s.plants?.name || '—'}</td>
+                      <td>{shownName(s.equipment, s.far_asset_id, s.equipment_mark)}</td>
+                      <td>{displayLocationName(s.plants?.name) || '—'}</td>
                       <td>{t('maint.freq_' + s.frequency, FREQ_LABEL[s.frequency] || s.frequency)}</td>
                       <td>{s.assigned_to || <span className="text-slate-400">{t('maint.unassigned')}</span>}</td>
                       <td style={{ color: paused ? '#94A3B8' : due.color, fontWeight: 600 }}>{paused ? t('maint.paused') : due.text}</td>
                       <td><span className="badge" style={{ background: s.is_active ? '#DCFCE7' : '#F1F5F9', color: s.is_active ? '#16A34A' : '#94A3B8' }}>{s.is_active ? t('maint.active') : t('maint.paused')}</span></td>
-                      {(isAdmin || isUnitHead) && (
+                      {canManageScheduleSetup && (
                         <td>
                           <ScheduleRowMenu
                             isActive={s.is_active}
                             deleting={deletingScheduleId === s.id}
+                            canAdminActions={canManageScheduleSetup}
                             onRevise={() => openEditSchedule(s)}
                             onToggle={() => toggleScheduleActive(s)}
                             onDuplicate={() => openDuplicateSchedule(s)}
@@ -3701,21 +4529,40 @@ export function Maintenance() {
         </SectionCard>
       )}
 
+      {tab === 'incidents' && (
+        <IncidentReports plants={dbPlants} reporter={activeProfile.name} reporterRole={role} focusId={searchParams.get('incident')} />
+      )}
+
       </>
       )}
 
       {/* ── PANEL: Raise ticket ──────────────────────────────────────────── */}
-      <SlidePanel open={showRaisePanel} onClose={() => { setShowRaisePanel(false); setRaiseSaved(false); }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
-        <PanelField label={t('maint.equipmentAsset')}>
-          <FarEquipField
-            value={raiseForm.equipment}
-            assets={raiseFarAssets}
-            onChange={v => setRaiseForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
-            onPick={a => setRaiseForm(f => ({ ...f, farAssetId: a?.id ?? '', equipmentMark: a?.identification_mark ?? '', plant: a?.plant_id ?? f.plant }))}
-          />
-          {raiseForm.equipment.trim().length > 1 && (raiseForm.farAssetId
-            ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{raiseForm.equipmentMark ? ` · ${raiseForm.equipmentMark}` : ''}.</div>
-            : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{t('maint.manualEntryNotInFar', '✎ Manual entry — not in the FAR (allowed; the notification flags it).')}</div>)}
+      <SlidePanel open={showRaisePanel} onClose={() => {
+        setShowRaisePanel(false); setRaiseSaved(false);
+        const back = openedFromRef.current;
+        if (back && !selectedTicket) { openedFromRef.current = null; navigate(back); }
+      }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
+        <PanelField label={t('maint.materialKind', 'Material')}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {(['spare', 'consumable'] as const).map(kind => {
+              const on = raiseForm.materialKind === kind;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => setRaiseForm(f => ({ ...f, materialKind: kind, equipment: '', farAssetId: '', equipmentMark: '' }))}
+                  style={{
+                    padding: '10px 8px', borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+                    border: on ? '1.5px solid #0F172A' : '1px solid #E2E8F0',
+                    background: on ? '#0F172A' : '#fff',
+                    color: on ? '#fff' : '#334155',
+                  }}
+                >
+                  {kind === 'spare' ? t('maint.materialSpare') : t('maint.materialConsumable')}
+                </button>
+              );
+            })}
+          </div>
         </PanelField>
         {/* No procurement-unit selector.
             Chlorides and Plasticiser were sub-units of a single 'Rehla' plant,
@@ -3724,37 +4571,99 @@ export function Maintenance() {
             so picking a factory already says which unit it is. Asking again was
             asking the same question twice. */}
         <PanelField label={t('common.plant')}>
-          <PanelSelect value={raiseForm.plant} onChange={e => setRaiseForm(f => ({ ...f, plant: e.target.value, unit: '' }))}>
+          <PanelSelect value={raiseForm.plant} onChange={e => {
+            const plant = e.target.value;
+            setRaiseForm(f => {
+              const asset = farAssets.find(a => a.id === f.farAssetId);
+              const stillHere = !!asset && asset.plant_id === plant;
+              return {
+                ...f,
+                plant,
+                unit: '',
+                ...(f.materialKind === 'spare' && !stillHere ? { equipment: '', farAssetId: '', equipmentMark: '' } : {}),
+              };
+            });
+          }}>
             <option value="">{t('maint.selectPlant')}</option>
-            {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
           </PanelSelect>
         </PanelField>
+        {raiseForm.materialKind === 'spare' && (
+          <PanelField label={t('maint.equipmentAsset')}>
+            <FarEquipField
+              value={raiseForm.equipment}
+              assets={raiseFarAssets}
+              onChange={v => setRaiseForm(f => ({ ...f, equipment: v, farAssetId: '', equipmentMark: '' }))}
+              onPick={a => setRaiseForm(f => ({ ...f, farAssetId: a?.id ?? '', equipmentMark: a?.identification_mark ?? '', plant: a?.plant_id ?? f.plant }))}
+            />
+            {raiseForm.farAssetId
+              ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToFarAsset', '✓ Linked to FAR asset')}{raiseForm.equipmentMark ? ` · ${raiseForm.equipmentMark}` : ''}.</div>
+              : <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>{raiseForm.plant ? t('maint.sparePickHint') : t('maint.spareNeedPlant')}</div>}
+          </PanelField>
+        )}
+        {raiseForm.materialKind === 'consumable' && (
+          <PanelField label={t('maint.consumableLabel', 'Material *')}>
+            <PanelInput
+              value={raiseForm.equipment}
+              placeholder={t('maint.consumablePlaceholder', 'Write the consumable')}
+              onChange={e => setRaiseForm(f => ({ ...f, equipment: e.target.value, farAssetId: '', equipmentMark: '' }))}
+            />
+            {(() => {
+              const hit = consumableFarMatch(raiseForm.equipment, farAssets);
+              if (!hit) return null;
+              const markBit = !isPlaceholderMark(hit.identification_mark) && hit.identification_mark ? ` (${hit.identification_mark})` : '';
+              return (
+                <div style={{ marginTop: 8, background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 12, color: '#92400E', fontWeight: 650 }}>{t('maint.consumableFarFlag', { name: `${hit.name}${markBit}`, defaultValue: 'This matches FAR asset {{name}}. It belongs under Material Spare.' })}</div>
+                  <button
+                    type="button"
+                    onClick={() => setRaiseForm(f => ({
+                      ...f,
+                      materialKind: 'spare',
+                      equipment: `${hit.name}${markBit}`,
+                      farAssetId: hit.id,
+                      equipmentMark: hit.identification_mark || '',
+                      plant: hit.plant_id || f.plant,
+                    }))}
+                    style={{ marginTop: 6, border: 'none', background: 'transparent', color: '#0F172A', fontWeight: 700, fontSize: 12, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+                  >
+                    {t('maint.useAsSpare', 'Raise as Material Spare')}
+                  </button>
+                </div>
+              );
+            })()}
+          </PanelField>
+        )}
         <PanelField label={t('maint.issueDescription')}>
           <PanelTextarea value={raiseForm.description} onChange={e => setRaiseForm(f => ({ ...f, description: e.target.value }))} placeholder={t('maint.issuePlaceholder')} />
         </PanelField>
         <PanelField label={t('maint.initialAssessment')}>
-          <PanelSelect value={raiseForm.assessment} onChange={e => setRaiseForm(f => ({ ...f, assessment: e.target.value }))}>
-            <option value="repairable">{t('maint.canRepair')}</option>
-            <option value="needs_part">{t('maint.needPart')}</option>
-          </PanelSelect>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', padding: '8px 0' }}>{t('maint.needPart')}</div>
+          <div style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, padding: '8px 10px' }}>
+            In-house repair is written in the incident report (who, what, when, where, how, and the solution). A ticket always asks the store for a part.
+          </div>
         </PanelField>
-        <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
+        <PhotoUploader onBlobReady={setRaisePhotoBlob} onBlobsReady={setRaisePhotoBlobs} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
         {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
-        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={!raiseForm.equipment.trim() || raising} requiredHint={t('maint.raiseRequiredHint')} />
+        <PanelFooter saved={raiseSaved} onCancel={() => {
+          setShowRaisePanel(false);
+          const back = openedFromRef.current;
+          if (back && !selectedTicket) { openedFromRef.current = null; navigate(back); }
+        }} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={raising || (raiseForm.materialKind === 'spare' ? !raiseForm.farAssetId : raiseForm.materialKind === 'consumable' ? !raiseForm.equipment.trim() : true)} requiredHint={raiseForm.materialKind === 'spare' ? t('maint.spareNeedPick') : raiseForm.materialKind === 'consumable' ? t('maint.raiseRequiredHint') : t('maint.chooseMaterialKind')} />
       </SlidePanel>
 
       {/* ── PANEL: Complete periodic ─────────────────────────────────────── */}
-      <SlidePanel open={!!completingSchedule} onClose={() => { setCompletingSchedule(null); setCompletionBlob(null); setCompletionNotes(''); }} title={t('maint.markMaintenanceComplete', 'Mark maintenance complete')} subtitle={completingSchedule?.title || t('maint.periodicMaintenanceSub', 'Periodic · Maintenance')} locked={uploading}>
+      <SlidePanel open={!!completingSchedule} onClose={() => { setCompletingSchedule(null); setCompletionBlob(null); setCompletionBlobs([]); setCompletionNotes(''); }} title={t('maint.markMaintenanceComplete', 'Mark maintenance complete')} subtitle={completingSchedule?.title || t('maint.periodicMaintenanceSub', 'Periodic · Maintenance')} locked={uploading}>
         {completingSchedule && (
           <>
-            {(() => { const ra = completingSchedule.requires_approval ?? (completingSchedule.frequency !== 'daily'); const doneN = completionChecklist.filter(c => c.done).length; return (
+            {(() => { const doneN = completionChecklist.filter(c => c.done).length; return (
             <>
             <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{completingSchedule.equipment}</div>
-              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('maint.freqMaintenanceLine', { defaultValue: '{{freq}} maintenance', freq: t('maint.freq_' + completingSchedule.frequency, FREQ_LABEL[completingSchedule.frequency] || completingSchedule.frequency) })} · {completingSchedule.plants?.name || '—'}</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{shownName(completingSchedule.equipment, completingSchedule.far_asset_id, completingSchedule.equipment_mark)}</div>
+              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{t('maint.freqMaintenanceLine', { defaultValue: '{{freq}} maintenance', freq: t('maint.freq_' + completingSchedule.frequency, FREQ_LABEL[completingSchedule.frequency] || completingSchedule.frequency) })} · {displayLocationName(completingSchedule.plants?.name) || '—'}</div>
               {completingSchedule.description && <div style={{ fontSize: 12, color: '#475569', marginTop: 6 }}>{completingSchedule.description}</div>}
-              <div style={{ fontSize: 11.5, color: ra ? '#B45309' : '#16A34A', marginTop: 6, fontWeight: 600 }}>{ra ? t('maint.needsUnitHeadVerification', '🔎 Needs unit-head verification after you submit.') : t('maint.dailyTaskAutoCloses', '✓ Daily task — closes automatically on submit.')}</div>
+              <div style={{ fontSize: 11.5, color: '#B45309', marginTop: 6, fontWeight: 600 }}>{t('maint.needsUnitHeadVerification', '🔎 Needs unit-head verification after you submit.')}</div>
             </div>
             {/* Checklist — technician ticks off each checkpoint */}
             {completionChecklist.length > 0 && (
@@ -3791,10 +4700,11 @@ export function Maintenance() {
                 placeholder={t('maint.completionNotesPlaceholder', 'Anything to note — issues found, parts used, follow-up needed. Type @ to tag someone.')}
               />
             </PanelField>
-            <PhotoUploader onBlobReady={setCompletionBlob} label={t('maint.uploadCompletionPhoto', 'Upload completion photo *')} hint={t('maint.uploadCompletionPhotoHint', 'Photo of the completed maintenance work as proof')} />
+            <PhotoUploader onBlobReady={setCompletionBlob} onBlobsReady={setCompletionBlobs} label={t('maint.uploadCompletionPhoto', 'Upload completion photo *')} hint={t('maint.uploadCompletionPhotoHint', 'Photo of the completed maintenance work as proof')} />
             {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
+            {renderPreviousCompletions(completingSchedule.id, '')}
             <PanelDivider />
-            <PanelFooter saved={false} onCancel={() => { setCompletingSchedule(null); setCompletionBlob(null); setCompletionNotes(''); setOverdueReason(''); }} onSave={handleCompletePeriodicTicket} saveLabel={uploading ? t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct }) : (ra ? t('maint.submitForVerification', 'Submit for verification') : t('maint.submitAndClose', 'Submit & close'))} successLabel={ra ? t('maint.sentForVerification', 'Sent for verification') : t('maint.ticketClosed', 'Ticket closed')} successSub={ra ? t('maint.unitHeadNotifiedToVerify', 'Unit head notified to verify') : t('maint.nextDueDateUpdated', 'Next due date updated')} disabled={!completionBlob || uploading || (!!completingSchedule && daysFromNow(completingSchedule.next_due_at) !== null && daysFromNow(completingSchedule.next_due_at)! < 0 && !overdueReason.trim())} requiredHint={completingSchedule && daysFromNow(completingSchedule.next_due_at) !== null && daysFromNow(completingSchedule.next_due_at)! < 0 ? t('maint.overdueReasonRequired', 'Enter why this was not completed on the due date.') : t('maint.uploadPhotoToConfirm', 'Upload a photo to confirm completion')} />
+            <PanelFooter saved={false} onCancel={() => { setCompletingSchedule(null); setCompletionBlob(null); setCompletionBlobs([]); setCompletionNotes(''); setOverdueReason(''); }} onSave={handleCompletePeriodicTicket} saveLabel={uploading ? t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct }) : t('maint.submitForVerification', 'Submit for verification')} successLabel={t('maint.sentForVerification', 'Sent for verification')} successSub={t('maint.unitHeadNotifiedToVerify', 'Unit head notified to verify')} disabled={!completionBlob || uploading || (!!completingSchedule && daysFromNow(completingSchedule.next_due_at) !== null && daysFromNow(completingSchedule.next_due_at)! < 0 && !overdueReason.trim())} requiredHint={completingSchedule && daysFromNow(completingSchedule.next_due_at) !== null && daysFromNow(completingSchedule.next_due_at)! < 0 ? t('maint.overdueReasonRequired', 'Enter why this was not completed on the due date.') : t('maint.uploadPhotoToConfirm', 'Upload a photo to confirm completion')} />
             </>
             ); })()}
           </>
@@ -3803,67 +4713,42 @@ export function Maintenance() {
 
       {/* ── PANEL: Verify periodic (unit head) ───────────────────────────── */}
       <SlidePanel open={!!verifyingTicket} onClose={() => setVerifyingTicket(null)} title={t('maint.verifyMaintenance', 'Verify maintenance')} subtitle={verifyingTicket?.equipment || t('maint.periodicVerificationSub', 'Periodic · Verification')}>
-        {verifyingTicket && (
-          <>
-            <div style={{ background: '#F1F5F9', border: '1px solid #DDD6FE', borderRadius: 12, padding: 14, marginBottom: 16 }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{verifyingTicket.title}</div>
-              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{verifyingTicket.equipment} · {verifyingTicket.plants?.name || '—'} · {t('maint.completedBy', { defaultValue: 'completed by {{name}}', name: verifyingTicket.assigned_to || '—' })}</div>
-            </div>
-            {Array.isArray(verifyingTicket.checklist) && verifyingTicket.checklist.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginBottom: 6 }}>{t('maint.checkpointsReported', 'Checkpoints reported')}</div>
-                <div style={{ border: '1px solid #E2E8F0', borderRadius: 10, maxHeight: 220, overflowY: 'auto' }}>
-                  {verifyingTicket.checklist.map((c, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '8px 12px', borderBottom: i < verifyingTicket.checklist!.length - 1 ? '1px solid #F1F5F9' : 'none' }}>
-                      <span style={{ color: c.done ? '#16A34A' : '#CBD5E1', fontWeight: 800 }}>{c.done ? '✓' : '○'}</span>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#334155' }}>{c.component}</span>
-                      {c.activity && <span style={{ fontSize: 11.5, color: '#94A3B8' }}> · {c.activity}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {verifyingTicket.description && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginBottom: 6 }}>{t('maint.completionNotes', 'Notes')}</div>
-                <div style={{ fontSize: 13, color: '#334155', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '10px 12px', whiteSpace: 'pre-wrap' }}>{verifyingTicket.description}</div>
-              </div>
-            )}
-            {verifyingTicket.completion_photo_url && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', marginBottom: 6 }}>{t('maint.completionPhoto', 'Completion photo')}</div>
-                <a href={verifyingTicket.completion_photo_url} target="_blank" rel="noreferrer"><img src={verifyingTicket.completion_photo_url} alt="Completion" style={{ width: '100%', borderRadius: 10, border: '1px solid #E2E8F0' }} /></a>
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => verifyPeriodicTicket(verifyingTicket, false)} style={{ flex: 1, padding: '11px', borderRadius: 12, border: '1px solid #FCA5A5', background: '#FEF2F2', color: '#DC2626', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>{t('maint.sendBack', '↩ Send back')}</button>
-              <button onClick={() => verifyPeriodicTicket(verifyingTicket, true)} style={{ flex: 2, padding: '11px', borderRadius: 12, border: 'none', background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>{t('maint.verifyAndClose', '✓ Verify & close')}</button>
-            </div>
-          </>
-        )}
+        {verifyingTicket && renderPeriodicCompletion(verifyingTicket)}
       </SlidePanel>
 
       {/* ── PANEL: Ticket detail ─────────────────────────────────────────── */}
       <SlidePanel
         open={!!selectedTicket}
-        onClose={() => { setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
-        title={selectedTicket?.equipment || t('maint.ticketDetail', 'Ticket detail')}
-        subtitle={`${t('maint.emergency')} · ${selectedTicket?.plants?.name || t('nav.maintenance')}`}
+        onClose={() => {
+          const back = openedFromRef.current;
+          openedFromRef.current = null;
+          setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setTicketMenu(false); setScrapNotes(''); setScrapConfirm(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setCompletionBlobs([]); setDefectiveBlob(null); setDefectiveBlobs([]); setHandoverInvoiceBlob(null); setHandoverInvoiceBlobs([]); setHandoverPhotoBlob(null); setHandoverPhotoBlobs([]); setDispatchBlob(null); setRaisePhotoBlob(null); setRaisePhotoBlobs([]); setResubmitPhotoBlobs([]); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason('');
+          if (back) navigate(back);
+        }}
+        title={selectedTicket ? shownName(selectedTicket.equipment, selectedTicket.far_asset_id) : t('maint.ticketDetail', 'Ticket detail')}
+        subtitle={selectedTicket
+          ? `${selectedTicket.type === 'periodic' ? t('maint.periodic', 'Periodic') : t('maint.emergency')} · ${displayLocationName(selectedTicket.plants?.name) || t('nav.maintenance')}`
+          : t('nav.maintenance')}
         locked={uploading}
       >
-        {selectedTicket && (
+        {selectedTicket?.type === 'periodic' && renderPeriodicCompletion(selectedTicket)}
+        {selectedTicket && selectedTicket.type !== 'periodic' && (
           <>
             <StageStrip
               status={selectedTicket.status === 'changes_requested' ? 'open' : selectedTicket.status}
               stages={wfStages}
               labels={wfLabels}
-              onStageClick={(s) => setViewStage((cur) => cur === s ? null : s)}
+              onStageClick={(s) => setViewStage(s)}
               activeStage={viewStage}
               statusNote={selectedTicket.status === 'changes_requested'
                 ? t('maint.requestedChangesMarkup', 'Requested changes')
                 : null}
             />
-            {viewStage && renderStageDetail(viewStage)}
+            {renderStageDetail(
+              viewStage || (wfStages.includes(selectedTicket.status === 'changes_requested' ? 'open' : selectedTicket.status) ? (selectedTicket.status === 'changes_requested' ? 'open' : selectedTicket.status) : wfStages[0]),
+              stageDetailOpen,
+              () => setStageDetailOpen(o => !o),
+            )}
             {blacklistHit && (
               <div style={{ background: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: '#DC2626', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -3875,26 +4760,101 @@ export function Maintenance() {
                 </div>
               </div>
             )}
-            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
-              <div style={{ fontSize: 12, color: '#64748B', marginBottom: 2 }}>
-                #{selectedTicket.id.slice(0, 8)} · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
-                {selectedTicket.assigned_to && <> · {t('maint.colAssignedTo', 'Assigned to')} {selectedTicket.assigned_to}</>} · {formatDate(selectedTicket.created_at)}
-                {/* Historical only — tickets raised before the units were retired
-                    still record which one they were routed to. Shown so the old
-                    audit trail stays readable; nothing writes it any more. */}
-                {selectedTicket.unit && <> · <span style={{ color: '#A21CAF', fontWeight: 700 }}>{selectedTicket.unit}</span></>}
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{ order: 2, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+                <div style={{ fontSize: 12, color: '#64748B', minWidth: 0 }}>
+                  #{selectedTicket.ticket_no || selectedTicket.id.slice(0, 8)} · {t('maint.colRaisedBy', 'Raised by')} {selectedTicket.raised_by || '—'}
+                  {selectedTicket.assigned_to && <> · {t('maint.colAssignedTo', 'Assigned to')} {selectedTicket.assigned_to}</>}
+                  {selectedTicket.unit && <> · <span style={{ color: '#A21CAF', fontWeight: 700 }}>{selectedTicket.unit}</span></>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
+                  <div style={{ textAlign: 'right', fontSize: 11, lineHeight: 1.45 }}>
+                    <div style={{ color: '#64748B' }}>Raised <strong style={{ color: '#0F172A' }}>{formatDate(selectedTicket.created_at)}</strong></div>
+                    <div style={{ color: '#64748B' }}>Closed <strong style={{ color: selectedTicket.closed_at ? '#0F172A' : '#94A3B8' }}>{selectedTicket.closed_at ? formatDate(selectedTicket.closed_at) : 'Not yet'}</strong></div>
+                  </div>
+                  {!editingTicket && !requestingChanges && !resubmitting && (
+                    <div style={{ position: 'relative' }}>
+                      <button
+                        type="button"
+                        aria-label="Ticket actions"
+                        onClick={() => setTicketMenu(o => !o)}
+                        style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid #E2E8F0', background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <MoreHorizontal size={16} />
+                      </button>
+                      {ticketMenu && (
+                        <>
+                          <div onClick={() => setTicketMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 20 }} />
+                          <div style={{ position: 'absolute', right: 0, top: 36, zIndex: 21, minWidth: 190, background: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, boxShadow: '0 12px 30px rgba(15,23,42,0.12)', padding: 6 }}>
+                            <div style={{ padding: '4px 6px' }}>
+                              <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} />
+                            </div>
+                            {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
+                              <button type="button" onClick={() => { setTicketMenu(false); setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} style={ticketMenuItem('#DC2626')}>{t('maint.requestChangesChip', 'Request changes')}</button>
+                            )}
+                            {canCorrectTicket(selectedTicket) && (
+                              <button type="button" onClick={() => { setTicketMenu(false); startEdit(selectedTicket); }} style={ticketMenuItem('#0F172A')}>
+                                {t('maint.editChip', 'Edit')} · {t('maint.editMinutesLeft', { defaultValue: '{{n}}m left', n: ticketEditMinutesLeft(selectedTicket.created_at) })}
+                              </button>
+                            )}
+                            {canDeleteTickets && <button type="button" onClick={() => { setTicketMenu(false); handleDeleteTicket(selectedTicket); }} style={ticketMenuItem('#DC2626')}>{t('maint.deleteChip', 'Delete')}</button>}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-              {selectedTicket.description && <div style={{ fontSize: 13, color: '#0F172A', marginTop: 4 }}><TicketDescription entityId={selectedTicket.id} text={selectedTicket.description} /></div>}
+              <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                <div>
+                  <div style={ticketFactLabel}>Issue</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', lineHeight: 1.4 }}>
+                    {selectedTicket.description
+                      ? <TicketDescription entityId={selectedTicket.id} text={selectedTicket.description} />
+                      : (selectedTicket.title || 'No issue was written on this ticket.')}
+                  </div>
+                </div>
+                <div>
+                  <div style={ticketFactLabel}>Part issued</div>
+                  <div style={{ fontSize: 13, color: '#0F172A' }}>
+                    {(() => {
+                      const issued = storeReqs.filter(r => r.handover_confirmed_at && r.part_name);
+                      const asked = storeReqs.filter(r => r.part_name);
+                      if (issued.length) return issued.map(r => `${r.part_name}${r.quantity ? ` × ${r.quantity}${r.unit ? ` ${r.unit}` : ''}` : ''}`).join(', ');
+                      if (asked.length) return `None yet. Asked for ${asked.map(r => r.part_name).join(', ')}.`;
+                      return 'None yet.';
+                    })()}
+                  </div>
+                </div>
+                <div>
+                  <div style={ticketFactLabel}>Outcome</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: outcomeColor(selectedTicket.defective_part_decision) }}>
+                    {partDecisionLabel(selectedTicket.defective_part_decision, t) || 'Not decided'}
+                  </div>
+                </div>
+              </div>
               {/* Evidence photos inline. The defect photo the technician attaches at
                   raise time used to live only in the Activity Log, so a reviewer had
                   to leave the ticket to see what actually broke. */}
               {(() => {
                 const shots: LightboxImage[] = [];
-                const add = (url: string | null | undefined, label: string) => { if (url) shots.push({ url, label }); };
-                add(selectedTicket.defective_raise_photo_url, t('maint.reportedDefectPhoto', 'Reported defect'));
-                add(selectedStoreReq?.handover_photo_url, t('maint.partReceivedPhoto', 'Part received photo'));
-                add(selectedTicket.defective_part_photo_url, t('maint.defectivePartPhoto', 'Defective part photo'));
-                add(selectedTicket.completion_photo_url, t('maint.completionPhoto', 'Completion photo'));
+                const seen = new Set<string>();
+                const add = (url: string | null | undefined, label: string) => {
+                  if (!url || seen.has(url)) return;
+                  seen.add(url);
+                  shots.push({ url, label });
+                };
+                const addMany = (urls: string[], label: string) => urls.forEach((url, i) => add(url, urls.length > 1 ? `${label} ${i + 1}` : label));
+                addMany(listedPhotoUrls(selectedTicket.defective_raise_photo_url, selectedTicket.defective_raise_photo_urls), t('maint.reportedDefectPhoto', 'Reported defect'));
+                for (const sr of storeReqs) {
+                  const part = sr.part_name ? ` · ${sr.part_name}` : '';
+                  addMany(listedPhotoUrls(sr.handover_photo_url, sr.handover_photo_urls), `${t('maint.partReceivedPhoto', 'Part received photo')}${part}`);
+                  addMany(listedPhotoUrls(sr.handover_invoice_url, sr.handover_invoice_urls), `${t('maint.billInvoiceCaption', 'Bill / invoice')}${part}`);
+                }
+                addMany(listedPhotoUrls(selectedTicket.defective_part_photo_url, selectedTicket.defective_part_photo_urls), t('maint.defectivePartPhoto', 'Defective part photo'));
+                addMany(listedPhotoUrls(selectedTicket.completion_photo_url, selectedTicket.completion_photo_urls), t('maint.completionPhoto', 'Completion photo'));
+                add(selectedTicket.pm_bill_url, t('maint.supplierBillPmCaption', 'Supplier bill'));
                 if (!shots.length) return null;
                 return (
                   <div style={{ marginTop: 10 }}>
@@ -3920,38 +4880,20 @@ export function Maintenance() {
               })()}
             </div>
 
-            {/* Notes are visible to everyone on the ticket; edit/delete are admin-only.
-                Request Changes lets a reviewer send the ticket back for correction. */}
-            {!editingTicket && !requestingChanges && !resubmitting && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} />
-                {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
-                  <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} className="chip" style={{ color: '#DC2626' }}>{t('maint.requestChangesChip', '↩ Request Changes')}</button>
-                )}
-                {isAdmin && <button onClick={() => startEdit(selectedTicket)} className="chip">{t('maint.editChip', '✎ Edit')}</button>}
-                {isAdmin && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
-              </div>
-            )}
-
+            <div style={{ order: 1, marginBottom: 16 }}>
             {editingTicket ? (
               <div style={{ border: '1px solid #E2E8F0', borderRadius: 14, padding: 16 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>{t('maint.editTicketAdmin', 'Edit ticket (admin)')}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{t('maint.editTicketWindow', 'Correct this ticket')}</div>
+                <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>{t('maint.editTicketWindowHint', { defaultValue: 'Mistakes can be fixed for 1 hour after raising. {{n}} min left.', n: ticketEditMinutesLeft(selectedTicket.created_at) })}</div>
                 <PanelField label={t('maint.equipmentAssetPlain', 'Equipment / asset')}>
                   <PanelInput value={editForm.equipment} onChange={e => setEditForm(f => ({ ...f, equipment: e.target.value }))} />
                 </PanelField>
-                <PanelRow>
-                  <PanelField label={t('common.plant')}>
-                    <PanelSelect value={editForm.plant} onChange={e => setEditForm(f => ({ ...f, plant: e.target.value }))}>
-                      <option value="">{t('maint.selectPlant')}</option>
-                      {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </PanelSelect>
-                  </PanelField>
-                  <PanelField label={t('maint.colStatus')}>
-                    <PanelSelect value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
-                      {Object.keys(STATUS_CFG).map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-                    </PanelSelect>
-                  </PanelField>
-                </PanelRow>
+                <PanelField label={t('common.plant')}>
+                  <PanelSelect value={editForm.plant} onChange={e => setEditForm(f => ({ ...f, plant: e.target.value }))}>
+                    <option value="">{t('maint.selectPlant')}</option>
+                    {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
+                  </PanelSelect>
+                </PanelField>
                 <PanelField label={t('maint.issueDescription')}>
                   <PanelTextarea value={editForm.description} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} placeholder={t('maint.editDescPlaceholder', 'What broke? Type @ to tag someone.')} />
                 </PanelField>
@@ -4001,20 +4943,12 @@ export function Maintenance() {
                   <PanelField label={t('common.plant')}>
                     <PanelSelect value={resubmitForm.plant} onChange={e => setResubmitForm(f => ({ ...f, plant: e.target.value }))}>
                       <option value="">{t('maint.selectPlant')}</option>
-                      {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
                     </PanelSelect>
                   </PanelField>
                   <PanelField label={t('maint.assessmentLabel', 'Assessment')}>
-                    <PanelSelect value={resubmitForm.assessment} onChange={e => {
-                      const assessment = e.target.value;
-                      setResubmitForm(f => ({ ...f, assessment }));
-                      if (assessment === 'needs_part') {
-                        setStoreItems(items => items.some(it => it.partName.trim()) ? items : [{ ...BLANK_ITEM }]);
-                      }
-                    }}>
-                      <option value="repairable">{t('maint.canRepair')}</option>
-                      <option value="needs_part">{t('maint.needAPart', 'Need a part')}</option>
-                    </PanelSelect>
+                    <div style={{ fontSize: 13, fontWeight: 700, padding: '8px 0' }}>{t('maint.needAPart', 'Need a part')}</div>
+                    <div style={{ fontSize: 12, color: '#92400E' }}>In-house repair is written in the incident report.</div>
                   </PanelField>
                 </PanelRow>
                 <PanelField label={t('maint.issueDescription')}>
@@ -4050,7 +4984,7 @@ export function Maintenance() {
                           />
                           {it.storeItemId
                             ? <div style={{ fontSize: 11, color: '#16A34A', marginTop: 4 }}>{t('maint.linkedToStoreStock', '✓ Linked to store stock — availability will be checked automatically.')}</div>
-                            : (storeStock.length > 0 && it.partName.trim().length > 1 && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('maint.notInStoreList', 'Not in store list — will be treated as a new part to procure.')}</div>)}
+                            : (storeStock.length > 0 && it.partName.trim().length > 1 && suggestParts(it.partName, storeStock).length === 0 && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('maint.notInStoreList', 'Not in store list — will be treated as a new part to procure.')}</div>)}
                         </PanelField>
                         <PanelRow>
                           <PanelField label={t('maint.quantityLabel', 'Quantity')}>
@@ -4076,9 +5010,9 @@ export function Maintenance() {
                     <button type="button" onClick={() => setStoreItems(items => [...items, { ...BLANK_ITEM }])} style={{ width: '100%', padding: '9px', borderRadius: 10, border: '1.5px dashed #CBD5E1', background: '#fff', color: '#475569', cursor: 'pointer', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>{t('maint.addAnotherItem', '+ Add another item')}</button>
                   </div>
                 )}
-                <PhotoUploader label={t('maint.replacePhotoOptional', 'Replace photo (optional)')} hint={t('maint.replacePhotoHint', 'Upload a clearer photo of the item')} onBlobReady={setResubmitPhotoBlob} />
+                <PhotoUploader label={t('maint.replacePhotoOptional', 'Replace photo (optional)')} hint={t('maint.replacePhotoHint', 'Upload a clearer photo of the item')} onBlobReady={setResubmitPhotoBlob} onBlobsReady={setResubmitPhotoBlobs} />
                 <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                  <button onClick={() => { setResubmitting(false); setResubmitPhotoBlob(null); setStoreItems([{ ...BLANK_ITEM }]); }} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
+                  <button onClick={() => { setResubmitting(false); setResubmitPhotoBlob(null); setResubmitPhotoBlobs([]); setStoreItems([{ ...BLANK_ITEM }]); }} style={{ flex: 1, padding: '10px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>{t('common.cancel', 'Cancel')}</button>
                   <button onClick={submitResubmit} disabled={savingRevision || uploading || !resubmitForm.equipment.trim() || (resubmitForm.assessment === 'needs_part' && !storeItems.some(it => it.partName.trim()))} style={{ flex: 2, padding: '10px', borderRadius: 12, border: 'none', background: '#EF6C00', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit', opacity: (savingRevision || uploading || !resubmitForm.equipment.trim() || (resubmitForm.assessment === 'needs_part' && !storeItems.some(it => it.partName.trim()))) ? 0.5 : 1 }}>{(savingRevision || uploading) ? t('maint.resubmittingEllipsis', 'Resubmitting…') : t('maint.resubmitForReview', 'Resubmit for review')}</button>
                 </div>
               </div>
@@ -4097,6 +5031,8 @@ export function Maintenance() {
             ) : (
               renderTicketActions()
             )}
+            </div>
+            </div>
           </>
         )}
       </SlidePanel>
@@ -4164,7 +5100,7 @@ export function Maintenance() {
           <PanelField label={scheduleForm.farAssetId ? t('maint.plantSetByFar', 'Plant (set by FAR asset)') : t('common.plant')}>
             <PanelSelect value={scheduleForm.plant} disabled={!!scheduleForm.farAssetId} onChange={e => setScheduleForm(f => ({ ...f, plant: e.target.value }))}>
               <option value="">{t('maint.allPlantsOption', '— All plants —')}</option>
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
             {scheduleForm.farAssetId && <div style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>{t('maint.lockedToFarPlant', "🔒 Locked to the FAR asset's plant.")}</div>}
           </PanelField>

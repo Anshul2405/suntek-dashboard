@@ -49,7 +49,7 @@ export function matchAsset<T extends AssetLite>(label: string, assets: T[]): Ass
 }
 
 /** Ranked FAR suggestions for a type-ahead (mark hit ranks top, then fuzzy name/mark). */
-export function suggestAssets<T extends AssetLite>(query: string, assets: T[], topN = 6): AssetMatch<T>[] {
+export function suggestAssets<T extends AssetLite>(query: string, assets: T[], topN = 12): AssetMatch<T>[] {
   const q = (query || '').trim();
   if (q.length < 2) return [];
   const { name, mark } = parseEquipmentLabel(q);

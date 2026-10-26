@@ -61,7 +61,7 @@ export function Login() {
             Plant operations<br />for Suntek Group
           </h1>
           <p className="mt-4 text-[15px] leading-relaxed text-white/70">
-            Batch sheets, maintenance, and store — built for units across Jharkhand, Odisha, Sikandrabad, and HQ.
+            Batch sheets, maintenance, and store — built for units across Jharkhand, Odisha, Madan, and HQ.
           </p>
           <ul className="mt-8 space-y-2.5 text-[13px] text-white/65">
             <li className="flex gap-2"><span className="text-[#FF8A00]">▸</span> L0 Admin provisions L1–L4 roles</li>

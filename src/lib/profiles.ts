@@ -81,7 +81,8 @@ export const CAPABILITIES: { key: string; label: string; description: string }[]
   // profileHasCapability / has_capability), which is what the client asked for:
   // "restricted to authorised administrator accounts".
   { key: 'delete_user', label: 'Delete user profiles', description: 'Delete a user from User Management. The profile is hidden from the app and the person can no longer log in; the record is retained for audit and can be restored. Cannot delete yourself or the last remaining administrator.' },
-  { key: 'delete_import_batch', label: 'Delete uploaded data', description: 'Delete the records imported through an incorrect CSV / Excel upload, so a corrected file can be uploaded. Only rows from that file are removed; manual entries are never touched. Every deletion is audited.' },
+  { key: 'manage_schedules', label: 'Add or delete schedule setup', description: 'Add, revise, and delete rows in Maintenance → Schedule Setup. Does not delete tickets or other dashboard entries.' },
+  { key: 'delete_import_batch', label: 'Delete imported workbook / CSV only', description: 'Delete an uploaded Excel or CSV and the rows that file created. Does not delete maintenance tickets, hand-entered rows, or any other dashboard entry. Every deletion is audited.' },
   { key: 'batch_raw', label: 'Batch — Raw / readings', description: 'See New Batch and Log Reading on Batch Logger (raw production entry). If none of the three Batch toggles are set, the person keeps the old full access.' },
   { key: 'batch_sheet', label: 'Batch — Sheet', description: 'See Create Batch Sheet and photo upload on Batch Logger / Batch Sheet.' },
   { key: 'batch_mat', label: 'Batch — Material / history', description: 'See batch history and material-side batch tools. Use with Raw / Sheet to limit what Technical can open.' },
@@ -106,6 +107,36 @@ export function isAdminProfile(profile: Pick<MockProfile, 'id' | 'baseRoleId' | 
 export function profileHasCapability(profile: MockProfile, cap: string): boolean {
   if (profile.allowedDashboardRoutes.includes('*')) return true;
   return (profile.capabilities || []).includes(cap);
+}
+
+/** Store-side roles that used to be hard-blocked from Maintenance → Schedule Setup. */
+export const STORE_MANAGER_ROLE_IDS = ['store_manager_maint', 'warehouse_manager'] as const;
+
+/**
+ * Who can open the Schedule Setup tab.
+ * Store / warehouse managers are hidden unless User Management granted
+ * `manage_schedules`. Everyone else (and anyone with that allowance) can open it.
+ */
+export function canSeeScheduleSetup(profile: Pick<MockProfile, 'id' | 'baseRoleId' | 'allowedDashboardRoutes' | 'capabilities'>): boolean {
+  if (profileHasCapability(profile as MockProfile, 'manage_schedules')) return true;
+  const held = [profile.id, profile.baseRoleId];
+  return !held.some(id => !!id && (STORE_MANAGER_ROLE_IDS as readonly string[]).includes(id));
+}
+
+/** Combine every role a person holds — routes and allowances are a union. */
+export function unionRoleAccess(roles: RoleRow[]): { allowed_routes: string[]; capabilities: string[] } {
+  if (roles.length === 0) return { allowed_routes: [], capabilities: [] };
+  const allowed_routes = roles.some(r => r.allowed_routes?.includes('*'))
+    ? ['*']
+    : [...new Set(roles.flatMap(r => r.allowed_routes ?? []))];
+  const capabilities = [...new Set(roles.flatMap(r => r.capabilities ?? []))];
+  if (!allowed_routes.includes('*') && roles.some(r => r.id === 'factory_operator')) {
+    return {
+      allowed_routes: [...new Set([...allowed_routes, ...BATCH_SHEET_ROUTES])],
+      capabilities,
+    };
+  }
+  return { allowed_routes, capabilities };
 }
 
 /** Admin, Management, Unit Head — roles that may view sensitive batch fields (e.g. oil ratio). */
@@ -302,6 +333,11 @@ export function profileCanAccess(profile: MockProfile, route: string): boolean {
     profile.allowedDashboardRoutes.includes('/dashboard/batches')
   ) {
     return true;
+  }
+  if (route === '/dashboard/purchase/book') {
+    return profile.allowedDashboardRoutes.includes(route)
+      || profile.allowedDashboardRoutes.includes('/dashboard/purchase/purchase')
+      || profile.allowedDashboardRoutes.includes('/dashboard/purchase/marine');
   }
   return profile.allowedDashboardRoutes.includes(route);
 }

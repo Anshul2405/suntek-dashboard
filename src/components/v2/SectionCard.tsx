@@ -28,7 +28,7 @@ export function SectionCard({
       {hasHeader && (
         <div className="flex items-start justify-between gap-3 flex-wrap px-5 pt-5 pb-4">
           <div>
-            {title && <div className="font-heading font-semibold text-[17px] leading-tight">{title}</div>}
+            {title && <div className="font-heading font-semibold text-[18px] leading-tight tracking-tight text-[#161616]">{title}</div>}
             {subtitle && <div className="text-[12.5px] text-slate-500 mt-0.5">{subtitle}</div>}
           </div>
           {actions && <div className="flex items-center gap-2 flex-wrap">{actions}</div>}

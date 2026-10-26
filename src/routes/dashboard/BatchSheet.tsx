@@ -2,21 +2,21 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { CircleHelp, FileSpreadsheet, FileText } from 'lucide-react';
+import { FileSpreadsheet, FileText } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
-import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
+import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister } from '../../lib/profiles';
+import { canDeleteModule, canViewPhoto, useOpsSettings } from '../../lib/opsControls';
 import { fetchAllRows } from '../../lib/fetchAll';
+import { displayLocationName } from '../../lib/plantLabels';
 import { parseTypedOilRatio } from '../../components/ProductionBatchSheetForm';
-import { isProductionSheetBatchNo, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
+import { describeMissingRanges, formatPaddedBatchNo, isProductionSheetBatchNo, missingReactorBatches, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
 import { printTds } from '../../lib/batch/printDocs';
 import type { CoaResultMap } from '../../lib/batch/printDocs';
 import type { TdsFamily } from '../../lib/batch/tdsCatalog';
 import { CoaEntryPanel, type CoaSheetTarget } from '../../components/batch/CoaEntryPanel';
 import { TableSearch, useTextFilter } from '../../components/ui/TableSearch';
-import { markTourSeen, tourWasSeen } from '../../components/tour/GuidedTour';
-import { launchBatchFlowTour, BATCH_FLOW_TOUR_ID } from '../../components/tour/BatchFlowTourHost';
 
 interface ProductionSheetRow {
   id: string;
@@ -98,36 +98,32 @@ export function BatchSheet() {
   const { t } = useTranslation();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeProfile } = useRoleContext();
+  const { activeProfile, activePersonId } = useRoleContext();
   const { scopeQuery, allowedPlants, isGlobal, ready: scopeReady, inScope } = usePlantScope();
-  const role = activeProfile.id;
+  const ops = useOpsSettings();
   const canCreateSheet = canViewBatchFacet(activeProfile, 'sheet');
-  const isFactoryAccountant = role === 'accountant_delhi' || role === 'accountant_other'
-    || isAdminProfile(activeProfile);
-  // Cleanup of dummy / wrong sheets — admin, accountants, unit heads, Technical.
-  const canDeleteSheet = isFactoryAccountant
-    || role === 'unit_head'
-    || role === 'factory_operator'
-    || activeProfile.baseRoleId === 'unit_head'
-    || activeProfile.baseRoleId === 'factory_operator';
+  const canDeleteSheet = canDeleteModule(ops, activeProfile, 'batch', activePersonId);
+  const seeSheet = canViewPhoto(ops, activeProfile, 'sheet');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
-  const [tourOffer, setTourOffer] = useState(false);
   const [coaTarget, setCoaTarget] = useState<CoaSheetTarget | null>(null);
   const [detailRow, setDetailRow] = useState<ProductionSheetRow | null>(null);
   const [plantFilter, setPlantFilter] = useState('');
   const [search, setSearch] = useState('');
   const highlightBatchNo = searchParams.get('highlight');
 
+  const seeBucket = canViewPhoto(ops, activeProfile, 'bucket');
+  const seeHeat = canViewPhoto(ops, activeProfile, 'heat');
+
   const plantOptions = useMemo(() => {
     // Prefer the scope plant list so Admin "All plants" / a selected plant is not
     // limited to whatever happened to land in a truncated fetch.
     if (allowedPlants.length > 0) {
-      return allowedPlants.map((p) => p.name).sort((a, b) => a.localeCompare(b));
+      return allowedPlants.map((p) => displayLocationName(p.name)).sort((a, b) => a.localeCompare(b));
     }
     const names = new Set<string>();
     for (const row of prodSheets) {
-      const n = row.plants?.name?.trim();
+      const n = displayLocationName(row.plants?.name).trim();
       if (n) names.add(n);
     }
     return [...names].sort((a, b) => a.localeCompare(b));
@@ -137,17 +133,33 @@ export function BatchSheet() {
 
   useEffect(() => {
     if (!isGlobal && allowedPlants.length === 1) {
-      setPlantFilter(allowedPlants[0].name);
+      setPlantFilter(displayLocationName(allowedPlants[0].name));
     }
   }, [isGlobal, allowedPlants]);
 
   const plantFilteredSheets = useMemo(() => {
     if (!plantFilter) return prodSheets;
-    return prodSheets.filter((r) => r.plants?.name === plantFilter);
+    return prodSheets.filter((r) => displayLocationName(r.plants?.name) === plantFilter);
   }, [prodSheets, plantFilter]);
+
+  const missingSheets = useMemo(() => {
+    const byPlant = new Map<string, string[]>();
+    for (const row of plantFilteredSheets) {
+      const plant = displayLocationName(row.plants?.name) || '—';
+      const list = byPlant.get(plant) ?? [];
+      list.push(row.batch_no);
+      byPlant.set(plant, list);
+    }
+    const rows: { plant: string; gap: ReturnType<typeof missingReactorBatches>[number] }[] = [];
+    for (const [plant, nos] of byPlant) {
+      for (const gap of missingReactorBatches(nos)) rows.push({ plant, gap });
+    }
+    return rows.sort((a, b) => a.plant.localeCompare(b.plant) || parseInt(a.gap.code.slice(1), 10) - parseInt(b.gap.code.slice(1), 10));
+  }, [plantFilteredSheets]);
+
   const filteredSheets = useTextFilter(plantFilteredSheets, search, r => [
     r.batch_no,
-    r.plants?.name,
+    displayLocationName(r.plants?.name),
     r.reactors?.code,
     r.reactors?.name,
     r.oil_grade,
@@ -156,17 +168,6 @@ export function BatchSheet() {
     r.density != null ? String(r.density) : '',
     r.oil_ratio != null ? String(r.oil_ratio) : '',
   ]);
-
-  useEffect(() => {
-    if (tourWasSeen(BATCH_FLOW_TOUR_ID)) return;
-    const tmr = window.setTimeout(() => setTourOffer(true), 600);
-    return () => window.clearTimeout(tmr);
-  }, []);
-
-  function openTour() {
-    setTourOffer(false);
-    launchBatchFlowTour();
-  }
 
   const loadProductionSheets = useCallback(async () => {
     // Page through every in-scope sheet. A hard .limit(100) under a global Admin
@@ -235,6 +236,8 @@ export function BatchSheet() {
 
   useEffect(() => {
     if (!highlightBatchNo || prodSheets.length === 0) return;
+    const match = prodSheets.find((r) => r.batch_no === highlightBatchNo);
+    if (match) setDetailRow(match);
     const rowId = `prod-sheet-${highlightBatchNo.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     const el = document.getElementById(rowId);
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -319,38 +322,6 @@ export function BatchSheet() {
 
   return (
     <>
-      {tourOffer && (
-        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-bold text-amber-950">
-              {t('batchSheetTour.offerTitle', 'New here? Take the full batch walkthrough')}
-            </div>
-            <p className="text-xs text-amber-900/80 mt-0.5">
-              {t('batchSheetTour.offerBody', 'Follows one batch end to end: New Batch, hourly readings, close, batch sheet with density and photos, then stock and dispatch.')}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                markTourSeen(BATCH_FLOW_TOUR_ID);
-                setTourOffer(false);
-              }}
-              className="text-xs font-semibold text-amber-900/70 hover:text-amber-950 px-2 py-1.5"
-            >
-              {t('batchSheetTour.dismissOffer', 'Not now')}
-            </button>
-            <button
-              type="button"
-              onClick={openTour}
-              className="text-xs font-bold px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700"
-            >
-              {t('batchSheetTour.startOffer', 'Start walkthrough')}
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="card2 p-6 mb-5" data-tour="prod-register">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div>
@@ -360,14 +331,6 @@ export function BatchSheet() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={openTour}
-              className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50"
-            >
-              <CircleHelp size={14} strokeWidth={2.25} />
-              {t('batchSheetTour.howThisWorks', 'How this works')}
-            </button>
             {canCreateSheet && (
             <Link
               data-tour="create-sheet-btn"
@@ -412,6 +375,40 @@ export function BatchSheet() {
             </span>
           )}
         </div>
+        {missingSheets.length > 0 && (
+          <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50">
+            <div className="flex items-baseline justify-between gap-3 px-3 pt-3 pb-2">
+              <div className="text-[11px] font-bold uppercase tracking-wide text-amber-900">
+                Batch numbers not uploaded{plantFilter ? ` · ${plantFilter}` : ''}
+              </div>
+              <div className="text-[11px] text-amber-800">{missingSheets.length} reactor{missingSheets.length === 1 ? '' : 's'}</div>
+            </div>
+            <div className="overflow-auto scroll-x" style={{ maxHeight: 280 }}>
+              <table className="dt2 text-sm" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    {!plantFilter && <th style={{ position: 'sticky', top: 0, background: '#FFFBEB' }}>Plant</th>}
+                    <th style={{ position: 'sticky', top: 0, background: '#FFFBEB' }}>Reactor</th>
+                    <th style={{ position: 'sticky', top: 0, background: '#FFFBEB' }}>Latest</th>
+                    <th className="num" style={{ position: 'sticky', top: 0, background: '#FFFBEB' }}>Missing</th>
+                    <th style={{ position: 'sticky', top: 0, background: '#FFFBEB' }}>Numbers not on file</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {missingSheets.map(({ plant, gap }) => (
+                    <tr key={`${plant}-${gap.code}`} onClick={() => setSearch(gap.code)} style={{ cursor: 'pointer' }} title={`Show ${gap.code} sheets`}>
+                      {!plantFilter && <td>{plant}</td>}
+                      <td className="font-mono font-bold">{gap.code}</td>
+                      <td className="font-mono">{formatPaddedBatchNo(gap.code, gap.highest, gap.pad)}</td>
+                      <td className="num font-bold">{gap.missing.length}</td>
+                      <td className="font-mono text-xs">{describeMissingRanges(gap)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
             <thead>
@@ -477,23 +474,23 @@ export function BatchSheet() {
                     onClick={() => setDetailRow(row)}
                   >
                     <td className="font-bold font-mono">{row.batch_no}</td>
-                    <td>{row.plants?.name ?? '—'}</td>
+                    <td>{displayLocationName(row.plants?.name) || '—'}</td>
                     <td>{row.reactors?.code ?? '—'}</td>
                     <td className="num">{row.density}</td>
                     <td className="text-xs font-semibold">{gradeLabel}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="flex flex-col gap-0.5">
-                        {sheetUrls[0] && <a href={sheetUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Sheet ×{sheetUrls.length}</a>}
-                        {bucketUrls[0] && <a href={bucketUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Bucket ×{bucketUrls.length}</a>}
-                        {heatUrls[0] && <a href={heatUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Heat ×{heatUrls.length}</a>}
+                        {seeSheet && sheetUrls[0] && <a href={sheetUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Sheet ×{sheetUrls.length}</a>}
+                        {seeBucket && bucketUrls[0] && <a href={bucketUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Bucket ×{bucketUrls.length}</a>}
+                        {seeHeat && heatUrls[0] && <a href={heatUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Heat ×{heatUrls.length}</a>}
                         {row.colour_note && <span className="text-[10px] text-slate-500">{row.colour_note}</span>}
                         {!photoCount && <span className="text-slate-400 text-xs">—</span>}
                       </div>
                     </td>
-                    <td className="text-slate-500 text-xs">
+                    <td className="text-sm font-bold text-slate-800">
                       <div>{row.created_by_name ?? '—'}</div>
-                      <div className="text-[10px] text-slate-400">
-                        {row.created_at ? new Date(row.created_at).toLocaleString() : ''}
+                      <div>
+                        {row.created_at ? new Date(row.created_at).toLocaleString('en-IN') : ''}
                       </div>
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -549,7 +546,7 @@ export function BatchSheet() {
               <div>
                 <div style={{ fontSize: 16, fontWeight: 800 }}>{detailRow.batch_no}</div>
                 <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
-                  {detailRow.plants?.name ?? '—'} · {detailRow.reactors?.code ?? '—'}
+                  {displayLocationName(detailRow.plants?.name) || '—'} · {detailRow.reactors?.code ?? '—'}
                 </div>
               </div>
               <button type="button" onClick={() => setDetailRow(null)} style={{ border: 'none', background: '#F1F5F9', width: 32, height: 32, borderRadius: 999, cursor: 'pointer' }}>✕</button>
@@ -571,11 +568,11 @@ export function BatchSheet() {
               )}
               <div style={{ gridColumn: '1 / -1' }}>
                 <dt style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94A3B8', marginBottom: 4 }}>{t('batchProd.detailCreated', 'Created')}</dt>
-                <dd style={{ margin: 0 }}>
+                <dd style={{ margin: 0, fontWeight: 800 }}>
                   {detailRow.created_by_name ?? '—'}
                   {detailRow.created_at && (
                     <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
-                      {new Date(detailRow.created_at).toLocaleString()}
+                      {new Date(detailRow.created_at).toLocaleString('en-IN')}
                     </div>
                   )}
                 </dd>
@@ -584,17 +581,17 @@ export function BatchSheet() {
                 <div style={{ gridColumn: '1 / -1' }}>
                   <dt style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94A3B8', marginBottom: 6 }}>{t('batchProd.detailPhotos', 'Photos')}</dt>
                   <dd style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {detailRow.sheet_photo_urls?.[0] && (
+                    {seeSheet && detailRow.sheet_photo_urls?.[0] && (
                       <a href={detailRow.sheet_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoSheet', 'Sheet')} ×{detailRow.sheet_photo_urls.length}
                       </a>
                     )}
-                    {detailRow.bucket_photo_urls?.[0] && (
+                    {seeBucket && detailRow.bucket_photo_urls?.[0] && (
                       <a href={detailRow.bucket_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoBucket', 'Bucket')} ×{detailRow.bucket_photo_urls.length}
                       </a>
                     )}
-                    {detailRow.heat_sample_photo_urls?.[0] && (
+                    {seeHeat && detailRow.heat_sample_photo_urls?.[0] && (
                       <a href={detailRow.heat_sample_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoHeat', 'Heat sample')} ×{detailRow.heat_sample_photo_urls.length}
                       </a>

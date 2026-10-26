@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 import { insertRows } from '../../../lib/db';
@@ -12,6 +13,7 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
+import purchaseMeta from '../../../lib/purchaseBookMeta.json';
 
 type Panel = 'topup' | 'ledger' | null;
 type LedgerRow = Database['public']['Tables']['marine_insurance']['Row'];
@@ -50,6 +52,8 @@ export function MarineInsurance() {
   useEffect(() => { load(); }, [scopeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentBalance = ledger.length > 0 ? ledger[0].balance : 0;
+  const coverCr = (purchaseMeta.marineBalance || 0) / 1e7;
+  const coverPct = Math.max(0, Math.min(100, (coverCr / 10) * 100));
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -107,13 +111,16 @@ export function MarineInsurance() {
       {/* Balance + stats */}
       <div className="grid grid-cols-12 gap-5 mb-5">
         <div className="col-span-12 lg:col-span-6 card p-6" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Marine Insurance Balance', what: 'Running prepaid balance on the open marine insurance policy. Every supplier dispatch auto-deducts the insured value. Balance drops below ₹1 Cr triggers a top-up alert.', source: 'Form entry', formLabel: 'Top-up form', formPath: '/dashboard/purchase/marine', note: 'Top-ups logged manually via the "Top up" slide panel. Auto-deduction is applied per dispatch entry.' }} />
+          <KpiInfoButton info={{ title: 'Marine Insurance Balance', what: 'Running prepaid balance on the purchase book. Each insured purchase deducts the invoice and freight. A top-up recorded on this page is kept in the dashboard ledger and does not change the workbook figure.', source: 'Purchase workbook', tables: ['Purchase · column O'], note: 'Last computed running balance on the Purchase sheet.' }} />
           <div className="flex items-start justify-between">
             <div>
               <div className="text-xs text-slate-500 mb-1">{t('marine.balanceLabel')}</div>
               <div className="text-3xl font-extrabold num">
-                ₹ {currentBalance.toFixed(2)} Cr{' '}
+                ₹ {coverCr.toFixed(2)} Cr{' '}
                 <span className="text-base font-medium text-slate-400">/ ₹10 Cr</span>
+              </div>
+              <div className="text-xs text-slate-500 mt-1">
+                {t('marine.workbookLine', 'Purchase book · {{date}} · {{company}}', { date: purchaseMeta.marineAsOf, company: purchaseMeta.marineCompany })}
               </div>
             </div>
             <div className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center">
@@ -122,14 +129,14 @@ export function MarineInsurance() {
               </svg>
             </div>
           </div>
-          <div className="progress mt-3 mb-1"><div style={{ width: '95%' }}></div></div>
+          <div className="progress mt-3 mb-1"><div style={{ width: `${coverPct}%` }}></div></div>
           <div className="flex items-center justify-between text-xs text-slate-500 mb-3">
             <span>{t('marine.threshold')} ₹1 Cr</span>
-            <span className="font-semibold text-slate-700">95% {t('marine.remaining')}</span>
+            <span className="font-semibold text-slate-700">{coverPct.toFixed(0)}% {t('marine.remaining')}</span>
           </div>
-          <div className="font-semibold text-sm">{t('marine.autoDeductLive')}</div>
           <div className="text-xs text-slate-500 mb-3">
-            {t('marine.autoDeductHint')}
+            {t('marine.workbookNote', 'This is the running balance on the purchase book. A top-up saved here stays in the ledger below.')}
+            {ledger.length > 0 ? ` ${t('marine.dashboardTopUps', 'Dashboard top-ups')}: ₹ ${currentBalance.toFixed(2)} Cr` : ''}
           </div>
           <div className="flex gap-2">
             <button className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm" onClick={() => setPanel('topup')}>
@@ -141,22 +148,23 @@ export function MarineInsurance() {
           </div>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Marine Insurance Top-ups FY', what: 'Number of times the marine insurance prepaid balance has been topped up during the current financial year. Frequent top-ups may indicate high dispatch volume or underestimated policy size.', source: 'Form entry', formLabel: 'Top-up form', formPath: '/dashboard/purchase/marine' }} />
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('marine.topUpsThisFy')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">2</div>
-          <div className="text-[11px] text-slate-500 mt-1">{t('marine.lastOn')} 18 Mar</div>
+          <KpiInfoButton info={{ title: 'Marine cover alert', what: 'The purchase book warns when the running cover falls under ₹1 crore.', source: 'Purchase workbook', tables: ['Purchase · column O'] }} />
+          <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('marine.threshold')} ₹1 Cr</div>
+          <div className="text-[28px] font-extrabold mt-1">{coverCr >= 1 ? t('marine.aboveLine', 'Above the line') : t('marine.belowLine', 'Below the line')}</div>
+          <div className="text-[11px] text-slate-500 mt-1">{t('marine.workbookLine', 'Purchase book · {{date}} · {{company}}', { date: purchaseMeta.marineAsOf, company: purchaseMeta.marineCompany })}</div>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: 'Avg Deduction per Dispatch', what: 'Average marine insurance amount deducted for each supplier dispatch this month. Calculated from total MTD deductions divided by dispatch count. Reflects average shipment insured value.', source: 'Form entry', formLabel: 'Dispatch log (auto-deduct)', formPath: '/dashboard/purchase/marine', note: 'Deductions come from MARINE_LEDGER entries with type "deduct".' }} />
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('marine.avgDeductionDispatch')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">₹ 16 L</div>
-          <div className="text-[11px] text-slate-500 mt-1">{t('marine.dispatchesMtd', { count: 31 })}</div>
+          <KpiInfoButton info={{ title: 'Purchase book', what: 'Opens the workbook sheets: purchases, payments, paraffin, requirements, dispatch, Kolkata and SHD.', source: 'Purchase workbook' }} />
+          <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('nav.purchaseBook', 'Purchase book')}</div>
+          <Link to="/dashboard/purchase/book?tab=purchases" className="text-sky-700 font-semibold text-sm mt-3 inline-block">
+            {t('marine.openBook', 'Open the purchase rows')}
+          </Link>
         </div>
       </div>
 
       {/* Ledger table */}
       <div className="card2 p-6" style={{ position: 'relative' }}>
-        <KpiInfoButton info={{ title: 'Marine Insurance Ledger', what: 'Transaction history of the marine insurance prepaid balance — all top-ups (credits) and dispatch deductions (debits). Running balance is shown per row. New top-ups entered via the "Top up" slide panel; deductions are auto-logged per supplier dispatch.', source: 'Form entry', formLabel: 'Top-up / View ledger panel', formPath: '/dashboard/purchase/marine', note: 'Data from MARINE_LEDGER mock (mockData.ts). Future: Supabase marine_ledger table.' }} />
+        <KpiInfoButton info={{ title: 'Marine Insurance Ledger', what: 'Transaction history of the marine insurance prepaid balance — all top-ups (credits) and dispatch deductions (debits). Running balance is shown per row. New top-ups entered via the "Top up" slide panel; deductions are auto-logged per supplier dispatch.', source: 'Form entry', formLabel: 'Top-up / View ledger panel', formPath: '/dashboard/purchase/marine', note: 'Live from the marine_insurance table. Top-ups saved here do not change the workbook running balance.' }} />
         <div className="text-base font-bold font-heading mb-3">{t('marine.recentLedger')}</div>
         {loadError ? (
           <ErrorState title={t('marine.loadErrorTitle')} message={t('marine.loadErrorMessage')}

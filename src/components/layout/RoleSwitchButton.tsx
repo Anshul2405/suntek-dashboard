@@ -5,6 +5,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { ProfileAvatar } from './ProfileSwitcher';
 import type { MockProfile } from '../../lib/profiles';
 import { IconSwap, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
+import { dropdownStyle } from '../../lib/uiPosition';
 
 // Access badge for the role list
 function AccessBadge({ profile }: { profile: MockProfile }) {
@@ -29,6 +30,7 @@ export function RoleSwitchButton() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -51,6 +53,7 @@ export function RoleSwitchButton() {
     <div ref={ref} className="relative">
       {/* ⇅ trigger — matches the bell button styling */}
       <button
+        ref={btnRef}
         title={t('topbar.switchPreviewRole', 'Switch / preview role')}
         onClick={() => setOpen((o) => !o)}
         className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}`}
@@ -59,7 +62,10 @@ export function RoleSwitchButton() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[290px] bg-white rounded-2xl shadow-xl border border-slate-200 z-50 overflow-hidden">
+        <div
+          className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden"
+          style={dropdownStyle(btnRef.current, 290, 520)}
+        >
           <div className="px-4 pt-4 pb-3 border-b border-slate-100 bg-slate-50/60">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{t('topbar.previewAsRole', 'Preview as role')}</div>
             <div className="text-[12px] text-slate-500 mt-0.5">{t('topbar.previewAsRoleHint', 'Switch to see role-specific views & access')}</div>

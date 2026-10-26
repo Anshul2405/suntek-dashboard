@@ -27,7 +27,7 @@ export function TablePaginationV2({
   if (!alwaysShow && total === 0) return null;
 
   const sqBtn =
-    'min-w-[32px] h-8 px-2 rounded-lg border text-[13px] inline-flex items-center justify-center transition-colors';
+    'min-w-[40px] h-10 px-2.5 rounded-lg border text-[13px] inline-flex items-center justify-center transition-colors';
 
   return (
     <div className="flex items-center justify-between flex-wrap gap-2.5 px-4 py-3 border-t border-slate-100">

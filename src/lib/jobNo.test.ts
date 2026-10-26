@@ -6,6 +6,7 @@ import {
   nextJobNo,
   parseJobSeq,
   stripPlaceholderParen,
+  labelWithRealMark,
 } from './jobNo';
 
 describe('placeholder marks', () => {
@@ -19,6 +20,13 @@ describe('placeholder marks', () => {
   it('strips (xxx) from PM titles', () => {
     expect(stripPlaceholderParen('Cooling Tower (xxx) — Daily')).toBe('Cooling Tower — Daily');
     expect(stripPlaceholderParen('Pump (HPT 1)')).toBe('Pump (HPT 1)');
+  });
+
+  it('shows the FAR mark in place of (XXX)', () => {
+    expect(labelWithRealMark('Reactor (XXX)', 'GLC-1')).toBe('Reactor (GLC-1)');
+    expect(labelWithRealMark('Reactor (XXX) — Monthly', 'GLC-1')).toBe('Reactor (GLC-1) — Monthly');
+    expect(labelWithRealMark('Graphite Block (xxxx)', 'HCL AB.')).toBe('Graphite Block (HCL AB.)');
+    expect(labelWithRealMark('Pump (HPT 1)', 'HPT 1')).toBe('Pump (HPT 1)');
   });
 });
 

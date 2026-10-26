@@ -99,6 +99,7 @@ export interface DatedAnomaly {
 // ── Unit normalization ───────────────────────────────────────────────────────
 const UNIT_MAP: Record<string, string> = {
   'pcs': 'Pcs', 'pcs.': 'Pcs', 'pc': 'Pcs', 'nos': 'Pcs', 'no': 'Pcs', 'no.': 'Pcs',
+  'ft': 'Ft', 'ft.': 'Ft', 'feet': 'Ft', 'foot': 'Ft',
   'ltr': 'Ltr', 'ltr.': 'Ltr', 'litre': 'Ltr', 'l': 'Ltr',
   'kg': 'Kg', 'kgs': 'Kg', 'pair': 'Pair', 'set': 'Set', 'sets': 'Set',
   'roll': 'Roll', 'role': 'Roll', 'pkt': 'Pkt', 'packet': 'Pkt',
@@ -112,7 +113,7 @@ export function normalizeUnit(raw: unknown): string {
 
 /** Canonical units offered in pickers — the distinct outputs of UNIT_MAP. */
 export const UNIT_OPTIONS: string[] = [
-  'Pcs', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
+  'Pcs', 'Ft', 'Kg', 'Ltr', 'Mtr', 'Pair', 'Set', 'Roll', 'Pkt', 'Can', 'Bag', 'Bottle',
 ];
 
 // ── Equipment/model from the item name, e.g. "Acid Pump (NZRP50) Sleeve" ─────

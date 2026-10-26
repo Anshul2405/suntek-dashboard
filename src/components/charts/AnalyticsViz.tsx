@@ -43,7 +43,7 @@ export function DSOGauge({ value }: { value: number }) {
       <text x="60" y="20" fontSize="8" fill="#94A3B8" textAnchor="middle">45</text>
       <text x="126" y="84" fontSize="8" fill="#94A3B8">90</text>
       {/* Center value */}
-      <text x={cx} y="64" textAnchor="middle" fontSize="22" fontWeight="800" fill={color}>{value}</text>
+      <text x={cx} y="64" textAnchor="middle" fontSize="18" fontWeight="800" fill={color}>{Number.isFinite(value) ? value.toFixed(1) : '—'}</text>
       <text x={cx} y="76" textAnchor="middle" fontSize="9" fill="#94A3B8">{t('common.days', 'days')}</text>
     </svg>
   );
@@ -64,7 +64,7 @@ export function RingProgress({ pct, color = '#16A34A', label }: { pct: number; c
         strokeDasharray={`${fill.toFixed(1)} ${circ.toFixed(1)}`}
         transform="rotate(-90 48 48)"
       />
-      <text x={cx} y={cy - 4} textAnchor="middle" fontSize="16" fontWeight="800" fill="#0F172A">{pct.toFixed(1)}%</text>
+      <text x={cx} y={cy - 4} textAnchor="middle" fontSize="16" fontWeight="800" fill="#161616">{pct.toFixed(1)}%</text>
       {label && <text x={cx} y={cy + 10} textAnchor="middle" fontSize="8" fill="#94A3B8">{label}</text>}
     </svg>
   );
@@ -150,7 +150,7 @@ export function ConcentrationBar({ segments }: {
 
 // ── Bullet Compare (two values side by side) ──────────────────────────────────
 
-export function BulletCompare({ left, right, leftLabel, rightLabel, leftColor = '#F47651', rightColor = '#2563EB' }: {
+export function BulletCompare({ left, right, leftLabel, rightLabel, leftColor = '#EF6C00', rightColor = '#161616' }: {
   left: number; right: number;
   leftLabel: string; rightLabel: string;
   leftColor?: string; rightColor?: string;

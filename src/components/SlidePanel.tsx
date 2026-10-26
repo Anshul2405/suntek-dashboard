@@ -22,42 +22,23 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
     <>
       {/* Backdrop */}
       <div
+        className="slide-backdrop"
         onClick={locked ? undefined : onClose}
         style={{
-          position: 'fixed', inset: 0, zIndex: 40,
-          background: 'rgba(15,23,42,0.45)',
-          backdropFilter: 'blur(4px)',
-          WebkitBackdropFilter: 'blur(4px)',
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'auto' : 'none',
-          transition: 'opacity 0.22s',
         }}
       />
 
-      {/* Centered modal card */}
       <div
-        style={{
-          position: 'fixed',
-          top: '50%', left: '50%',
-          zIndex: 50,
-          width: 'min(660px, 94vw)',
-          maxHeight: '90vh',
-          background: '#fff',
-          borderRadius: 24,
-          boxShadow: '0 24px 80px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08)',
-          display: 'flex', flexDirection: 'column',
-          transform: open
-            ? 'translate(-50%, -50%) scale(1)'
-            : 'translate(-50%, -48%) scale(0.96)',
-          opacity: open ? 1 : 0,
-          pointerEvents: open ? 'auto' : 'none',
-          transition: 'transform 0.22s cubic-bezier(0.34,1.56,0.64,1), opacity 0.18s',
-        }}
+        className="slide-card"
+        data-open={open ? 'true' : 'false'}
+        style={{ pointerEvents: open ? 'auto' : 'none' }}
       >
         {/* Header */}
         <div style={{
-          padding: '22px 24px 16px',
-          borderBottom: '1px solid #F1F5F9',
+          padding: '18px 20px 14px',
+          borderBottom: '1px solid #E4E9EF',
           flexShrink: 0,
           display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
         }}>
@@ -74,7 +55,7 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
             disabled={locked}
             title={locked ? t('common.uploadInProgress', 'Please wait — upload in progress') : undefined}
             style={{
-              width: 36, height: 36, borderRadius: '50%',
+              width: 36, height: 36, borderRadius: 8,
               background: '#F1F5F9', border: 'none', cursor: locked ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               marginLeft: 16, flexShrink: 0, marginTop: 2,
@@ -94,7 +75,7 @@ export function SlidePanel({ open, onClose, title, subtitle, children, locked = 
         </div>
 
         {/* Scrollable body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 28px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 24px' }}>
           {children}
         </div>
       </div>
@@ -116,16 +97,16 @@ export function PanelField({ label, children }: { label: string; children: React
 }
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 14px', border: '1px solid #E2E8F0',
-  borderRadius: 12, fontSize: 13, color: '#0F172A',
-  background: '#F8FAFC', outline: 'none', boxSizing: 'border-box',
+  width: '100%', padding: '10px 12px', border: '1px solid #CDD5DE',
+  borderRadius: 8, fontSize: 14, color: '#071422',
+  background: '#fff', outline: 'none', boxSizing: 'border-box',
   fontFamily: 'inherit',
 };
 const selectStyle: React.CSSProperties = { ...inputStyle, cursor: 'pointer' };
 const textareaStyle: React.CSSProperties = { ...inputStyle, resize: 'vertical', minHeight: 72 };
 
 export function PanelInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} style={inputStyle} />;
+  return <input {...props} className={`panel-input ${props.className ?? ''}`.trim()} style={{ ...inputStyle, ...props.style }} />;
 }
 
 /** Password field with a show/hide eye toggle, styled to match panel inputs. Use
@@ -148,7 +129,7 @@ export function PanelPasswordInput(props: Omit<React.InputHTMLAttributes<HTMLInp
   );
 }
 export function PanelSelect(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} style={selectStyle} />;
+  return <select {...props} className={`panel-input ${props.className ?? ''}`.trim()} style={{ ...selectStyle, ...props.style }} />;
 }
 export function PanelTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const { value, onChange, style, placeholder, rows } = props;
@@ -202,37 +183,21 @@ export interface OcrField {
 interface OcrUploadProps {
   label: string;
   hint?: string;
+  /** Kept so older forms still compile. This control no longer invents field values. */
   fields?: OcrField[];
   onExtracted?: (data: Record<string, string>) => void;
+  onFile?: (file: File | null) => void;
 }
 
-export function OcrUpload({ label, hint, fields = [], onExtracted }: OcrUploadProps) {
+export function OcrUpload({ label, hint, onFile }: OcrUploadProps) {
   const { t } = useTranslation();
   const ref = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [extracting, setExtracting] = useState(false);
-  const [extracted, setExtracted] = useState<OcrField[] | null>(null);
-  const [applied, setApplied] = useState(false);
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (f) { setFile(f); setExtracted(null); setApplied(false); }
-  }
-
-  function handleExtract() {
-    setExtracting(true);
-    setTimeout(() => {
-      setExtracting(false);
-      setExtracted(fields.length > 0 ? fields : [{ key: '_doc', label: t('common.ocrDocument', 'Document'), value: file?.name || 'uploaded' }]);
-    }, 1900);
-  }
-
-  function handleApply() {
-    if (!extracted) return;
-    const data: Record<string, string> = {};
-    extracted.forEach(f => { data[f.key] = f.value; });
-    onExtracted?.(data);
-    setApplied(true);
+    const f = e.target.files?.[0] ?? null;
+    setFile(f);
+    onFile?.(f);
   }
 
   return (
@@ -271,116 +236,9 @@ export function OcrUpload({ label, hint, fields = [], onExtracted }: OcrUploadPr
         )}
       </div>
       <input ref={ref} type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={handleFile} />
-
-      {/* Extract button */}
-      {file && !extracted && (
-        <button
-          type="button"
-          onClick={handleExtract}
-          disabled={extracting}
-          style={{
-            marginTop: 8, width: '100%', padding: '9px 0',
-            background: '#FFFBEB', border: '1px solid #FDE68A',
-            borderRadius: 10, fontSize: 12, fontWeight: 600,
-            color: '#92400E', cursor: extracting ? 'not-allowed' : 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-            fontFamily: 'inherit',
-          }}
-        >
-          {extracting ? (
-            <>
-              <svg style={{ animation: 'spin 0.9s linear infinite', display: 'block' }} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-              </svg>
-              {t('common.extractingViaNvidia', 'Extracting via NVIDIA Vision 90B…')}
-            </>
-          ) : (
-            <>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-              </svg>
-              {t('common.extractFieldsWithAi', 'Extract fields with AI')}
-            </>
-          )}
-        </button>
-      )}
-
-      {/* Extracted fields review card */}
-      {extracted && (
-        <div style={{
-          marginTop: 10,
-          border: '1px solid #BBF7D0',
-          borderRadius: 12,
-          overflow: 'hidden',
-          background: '#F0FDF4',
-        }}>
-          {/* Card header */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '10px 14px 8px',
-            borderBottom: '1px solid #BBF7D0',
-            background: '#DCFCE7',
-          }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5">
-              <path d="M20 6 9 17l-5-5"/>
-            </svg>
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#15803D', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-              {extracted.length === 1
-                ? t('common.nvidiaExtractedOne', { defaultValue: 'NVIDIA Vision extracted {{count}} field', count: extracted.length })
-                : t('common.nvidiaExtractedMany', { defaultValue: 'NVIDIA Vision extracted {{count}} fields', count: extracted.length })}
-            </span>
-          </div>
-
-          {/* Extracted fields */}
-          <div style={{ padding: '6px 0' }}>
-            {extracted.map((f, i) => (
-              <div key={f.key} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                padding: '7px 14px',
-                borderBottom: i < extracted.length - 1 ? '1px solid #D1FAE5' : 'none',
-              }}>
-                <span style={{ fontSize: 11, color: '#6B7280', fontWeight: 500, minWidth: 80, flexShrink: 0 }}>
-                  {f.label}
-                </span>
-                <span style={{
-                  fontSize: 12, fontWeight: 700, color: '#14532D',
-                  textAlign: 'right', maxWidth: 220, wordBreak: 'break-word',
-                }}>
-                  {f.value}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Apply / Applied */}
-          <div style={{ padding: '8px 12px 10px' }}>
-            {applied ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5">
-                  <path d="M20 6 9 17l-5-5"/>
-                </svg>
-                <span style={{ fontSize: 12, fontWeight: 600, color: '#15803D' }}>{t('common.valuesAppliedToForm', 'Values applied to form')}</span>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleApply}
-                style={{
-                  width: '100%', padding: '8px 0',
-                  background: '#16A34A', border: 'none',
-                  borderRadius: 8, fontSize: 12, fontWeight: 700,
-                  color: '#fff', cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                }}
-              >
-                {t('common.applyExtractedValues', 'Apply extracted values to form')}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M5 12h14M13 6l6 6-6 6"/>
-                </svg>
-              </button>
-            )}
-          </div>
+      {file && (
+        <div style={{ marginTop: 8, fontSize: 11, color: '#64748B' }}>
+          {t('common.proofAttached', 'This file is kept with the entry. Type the fields yourself.')}
         </div>
       )}
     </div>

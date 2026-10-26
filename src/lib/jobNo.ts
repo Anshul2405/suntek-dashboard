@@ -21,6 +21,17 @@ export function stripPlaceholderParen(label: string): string {
     .trim();
 }
 
+/** Swap a workbook placeholder like (XXX) for the FAR identification mark. */
+export function labelWithRealMark(label: string, mark: string | null | undefined): string {
+  const real = (mark ?? '').trim();
+  if (!real || isPlaceholderMark(real)) return stripPlaceholderParen(label);
+  const swapped = (label || '').replace(/\((x{2,}|n\/?a|nil|none|tbd|todo|-|—|–)\)/gi, `(${real})`);
+  if (swapped !== (label || '')) return swapped.replace(/\s{2,}/g, ' ').trim();
+  const clean = stripPlaceholderParen(label);
+  if (clean.toLowerCase().includes(`(${real.toLowerCase()})`)) return clean;
+  return clean ? `${clean} (${real})` : real;
+}
+
 export function formatJobNo(prefix: 'FAR' | 'STK', n: number): string {
   return `${prefix}-${String(n).padStart(3, '0')}`;
 }

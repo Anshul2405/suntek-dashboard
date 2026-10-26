@@ -7,6 +7,7 @@ import {
   Tag, CreditCard, LayoutGrid, MapPin, Clock, CalendarDays, Wrench,
 } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { useToast } from '../../../components/ui/toast';
 import { ErrorState } from '../../../components/ui/states';
@@ -106,7 +107,7 @@ export function QRDetail() {
   function print() {
     const png = getPng();
     if (!png) { toast.error(t('far.qrNotReady', 'QR not ready yet')); return; }
-    printQrLabel({ pngDataUrl: png, title: label, subtitle: asset?.plants?.name || '', footer: t('far.qrPrintFooter', { defaultValue: 'Asset #{{id}} · scan to open the digital profile', id: asset?.id.slice(0, 8) }) });
+    printQrLabel({ pngDataUrl: png, title: label, subtitle: displayLocationName(asset?.plants?.name), footer: t('far.qrPrintFooter', { defaultValue: 'Asset #{{id}} · scan to open the digital profile', id: asset?.id.slice(0, 8) }) });
   }
 
   if (loading) {
@@ -202,7 +203,7 @@ export function QRDetail() {
           <DetailRow icon={<Tag />} label={t('far.qrThAssetName', 'Asset Name')} value={label} />
           <DetailRow icon={<CreditCard />} label={t('far.qrAssetId', 'Asset ID')} value={asset.identification_mark || `#${asset.id.slice(0, 8)}`} />
           <DetailRow icon={<LayoutGrid />} label={t('far.qrCategory', 'Category')} value={asset.account_head || asset.make || '—'} />
-          <DetailRow icon={<MapPin />} label={t('far.qrLocation', 'Location')} value={asset.plants?.name || '—'} />
+          <DetailRow icon={<MapPin />} label={t('far.qrLocation', 'Location')} value={displayLocationName(asset.plants?.name) || '—'} />
           <DetailRow icon={<Clock />} label={t('far.thStatus', 'Status')} value={<StatusPill tone="green" label={t('far.qrActive', 'Active')} />} />
           <DetailRow icon={<CalendarDays />} label={t('far.qrInstalledOn', 'Installed On')} value={asset.purchase_date ? fmtDate(asset.purchase_date) : (asset.year ?? '—')} />
           <DetailRow icon={<Wrench />} label={t('far.qrLastMaintenance', 'Last Maintenance')} value={fmtDate(lastMaint)} />

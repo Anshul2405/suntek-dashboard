@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { X, SwitchCamera, Camera, RotateCcw, Check, ImageUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ButtonV2 } from './v2';
+import { retainPhoto } from '../lib/photoCheck';
 
 type Facing = 'environment' | 'user';
 type CamState = 'starting' | 'live' | 'preview' | 'fallback' | 'error';
@@ -35,6 +36,7 @@ export function CameraCapture({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<CamState>('starting');
   const [facing, setFacing] = useState<Facing>(initialFacing);
   const [shot, setShot] = useState<{ blob: Blob; url: string } | null>(null);
@@ -120,8 +122,15 @@ export function CameraCapture({
 
   function onFile(f: File | undefined) {
     if (!f) return;
-    setShot({ blob: f, url: URL.createObjectURL(f) });
-    setState('preview');
+    // Copy starts before the input is cleared below. Gallery photos on plant
+    // phones are often HEIC, or the original file goes blank once the picker closes.
+    const pending = retainPhoto(f, f.name);
+    void pending.then((blob) => {
+      setShot({ blob, url: URL.createObjectURL(blob) });
+      setState('preview');
+    }).catch(() => {
+      setState('error');
+    });
   }
 
   return (
@@ -160,6 +169,12 @@ export function CameraCapture({
           {state === 'preview' && shot && (
             <img src={shot.url} alt="Captured" className="w-full h-full object-contain" />
           )}
+          {state === 'error' && (
+            <div className="text-center px-6">
+              <div className="text-slate-200 text-[13px] font-medium">{t('checkin.photoUnreadable', 'That photo could not be opened.')}</div>
+              <div className="text-slate-400 text-[11.5px] mt-1">{t('checkin.photoUnreadableHint', 'Take it with the Capture button, or pick a JPG from the gallery.')}</div>
+            </div>
+          )}
           {state === 'fallback' && (
             <div className="text-center px-6">
               <Camera size={28} className="text-slate-500 mx-auto mb-2" />
@@ -169,7 +184,7 @@ export function CameraCapture({
                 {t('checkin.openCameraOrChoose', 'Open camera / choose photo')}
               </ButtonV2>
               <input
-                ref={fileRef} type="file" accept="image/*" capture={facing} className="hidden"
+                ref={fileRef} type="file" accept="image/*" className="hidden"
                 onChange={e => { onFile(e.target.files?.[0]); e.target.value = ''; }}
               />
             </div>
@@ -196,9 +211,16 @@ export function CameraCapture({
               <ButtonV2 variant="accent" icon={<Camera />} onClick={snap} disabled={state !== 'live'}>
                 {t('checkin.capture', 'Capture')}
               </ButtonV2>
+              <ButtonV2 variant="outline" icon={<ImageUp />} onClick={() => galleryRef.current?.click()}>
+                {t('checkin.chooseFromGallery', 'Choose from gallery')}
+              </ButtonV2>
             </>
           )}
         </div>
+        <input
+          ref={galleryRef} type="file" accept="image/*" className="hidden"
+          onChange={e => { onFile(e.target.files?.[0]); e.target.value = ''; }}
+        />
       </div>
     </div>
   );

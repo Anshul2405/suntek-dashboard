@@ -10,9 +10,14 @@ import { useNotifications } from '../../contexts/NotificationsContext';
 import { useTodo } from '../../contexts/TodoContext';
 import { useSearchPalette } from '../../contexts/SearchPaletteContext';
 import { profileCanAccess } from '../../lib/profiles';
+import { displayLocationName } from '../../lib/plantLabels';
 import { dropdownStyle } from '../../lib/uiPosition';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 import { IconBell, IconChecklist, IconMenu, IconSearch, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
+import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
+import { useBusyHeartbeat } from '../../hooks/useBusyData';
+import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
+import { useBusyHeartbeat } from '../../hooks/useBusyData';
 
 type NType = 'critical' | 'urgent' | 'warning' | 'info';
 
@@ -61,6 +66,57 @@ interface TopBarProps {
   onMenu?: () => void;
 }
 
+function ShiftClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const label = now.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return <div className="shift-clock" title="Asia/Kolkata">{label} IST</div>;
+}
+
+function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
+  const { t } = useTranslation();
+  const { data: beat, isLoading } = useBusyHeartbeat();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  if (isLoading) return null;
+  const ageMin = beat?.at ? (now - Date.parse(beat.at)) / 60000 : Infinity;
+  const waiting = beat?.status === 'waiting';
+  const dot = !beat || ageMin > 120 ? 'bg-rose-500'
+    : waiting || ageMin > 15 ? 'bg-amber-500'
+    : 'bg-teal-600';
+  const label = !beat
+    ? t('topbar.busyNoFeed', { defaultValue: 'Busy not connected' })
+    : waiting
+      ? t('topbar.busyWaiting', { defaultValue: 'Busy PC waiting · {{age}}', age: formatAge(beat.at) })
+      : t('topbar.busySync', { defaultValue: 'Busy · {{age}}', age: formatAge(beat.at) });
+  const title = beat
+    ? t('topbar.busySyncTitle', {
+        defaultValue: 'Last push from the Busy PC {{computer}} at {{time}}. Read only.',
+        computer: beat.computer ?? '',
+        time: new Date(beat.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }),
+      })
+    : label;
+  return (
+    <div title={title} className="flex items-center gap-1.5 px-1.5 lg:px-2.5 py-1.5 text-[11px] text-slate-500 tabular-nums whitespace-nowrap">
+      <span className={`w-2 h-2 lg:w-1.5 lg:h-1.5 rounded-full ${dot}`} aria-hidden />
+      <span className="sr-only lg:not-sr-only">{label}</span>
+    </div>
+  );
+}
+
 export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -68,6 +124,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const { activeProfile } = useRoleContext();
   const { notifications, unreadCount, markRead, markAllRead, clearAll, tableReady, isNotificationCompleted } = useNotifications();
   const { totalCount: todoCount } = useTodo();
+  const { code: busyCompany, setCode: setBusyCompany } = useBusyCompany();
   const canSeeTodo = profileCanAccess(activeProfile, '/dashboard/todo');
   const [open, setOpen] = useState(false);
   const [photoView, setPhotoView] = useState<string | null>(null);
@@ -117,9 +174,9 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
   const unread = unreadCount;
 
   return (
-    <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-      {/* Left: title block */}
-      <div className="flex items-center gap-2.5 min-w-0">
+    <div className="shift-console">
+      {/* Left: title block — full width on a phone so the action icons cannot squeeze the title */}
+      <div className="flex items-center gap-2.5 min-w-0 w-full md:w-auto md:flex-1">
         {/* Mobile hamburger — opens the sidebar drawer */}
         <button
           onClick={onMenu}
@@ -130,26 +187,38 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
         </button>
         <div className="min-w-0">
           {/* Breadcrumb — "Factory › FAR › Fixed Assets" (parts come '·'-separated) */}
-          <div className="text-[12px] text-slate-400 flex items-center gap-1.5 flex-wrap">
+          <div className="shift-kicker text-[12px] flex items-center gap-1.5 flex-wrap">
             {breadcrumb.split(' · ').map((part, i, arr) => (
               <React.Fragment key={i}>
-                {i > 0 && <span className="text-slate-300">›</span>}
-                <span className={i === arr.length - 1 ? 'text-slate-600 font-medium' : undefined}>{part}</span>
+                {i > 0 && <span className="opacity-40">›</span>}
+                <span className={i === arr.length - 1 ? 'shift-here' : undefined}>{part}</span>
               </React.Fragment>
             ))}
           </div>
-          <h1 className="font-heading font-semibold text-[22px] md:text-[26px] leading-[1.12] mt-0.5 truncate tracking-tight">{title}</h1>
-          {subtitle && <div className="text-[12.5px] text-slate-500 mt-0.5 max-w-[52ch]">{subtitle}</div>}
+          <h1 className="font-heading font-semibold text-[22px] md:text-[30px] leading-[1.12] mt-0.5 truncate tracking-tight">{title}</h1>
+          {subtitle && <div className="shift-sub text-[12.5px] mt-0.5 max-w-[52ch] leading-snug">{subtitle}</div>}
         </div>
       </div>
 
       {/* Right: sync + actions + profile */}
-      <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
+      <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-nowrap justify-end w-full md:w-auto">
+        <ShiftClock />
         {/* Quiet sync stamp — not a SaaS “live” pill */}
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-slate-500 tabular-nums">
-          <span className="w-1.5 h-1.5 rounded-full bg-teal-600" aria-hidden />
-          <span>{t('topbar.lastSync')}</span>
-        </div>
+        <label className="min-w-0">
+          <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
+          <select
+            value={busyCompany}
+            onChange={(e) => setBusyCompany(e.target.value as typeof busyCompany)}
+            aria-label={t('topbar.busyCompany', { defaultValue: 'Busy company' })}
+            className="h-8 max-w-[9.5rem] sm:max-w-[11rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] font-medium text-slate-700"
+          >
+            <option value="all">{t('topbar.busyAll', { defaultValue: 'All companies' })}</option>
+            {BUSY_COMPANIES.map((company) => (
+              <option key={company.code} value={company.code}>{company.short}</option>
+            ))}
+          </select>
+        </label>
+        <BusySyncStamp formatAge={formatAge} />
 
         {/* Global quick-search (Cmd/Ctrl+K) */}
         <button
@@ -200,8 +269,8 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
             ref={panelRef}
             style={{
               ...dropdownStyle(btnRef.current, 360, 520),
-              background: '#fff', border: '1px solid #E2E8F0',
-              borderRadius: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+              background: '#fff', border: '1px solid #CDD5DE',
+              borderRadius: 8, boxShadow: '0 12px 32px rgba(7,20,34,0.14)',
               zIndex: 200, display: 'flex', flexDirection: 'column',
               overflow: 'hidden',
             }}
@@ -327,7 +396,7 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
             <div style={{ padding: '10px 18px', borderTop: '1px solid #F1F5F9', flexShrink: 0 }}>
               <div style={{ fontSize: 11, color: '#94A3B8', textAlign: 'center' }}>
                 {t('topbar.live')} · <strong>{activeProfile.roleLabel}</strong>
-                {activeProfile.plant ? ` · ${activeProfile.plant}` : ''}
+                {activeProfile.plant ? ` · ${displayLocationName(activeProfile.plant)}` : ''}
               </div>
             </div>
           </div>

@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
+import { displayLocationName } from '../../../lib/plantLabels';
 // Shared humanizer — a user should never be shown a raw error object.
 import { humanizeError as errMsg } from '../../../lib/errors';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
+import { ensureLateApproval, useOpsSettings, recordAudit } from '../../../lib/opsControls';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { matchCandidates, type StockLite } from '../../../lib/store/purchaseParse';
 import type { Database } from '../../../lib/database.types';
@@ -54,10 +56,11 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
   const { t } = useTranslation();
   const { storeIdFor } = usePlantScope();
   const { activeProfile } = useRoleContext();
+  const ops = useOpsSettings();
 
   const ticketById = useMemo(() => new Map(tickets.map(tk => [tk.id, tk])), [tickets]);
   const plantId = focusPart?.plant_id ?? null;
-  const plantName = ticketById.get(focusPart?.ticket_id ?? '')?.plants?.name ?? '';
+  const plantName = displayLocationName(ticketById.get(focusPart?.ticket_id ?? '')?.plants?.name);
 
   const [allocs, setAllocs] = useState<AllocDraft[]>([]);
   const [stock, setStock] = useState<(StockLite & { plant_id: string | null })[]>([]);
@@ -168,6 +171,8 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
     }
     const costN = repairCost.trim() === '' ? null : Number(repairCost);
     if (costN != null && (!Number.isFinite(costN) || costN < 0)) { setErr(t('repairReturn.errCost', 'Repair cost must be a number ≥ 0.')); return; }
+    const allowed = await ensureLateApproval({ module: 'repair return', entryDate: returnDate, profile: activeProfile, bufferDays: ops.bufferDays });
+    if (!allowed) { setErr('Not saved. Management has to approve this return date first.'); return; }
     setSaving(true); setErr(null);
     try {
       // Bill upload is best-effort and OPTIONAL — but if a file was chosen and
@@ -204,6 +209,14 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
         },
       });
       if (error) throw new Error(friendly(error.message || ''));
+      void recordAudit({
+        module: 'repair return',
+        action: 'repair_returned',
+        summary: `Recorded a repair return dated ${returnDate || 'today'}`,
+        actorName: activeProfile.name,
+        actorRole: activeProfile.roleLabel,
+        photoUrl: invoiceUrl,
+      });
       onSaved();
       onClose();
     } catch (e) {

@@ -32,6 +32,18 @@ const MAX_PAGES = 50;
 export async function fetchAllRows<T>(
   page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message?: string } | null }>,
 ): Promise<{ data: T[]; error: { message?: string } | null; truncated: boolean }> {
+  return fetchAllRowsProgressive(page);
+}
+
+/**
+ * Same paging as fetchAllRows, but `onPage` runs after every page with the
+ * rows gathered so far. Screens use it to draw the first thousand rows
+ * instead of waiting for the rest of the table.
+ */
+export async function fetchAllRowsProgressive<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message?: string } | null }>,
+  onPage?: (rowsSoFar: T[]) => void,
+): Promise<{ data: T[]; error: { message?: string } | null; truncated: boolean }> {
   const out: T[] = [];
   for (let i = 0; i < MAX_PAGES; i++) {
     const from = i * PAGE;
@@ -39,6 +51,7 @@ export async function fetchAllRows<T>(
     if (error) return { data: out, error, truncated: true };
     const rows = data ?? [];
     out.push(...rows);
+    onPage?.(out.slice());
     // A short page means the end. Equal-to-PAGE means there is probably more.
     if (rows.length < PAGE) return { data: out, error: null, truncated: false };
   }

@@ -7,13 +7,19 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { profileCanAccess } from '../../lib/profiles';
 import { useDirectory } from '../../lib/mentions';
 import { searchEntities, GROUP_KEY, type SearchResult, type SearchType } from '../../lib/globalSearch';
+import { displayLocationName } from '../../lib/plantLabels';
 
 /** Stable display order for the result groups. */
-const TYPE_ORDER: SearchType[] = ['ticket', 'note', 'user', 'customer', 'storereq', 'asset', 'blacklist', 'batch', 'po'];
+const TYPE_ORDER: SearchType[] = [
+  'ticket', 'schedule', 'note', 'user', 'customer', 'plant',
+  'storereq', 'stock', 'asset', 'part', 'activity', 'blacklist',
+  'batch', 'po', 'supplier', 'sales', 'marine', 'cpm', 'upload',
+];
 
 const TYPE_ICON: Record<SearchType, string> = {
-  ticket: '🔧', note: '💬', user: '👤', customer: '🤝', storereq: '📦',
-  asset: '🏷️', blacklist: '🚫', batch: '⚗️', po: '🛒',
+  ticket: '🔧', schedule: '🗓️', note: '💬', user: '👤', customer: '🤝', plant: '🏭',
+  storereq: '📦', stock: '📋', asset: '🏷️', part: '🔩', activity: '📝',
+  blacklist: '🚫', batch: '⚗️', po: '🛒', sales: '💵', marine: '🚢', cpm: '🛢️', upload: '📁', supplier: '🏢',
 };
 
 /**
@@ -65,12 +71,12 @@ export function CommandPalette({ open, onClose, initialQuery = '' }: { open: boo
         const seen = new Set(dbResults.filter((r) => r.type === 'user').map((r) => r.title.trim().toLowerCase()));
         const ql = q.toLowerCase();
         for (const p of directory) {
-          const hay = `${p.name} ${p.roleLabel} ${p.plant ?? ''}`.toLowerCase();
+          const hay = `${p.name} ${p.roleLabel} ${p.plant ?? ''} ${displayLocationName(p.plant)}`.toLowerCase();
           if (!hay.includes(ql)) continue;
           const key = p.name.trim().toLowerCase();
           if (seen.has(key)) continue;
           seen.add(key);
-          merged.push({ id: p.id, type: 'user', title: p.name, subtitle: [p.roleLabel, p.plant].filter(Boolean).join(' · '), route: '/dashboard/users' });
+          merged.push({ id: p.id, type: 'user', title: p.name, subtitle: [p.roleLabel, displayLocationName(p.plant)].filter(Boolean).join(' · '), route: '/dashboard/users' });
         }
       }
       setResults(merged);

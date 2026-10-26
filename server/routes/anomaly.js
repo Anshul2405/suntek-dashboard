@@ -36,11 +36,11 @@ async function entityFindings(pool, anchor) {
     DECLARE @a datetime = @anchor;
     SELECT
       (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=9  AND Cancelled=0 AND [Date] >  DATEADD(DAY,-14,@a))                                  AS recentSales,
-      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=14 AND Cancelled=0 AND [Date] >  DATEADD(DAY,-14,@a))                                  AS recentPurch,
+      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=2 AND Cancelled=0 AND [Date] >  DATEADD(DAY,-14,@a))                                  AS recentPurch,
       (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=9  AND Cancelled=0 AND [Date] <= DATEADD(DAY,-14,@a) AND [Date] > DATEADD(DAY,-28,@a)) AS priorSales,
-      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=14 AND Cancelled=0 AND [Date] <= DATEADD(DAY,-14,@a) AND [Date] > DATEADD(DAY,-28,@a)) AS priorPurch,
+      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=2 AND Cancelled=0 AND [Date] <= DATEADD(DAY,-14,@a) AND [Date] > DATEADD(DAY,-28,@a)) AS priorPurch,
       (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=9  AND Cancelled=0) AS fySales,
-      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=14 AND Cancelled=0) AS fyPurch
+      (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=2 AND Cancelled=0) AS fyPurch
   `);
   const w = wins.recordset[0];
 
@@ -52,17 +52,17 @@ async function entityFindings(pool, anchor) {
   `);
   const p = pace.recordset[0];
 
-  // Purchase vendors live in Tran2 creditor (117) lines; Tran1 header MasterCode1 is 0.
+  // Purchase vendors are the Sundry Creditors (117) lines on purchase vouchers (VchType 2).
   const vendorsRecent = await pool.request().input('anchor', sql.DateTime, anchor).query(`
     DECLARE @a datetime=@anchor;
     SELECT TOP 5 m.Name AS vendor, SUM(ABS(t2.Value1)) AS spend
-    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=14 AND t1.Cancelled=0 AND t1.[Date]>DATEADD(DAY,-30,@a)
+    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=2 AND t1.Cancelled=0 AND t1.[Date]>DATEADD(DAY,-30,@a)
     JOIN Master1 m ON m.Code=t2.MasterCode1 AND m.MasterType=2 AND m.ParentGrp=117
     GROUP BY m.Name ORDER BY SUM(ABS(t2.Value1)) DESC`);
   const vendorsPrior = await pool.request().input('anchor', sql.DateTime, anchor).query(`
     DECLARE @a datetime=@anchor;
     SELECT TOP 5 m.Name AS vendor, SUM(ABS(t2.Value1)) AS spend
-    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=14 AND t1.Cancelled=0 AND t1.[Date]<=DATEADD(DAY,-30,@a) AND t1.[Date]>DATEADD(DAY,-60,@a)
+    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=2 AND t1.Cancelled=0 AND t1.[Date]<=DATEADD(DAY,-30,@a) AND t1.[Date]>DATEADD(DAY,-60,@a)
     JOIN Master1 m ON m.Code=t2.MasterCode1 AND m.MasterType=2 AND m.ParentGrp=117
     GROUP BY m.Name ORDER BY SUM(ABS(t2.Value1)) DESC`);
 
@@ -235,15 +235,15 @@ async function buildAnalytics(pool, anchor) {
   const timeline = [...tl.values()].sort((a, b) => a.key.localeCompare(b.key));
 
   // Top vendor (raw-material supplier) concentration over the FY. Purchase vendors live
-  // in Tran2 creditor lines (Tran1 header MasterCode1 is 0 for purchases).
+  // in Tran2 creditor lines on purchase vouchers (VchType 2).
   const vRes = await pool.request().query(`
     SELECT TOP 6 m.Name AS name, SUM(ABS(t2.Value1)) AS spend
-    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=14 AND t1.Cancelled=0
+    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=2 AND t1.Cancelled=0
     JOIN Master1 m ON m.Code=t2.MasterCode1 AND m.MasterType=2 AND m.ParentGrp=117
     GROUP BY m.Name ORDER BY SUM(ABS(t2.Value1)) DESC`);
   const vTotalRes = await pool.request().query(`
     SELECT ISNULL(SUM(ABS(t2.Value1)),0) AS total
-    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=14 AND t1.Cancelled=0
+    FROM Tran2 t2 JOIN Tran1 t1 ON t1.VchCode=t2.VchCode AND t1.VchType=2 AND t1.Cancelled=0
     JOIN Master1 m ON m.Code=t2.MasterCode1 AND m.MasterType=2 AND m.ParentGrp=117`);
   const vTotal = vTotalRes.recordset[0].total || 1;
   const vendors = vRes.recordset.map(v => ({ name: v.name, sharePct: +(100 * v.spend / vTotal).toFixed(1), spend: v.spend }));

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getPool } from '../db.js';
 import { withFallback } from '../lib/fallback.js';
+import { canonicalSupplier } from '../lib/supplierAlias.js';
 
 const router = Router();
 
@@ -13,11 +14,13 @@ router.get('/mtd', withFallback('sales-mtd', async () => {
         (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
          WHERE VchType = 9 AND Cancelled = 0
            AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
+           AND [Date] <= CAST(GETDATE() AS DATE)
         ) AS totalSalesMTD,
 
         (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
-         WHERE VchType = 16 AND Cancelled = 0
+         WHERE VchType = 14 AND Cancelled = 0
            AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
+           AND [Date] <= CAST(GETDATE() AS DATE)
         ) AS receiptsMTD,
 
         (SELECT COUNT(*) FROM (
@@ -33,14 +36,14 @@ router.get('/mtd', withFallback('sales-mtd', async () => {
         ) AS gstOutputMTD,
 
         (SELECT ISNULL(SUM(TaxAmt + ISNULL(TaxAmt1, 0)), 0) FROM VchGSTSumItemWise
-         WHERE VchType = 14
+         WHERE VchType = 2
            AND MONTH(VchDate) = MONTH(GETDATE()) AND YEAR(VchDate) = YEAR(GETDATE())
         ) AS gstInputMTD,
 
         (SELECT ISNULL(SUM(CASE WHEN VchType=9 THEN TaxAmt + ISNULL(TaxAmt1,0)
                                ELSE -(TaxAmt + ISNULL(TaxAmt1,0)) END), 0)
          FROM VchGSTSumItemWise
-         WHERE VchType IN (9, 14)
+         WHERE VchType IN (9, 2)
            AND MONTH(VchDate) = MONTH(GETDATE()) AND YEAR(VchDate) = YEAR(GETDATE())
         ) AS netGSTPayable,
 
@@ -78,7 +81,7 @@ router.get('/contracts', withFallback('sales-contracts', async () => {
     `);
 
     return result.recordset.map(c => ({
-      customer: c.customer,
+      customer: canonicalSupplier(c.customer),
       totalSales: c.totalSales,
       mtdSales: c.mtdSales,
       invoiceCount: c.invoiceCount,

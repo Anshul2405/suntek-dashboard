@@ -7,6 +7,8 @@ import { NotificationsProvider } from './contexts/NotificationsContext';
 import { TodoProvider } from './contexts/TodoContext';
 import { BlacklistProvider } from './contexts/BlacklistContext';
 import { AnomalyProvider } from './contexts/AnomalyContext';
+import { BusyCompanyProvider } from './contexts/BusyCompanyContext';
+import { BusyFeedSync } from './components/BusyFeedSync';
 import { OcrJobsProvider } from './contexts/OcrJobsContext';
 import { BrandLoader } from './components/brand/BrandLoader';
 
@@ -30,6 +32,7 @@ const NightEntry       = lazy(() => import('./routes/dashboard/NightEntry').then
 const BatchEntry       = lazy(() => import('./routes/dashboard/BatchEntry').then(m => ({ default: m.BatchEntry })));
 const WarehouseEntry   = lazy(() => import('./routes/dashboard/WarehouseEntry').then(m => ({ default: m.WarehouseEntry })));
 const DailyLogPage     = lazy(() => import('./routes/dashboard/DailyLogPage').then(m => ({ default: m.DailyLogPage })));
+const AccessControl   = lazy(() => import('./routes/dashboard/AccessControl').then(m => ({ default: m.AccessControl })));
 const UserManagement   = lazy(() => import('./routes/dashboard/UserManagement').then(m => ({ default: m.UserManagement })));
 const Blacklist        = lazy(() => import('./routes/dashboard/Blacklist').then(m => ({ default: m.Blacklist })));
 const UploadHistory    = lazy(() => import('./routes/dashboard/UploadHistory').then(m => ({ default: m.UploadHistory })));
@@ -47,6 +50,7 @@ const FAR             = lazy(() => import('./routes/dashboard/purchase/FAR').the
 const Maintenance     = lazy(() => import('./routes/dashboard/purchase/Maintenance').then(m => ({ default: m.Maintenance })));
 const ActivityLog     = lazy(() => import('./routes/dashboard/purchase/ActivityLog').then(m => ({ default: m.ActivityLog })));
 const PurchaseOrders  = lazy(() => import('./routes/dashboard/purchase/PurchaseOrders').then(m => ({ default: m.PurchaseOrders })));
+const PurchaseBookPage = lazy(() => import('./routes/dashboard/purchase/PurchaseBook').then(m => ({ default: m.PurchaseBookPage })));
 const MarineInsurance = lazy(() => import('./routes/dashboard/purchase/MarineInsurance').then(m => ({ default: m.MarineInsurance })));
 const Labour          = lazy(() => import('./routes/dashboard/purchase/Labour').then(m => ({ default: m.Labour })));
 const QRManagement    = lazy(() => import('./routes/dashboard/purchase/QRManagement').then(m => ({ default: m.QRManagement })));
@@ -74,6 +78,8 @@ function App() {
       <NotificationsProvider>
       <TodoProvider>
       <BlacklistProvider>
+      <BusyCompanyProvider>
+        <BusyFeedSync />
       <AnomalyProvider>
       <OcrJobsProvider>
       <BrowserRouter>
@@ -95,6 +101,7 @@ function App() {
               <Route path="activity" element={<ActivityLog />} />
               <Route path="storereq" element={<StoreRequisitions />} />
               <Route path="purchase" element={<PurchaseOrders />} />
+              <Route path="book"     element={<PurchaseBookPage />} />
               <Route path="marine"   element={<MarineInsurance />} />
               <Route path="labour"   element={<Labour />} />
               <Route path="qr"       element={<QRManagement />} />
@@ -115,6 +122,7 @@ function App() {
             <Route path="warehouse-entry"   element={<WarehouseEntry />} />
             <Route path="daily-log"         element={<DailyLogPage />} />
             <Route path="users"             element={<UserManagement />} />
+            <Route path="access"            element={<AccessControl />} />
             <Route path="blacklist"         element={<Blacklist />} />
             {/* Admin-only: delete data imported through an incorrect CSV/Excel
                 upload. Gated by the '*' route wildcard that only admin holds,
@@ -149,6 +157,7 @@ function App() {
       </BrowserRouter>
       </OcrJobsProvider>
       </AnomalyProvider>
+      </BusyCompanyProvider>
       </BlacklistProvider>
       </TodoProvider>
       </NotificationsProvider>

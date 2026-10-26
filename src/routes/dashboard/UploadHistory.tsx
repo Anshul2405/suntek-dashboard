@@ -27,6 +27,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { History, Trash2, AlertTriangle, FileSpreadsheet, ShieldAlert, Download } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { profileHasCapability } from '../../lib/profiles';
@@ -89,7 +90,6 @@ export function UploadHistory() {
   // affordance is even shown. Never the only check.
   const canDelete = profileHasCapability(activeProfile, 'delete_import_batch');
 
-  const [tab, setTab] = useState<'uploads' | 'audit'>('uploads');
   const [batches, setBatches] = useState<ImportBatchRow[]>([]);
   const [deletions, setDeletions] = useState<DeletionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,8 +107,11 @@ export function UploadHistory() {
   // narrowed to the register the user was looking at — arriving at an unfiltered
   // list of every upload across every factory would make them do the filtering
   // again, at the exact moment they are trying to undo one specific file.
-  const [params] = useSearchParams();
-  const [search, setSearch] = useState('');
+  const [params, setParams] = useSearchParams();
+  const tab: 'uploads' | 'audit' = params.get('tab') === 'audit' ? 'audit' : 'uploads';
+  const setTab = (k: 'uploads' | 'audit') =>
+    setParams(prev => { const p = new URLSearchParams(prev); p.set('tab', k); return p; }, { replace: true });
+  const [search, setSearch] = useState(() => params.get('q') ?? '');
   const [plantFilter, setPlantFilter] = useState('all');
   const [storeFilter, setStoreFilter] = useState(() => params.get('store') ?? 'all');
   const [moduleFilter, setModuleFilter] = useState(() => params.get('module') ?? 'all');
@@ -207,7 +210,7 @@ export function UploadHistory() {
   const auditSort = useSortable(deletions, {
     deleted_at: d => d.deleted_at,
     module: d => d.module,
-    plant_name: d => d.plant_name ?? '',
+    plant_name: d => displayLocationName(d.plant_name),
     deleted_count: d => d.deleted_count,
   }, { key: 'deleted_at', dir: 'desc' });
   const audit = usePagination(auditSort.sorted, { resetKey: 'audit' });
@@ -341,7 +344,7 @@ export function UploadHistory() {
             <FilterSelect
               label={t('uploads.filterPlant', 'Factory')} value={plantFilter} onChange={setPlantFilter}
               options={[{ value: 'all', label: t('common.allPlants', 'All plants') },
-                        ...plants.map(p => ({ value: p.id, label: p.name }))]}
+                        ...plants.map(p => ({ value: p.id, label: displayLocationName(p.name) }))]}
             />
             {/* Only meaningful for stock uploads — FAR and PM are factory-owned
                 and carry no store — so it appears once a store is in play. */}
@@ -349,7 +352,7 @@ export function UploadHistory() {
               <FilterSelect
                 label={t('uploads.filterStore', 'Store')} value={storeFilter} onChange={setStoreFilter}
                 options={[{ value: 'all', label: t('uploads.allStores', 'All stores') },
-                          ...stores.map(s => ({ value: s.id, label: s.name }))]}
+                          ...stores.map(s => ({ value: s.id, label: displayLocationName(s.name) }))]}
               />
             )}
             <FilterSelect
@@ -547,7 +550,7 @@ export function UploadHistory() {
                   <tr key={d.id}>
                     <td className="whitespace-nowrap">{fmtDT(d.deleted_at)}</td>
                     <td>
-                      <div>{d.plant_name || '—'}</div>
+                      <div>{displayLocationName(d.plant_name) || '—'}</div>
                       {d.store_name && <div className="text-[11px] text-slate-500">{d.store_name}</div>}
                     </td>
                     <td className="whitespace-nowrap">{moduleLabel(d.module)}</td>

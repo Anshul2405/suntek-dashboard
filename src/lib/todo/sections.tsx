@@ -208,7 +208,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
     appliesTo: (ctx) => hasRole(ctx, 'unit_head'),
     fetch: async (ctx) => {
       const tickets = ctx.scopeQuery(
-        supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_unit_head', 'pending_purchase']),
+        supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_unit_head', 'pending_purchase', 'pending_defective_return']),
         { unitCol: 'unit_id' },
       ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
 
@@ -221,7 +221,17 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
 
       const [{ data: tk }, { data: rq }] = await Promise.all([tickets, reqs]);
       const items: TodoItem[] = [];
+      const me = (ctx.personName || '').trim().toLowerCase();
       for (const t of tk ?? []) {
+        if (t.status === 'pending_defective_return') {
+          if ((t.assigned_to || '').trim().toLowerCase() !== me) continue;
+          items.push(ticketItem(ctx, t, {
+            idPrefix: 'mt_',
+            badge: { text: 'Scrap or repairable', tone: 'amber' },
+            extraCells: { by: t.raised_by || '—' },
+          }));
+          continue;
+        }
         items.push(ticketItem(ctx, t, {
           idPrefix: 'mt_',
           badge: { text: 'Approve', tone: 'purple' },
@@ -278,11 +288,12 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       hasRole(ctx, 'store_manager_maint', 'warehouse_manager'),
     fetch: async (ctx) => {
       const { data } = await ctx.scopeQuery(
-        supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_store', 'pending_handover']),
+        supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_store', 'pending_handover', 'pending_defective_return']),
         { unitCol: 'unit_id' },
       ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
-      return (data ?? []).map((t) => ticketItem(ctx, t, {
-        badge: { text: t.status === 'pending_handover' ? 'Handover' : 'Store check', tone: 'amber' },
+      const me = (ctx.personName || '').trim().toLowerCase();
+      return (data ?? []).filter((t) => t.status !== 'pending_defective_return' || (t.assigned_to || '').trim().toLowerCase() === me).map((t) => ticketItem(ctx, t, {
+        badge: { text: t.status === 'pending_defective_return' ? 'Accept item' : t.status === 'pending_handover' ? 'Handover' : 'Store check', tone: 'amber' },
       }));
     },
   },

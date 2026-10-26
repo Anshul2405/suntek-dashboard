@@ -15,12 +15,16 @@ describe('coaParamsForGravity', () => {
   it('uses A2 / 1.3 standard for density 1300 NP', () => {
     const params = coaParamsForGravity(1300, 'NP');
     const sg = params.find((p) => p.key === 'specific_gravity');
-    expect(sg?.standard).toBe('1.3±0.02');
+    expect(sg?.standard).toBe('1.3 ± 0.02');
   });
 
   it('uses A1 / 1.2 standard for density 1200 NP', () => {
     const params = coaParamsForGravity(1200, 'NP');
     const sg = params.find((p) => p.key === 'specific_gravity');
-    expect(sg?.standard).toBe('1.2±0.02');
+    expect(sg?.standard).toBe('1.2 ± 0.02');
+    const visc = params.find((p) => p.key === 'viscosity_35c');
+    expect(visc?.standard).toBe('1 - 5');
+    const ri = params.find((p) => p.key === 'refractive_index');
+    expect(ri?.standard).toBe('>1.49');
   });
 });

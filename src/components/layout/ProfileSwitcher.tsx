@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { useAuth } from '../../hooks/useAuth';
 import { SettingsModal } from '../SettingsModal';
+import { dropdownStyle } from '../../lib/uiPosition';
 import type { MockProfile } from '../../lib/profiles';
+import { displayLocationName } from '../../lib/plantLabels';
 
 // ── Avatar ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ export function ProfileSwitcher() {
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -82,6 +85,7 @@ export function ProfileSwitcher() {
     <div ref={ref} className="relative">
       {/* Trigger chip */}
       <button
+        ref={btnRef}
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 md:gap-2.5 md:pl-2 md:pr-3 md:py-1.5 shrink-0 bg-white border border-slate-200 rounded-full hover:bg-slate-50 transition-colors"
       >
@@ -103,14 +107,17 @@ export function ProfileSwitcher() {
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[250px] bg-white rounded-2xl shadow-xl border border-slate-200 z-50 overflow-hidden">
+        <div
+          className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden"
+          style={dropdownStyle(btnRef.current, 250, 420)}
+        >
           {/* Identity header */}
           <div className="px-4 pt-4 pb-3 border-b border-slate-100 bg-slate-50/60 flex items-center gap-3">
             <ProfileAvatar profile={activeProfile} size="md" />
             <div className="min-w-0">
               <div className="text-[13px] font-bold leading-tight truncate">{activeProfile.name}</div>
               <div className="text-[11px] text-slate-500">{activeProfile.roleLabel}</div>
-              {activeProfile.plant && <div className="text-[11px] text-slate-400 truncate">📍 {activeProfile.plant}</div>}
+              {activeProfile.plant && <div className="text-[11px] text-slate-400 truncate">📍 {displayLocationName(activeProfile.plant)}</div>}
             </div>
           </div>
 

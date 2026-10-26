@@ -401,6 +401,7 @@ export interface Database {
           /** Claimed by approved-but-not-handed-over requests. Free = on_hand - reserved_qty. */
           reserved_qty: number;
           item_name: string;
+          value_category: string | null;
           job_no: string | null;
           unit: string | null;
           equipment: string | null;
@@ -1040,15 +1041,40 @@ export interface Database {
           unit_id: string | null; // FK to units — scoping key (27_plant_unit_scoping.sql)
           qty: number;
           urgency: 'low' | 'medium' | 'high' | 'plant_stopper';
-          status: 'pending' | 'approved' | 'dispatched' | 'received' | 'rejected';
+          status: 'pending' | 'approved' | 'dispatched' | 'received' | 'rejected' | 'pending_store' | 'issued' | 'pending_approval' | 'pending_vijay' | 'pending_buyer' | 'in_transit';
           raised_by: string | null;
           approved_by: string | null;
           photo_url: string | null;
           remarks: string | null;
+          approver_key: string | null;
+          buyer_name: string | null;
+          supplier: string | null;
+          vehicle_no: string | null;
+          dispatch_id: string | null;
           created_at: string;
         };
         Insert: OptionalNulls<Omit<Database['public']['Tables']['store_requisitions']['Row'], 'id' | 'created_at'>>;
         Update: Partial<Database['public']['Tables']['store_requisitions']['Insert']>;
+      };
+
+      other_payments: {
+        Row: {
+          id: string;
+          kind: 'freight' | 'service' | 'bill' | 'advance' | 'other';
+          payee: string;
+          amount: number;
+          note: string | null;
+          status: 'requested' | 'approved' | 'paid';
+          requested_by: string | null;
+          approved_by: string | null;
+          paid_by: string | null;
+          plant_id: string | null;
+          created_at: string;
+          approved_at: string | null;
+          paid_at: string | null;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['other_payments']['Row'], 'id' | 'created_at'>>;
+        Update: Partial<Database['public']['Tables']['other_payments']['Insert']>;
       };
 
       fixed_assets: {
@@ -1070,6 +1096,7 @@ export interface Database {
           purchase_date: string | null;
           account_head: string | null;
           photo_url: string | null;
+          deleted_at: string | null;
           // QR asset management (49_asset_qr_and_far_link.sql). Opt-in per asset:
           // NULL until a user generates one; rotates on regenerate.
           qr_token: string | null;
@@ -1158,18 +1185,23 @@ export interface Database {
           schedule_id: string | null;
           description: string | null;
           due_date: string | null;
+          ticket_no: string | null;
           raised_by: string | null;
           raised_role: string | null;
           assigned_to: string | null;
           // Reliable link to the fixed asset (49_asset_qr_and_far_link.sql). Wired
           // from the raise form + copied from the schedule on periodic spawn.
           far_asset_id: string | null;
+          material_kind: 'spare' | 'consumable' | null;
           completion_photo_url: string | null;
+          completion_photo_urls: string[] | null;
           defective_part_photo_url: string | null;
+          defective_part_photo_urls: string[] | null;
           defective_part_decision: 'repair' | 'scrap' | 'mixed' | 'consumed' | null;
           repair_qty: number;             // units sent for repair (55_repair_returns.sql; legacy default 1)
           repair_returned_qty: number;    // units already returned to stock via receipts
           defective_raise_photo_url: string | null; // optional photo of the broken item at raise
+          defective_raise_photo_urls: string[] | null;
           pm_items_count: number | null;            // Purchase Manager: declared # items
           pm_bill_total: number | null;             // Purchase Manager: declared bill total
           pm_bill_url: string | null;               // supplier bill photo (aggregate)
@@ -1191,6 +1223,8 @@ export interface Database {
           revision_count: number | null;            // how many review cycles so far
           revision_prev_status: string | null;      // stage to restore on resubmit
           assessed_by: string | null;
+          submitted_by: string | null;          // periodic: technical who submitted for verification
+          submitted_at: string | null;          // periodic: when technical submitted
           verified_by: string | null;
           defective_decided_by: string | null;
           closed_by: string | null;
@@ -1214,6 +1248,7 @@ export interface Database {
           id: string;
           ticket_id: string;
           part_name: string;
+          value_category: string | null;
           quantity: number | null;
           unit: string | null;            // Units | mg | g | kg | mL | L
           specification: string | null;
@@ -1234,7 +1269,9 @@ export interface Database {
           total_price: number | null;
           supplier_name: string | null;
           handover_invoice_url: string | null;
+          handover_invoice_urls: string[] | null;
           handover_photo_url: string | null;
+          handover_photo_urls: string[] | null;
           handover_notes: string | null;
           handover_confirmed_at: string | null;
           bill_verified: boolean | null;

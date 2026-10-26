@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { upsertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
 import { useRoleContext } from '../../contexts/RoleContext';
@@ -235,7 +236,7 @@ export function NightManagerBoard() {
           }
         }
 
-        const plant = row.plants?.name || t('nightBoard.unknownPlant');
+        const plant = displayLocationName(row.plants?.name) || t('nightBoard.unknownPlant');
         const pl = (row as { plants?: { lat?: number | null; lng?: number | null } | null }).plants;
         const centre: [number, number] | null =
           typeof pl?.lat === 'number' && typeof pl?.lng === 'number' ? [pl.lat, pl.lng] : null;

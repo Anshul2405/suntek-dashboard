@@ -28,10 +28,11 @@ export function BrandLoader({
         </div>
         {fullScreen && (
           <>
-            <div className="font-heading text-[1.15rem] font-semibold tracking-tight text-[var(--dark)] mt-5">
+            <div className="font-heading text-[1.25rem] font-semibold tracking-tight mt-5">
               Suntek
             </div>
-            <p className="text-[12px] text-slate-500 mt-1 tracking-wide">{label}</p>
+            <p className="text-[12px] mt-1 tracking-[0.12em] uppercase">{label}</p>
+            <div className="brand-loader-rail" aria-hidden><span /></div>
           </>
         )}
       </div>

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Users, UserCheck, Shield, Settings, Pencil, History as HistoryIcon, Trash2, UserX, UserPlus } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { fetchActivePlants } from '../../lib/plants';
+import { displayLocationName } from '../../lib/plantLabels';
 import { humanizeError } from '../../lib/errors';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { insertRows, updateRows, callRpc } from '../../lib/db';
@@ -88,6 +89,7 @@ const ALL_DASHBOARD_SECTIONS: { route: string; label: string; labelKey: string }
   { route: '/dashboard/purchase/activity',label: 'Activity Log',               labelKey: 'userMgmt.sec_plantActivityLog' },
   { route: '/dashboard/purchase/storereq',label: 'Store Requisitions',         labelKey: 'userMgmt.sec_storeRequisitions' },
   { route: '/dashboard/purchase/purchase',label: 'Purchase Orders',            labelKey: 'userMgmt.sec_purchaseOrders' },
+  { route: '/dashboard/purchase/book',    label: 'Purchase book',              labelKey: 'userMgmt.sec_purchaseBook' },
   { route: '/dashboard/purchase/marine',  label: 'Marine Insurance',           labelKey: 'userMgmt.sec_marineInsurance' },
   { route: '/dashboard/purchase/labour',  label: 'Labour Costs',               labelKey: 'userMgmt.sec_labourCosts' },
 ];
@@ -542,7 +544,7 @@ export function UserManagement() {
     email: u => u.email,
     role: u => u.role_label || roleOptions.find(r => r.id === u.role_id)?.label || u.role_id,
     level: u => roleOptions.find(r => r.id === u.role_id)?.level,
-    plant: u => u.plants?.name || u.plant_name,
+    plant: u => displayLocationName(u.plants?.name || u.plant_name),
     designation: u => u.designation,
     status: u => (u.is_active ? 1 : 0),
     added: u => (u.created_at ? new Date(u.created_at) : null),
@@ -566,7 +568,7 @@ export function UserManagement() {
       whatsapp: u.whatsapp || '',
       role_id: u.role_id && u.role_id !== 'night_manager' ? u.role_id : '',
       role_ids: u.role_id && u.role_id !== 'night_manager' ? [u.role_id] : [],
-      plant: u.plants?.name || u.plant_name || '',
+      plant: displayLocationName(u.plants?.name || u.plant_name),
       designation: u.designation || '',
       access_note: u.access_note || '',
       is_active: u.is_active ?? true,
@@ -814,6 +816,22 @@ export function UserManagement() {
     () => form.role_ids.map(id => roles.find(r => r.id === id)).filter((r): r is RoleRow => !!r),
     [form.role_ids, roles],
   );
+
+  async function setPrimaryImportCap(cap: string, on: boolean) {
+    const role = roles.find(r => r.id === form.role_id);
+    if (!role || role.is_admin) return;
+    const ok = await stepUp();
+    if (!ok) return;
+    const capabilities = on
+      ? [...new Set([...(role.capabilities || []), cap])]
+      : (role.capabilities || []).filter(c => c !== cap);
+    const { error } = await updateRows('roles', { capabilities }).eq('id', role.id);
+    if (error) { toast.error(error.message); return; }
+    await refreshRoles();
+    toast.success(on
+      ? t('userMgmt.importCapOn', { defaultValue: 'Saved on the {{role}} role. This does not allow deleting tickets or other entries.', role: role.label })
+      : t('userMgmt.importCapOff', { defaultValue: 'Removed from the {{role}} role.', role: role.label }));
+  }
   const unionRoutes = useMemo(() => {
     if (selectedRoles.some(r => r.allowed_routes?.includes('*'))) return ['*'] as string[];
     return [...new Set(selectedRoles.flatMap(r => r.allowed_routes ?? []))];
@@ -822,6 +840,14 @@ export function UserManagement() {
     () => ALL_DASHBOARD_SECTIONS.filter(s => unionRoutes.includes('*') || unionRoutes.includes(s.route)),
     [unionRoutes],
   );
+  const unionCaps = useMemo(() => {
+    if (selectedRoles.some(r => r.is_admin || r.allowed_routes?.includes('*'))) return [] as string[];
+    return [...new Set(selectedRoles.flatMap(r => r.capabilities ?? []))];
+  }, [selectedRoles]);
+  const capLabel = (key: string) =>
+    CAPABILITIES.find(c => c.key === key)?.label
+    || IMPORT_FILE_CAPS.find(c => c.key === key)?.title
+    || key;
 
   // Roles the current user may ASSIGN. Admins (manage_roles) can assign any role;
   // a delegate (manage_users only) can assign only roles at/below their own tier
@@ -977,7 +1003,7 @@ export function UserManagement() {
                         {ro?.level || '—'}
                       </span>
                     </td>
-                    <td className="text-slate-500 text-xs">{u.plants?.name || u.plant_name || <span className="text-slate-300">—</span>}</td>
+                    <td className="text-slate-500 text-xs">{displayLocationName(u.plants?.name || u.plant_name) || <span className="text-slate-300">—</span>}</td>
                     <td className="text-slate-500 text-xs">{u.designation || <span className="text-slate-300">—</span>}</td>
                     <td>
                       <span className="badge" style={{ background: sc.bg, color: sc.color, fontWeight: 700 }}>{u.is_active ? t('userMgmt.active') : t('userMgmt.inactive')}</span>
@@ -1080,6 +1106,34 @@ export function UserManagement() {
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{t('userMgmt.rolesHint', 'First selected = primary (drives display + login). Access = the union of all selected.')}</div>
         </PanelField>
 
+        {selectedRole && (
+          <>
+            <ImportFileAllowances
+              caps={selectedRole.is_admin ? ['edit_import_batch', 'delete_import_batch'] : (selectedRole.capabilities || [])}
+              disabled={!!selectedRole.is_admin || !can('manage_roles')}
+              note={selectedRole.is_admin
+                ? t('userMgmt.importAdminNote', 'Owner/Admin can already do this. Other roles only get it when you turn it on here.')
+                : t('userMgmt.importRoleNote', { defaultValue: 'Saved on the {{role}} role, so everyone with that role gets it. It does not delete tickets or other entries.', role: selectedRole.label })}
+              onToggle={(cap, on) => { void setPrimaryImportCap(cap, on); }}
+            />
+            <ImportFileAllowances
+              title={t('userMgmt.scheduleSetupTitle', 'Schedule setup')}
+              body={t('userMgmt.scheduleSetupBody', 'Lets this role open Maintenance → Schedule Setup and add, revise, or delete schedule rows. Store managers are hidden from that tab until this is on.')}
+              caps={selectedRole.is_admin ? ['manage_schedules'] : (selectedRole.capabilities || [])}
+              disabled={!!selectedRole.is_admin || !can('manage_roles')}
+              items={[{
+                key: 'manage_schedules',
+                title: t('userMgmt.cap.manage_schedules.title', 'Add or delete schedule setup'),
+                body: t('userMgmt.cap.manage_schedules.body', 'Show the Schedule Setup tab. Does not delete tickets or other dashboard entries.'),
+              }]}
+              note={selectedRole.is_admin
+                ? t('userMgmt.scheduleAdminNote', 'Owner/Admin already has Schedule Setup.')
+                : t('userMgmt.importRoleNote', { defaultValue: 'Saved on the {{role}} role, so everyone with that role gets it. It does not delete tickets or other entries.', role: selectedRole.label })}
+              onToggle={(cap, on) => { void setPrimaryImportCap(cap, on); }}
+            />
+          </>
+        )}
+
         {/* Combined access — union of every selected role, not just the primary. */}
         {selectedRoles.length > 0 && (
           <div style={{ marginBottom: 16, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, padding: '10px 14px' }}>
@@ -1109,6 +1163,11 @@ export function UserManagement() {
               {unionSections.map(s => (
                 <span key={s.route} style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: '#DCFCE7', color: '#166534' }}>
                   {t(s.labelKey, s.label)}
+                </span>
+              ))}
+              {unionCaps.map(key => (
+                <span key={key} style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: '#FFF7ED', color: '#C2410C' }}>
+                  {capLabel(key)}
                 </span>
               ))}
             </div>
@@ -1157,7 +1216,7 @@ export function UserManagement() {
                           return { ...f, plant_ids, unit_ids };
                         })}
                       />
-                      <span>{p.name}</span>
+                      <span>{displayLocationName(p.name)}</span>
                     </label>
                   );
                 })}
@@ -1199,7 +1258,7 @@ export function UserManagement() {
                             checked={on}
                             onChange={() => setForm(f => ({ ...f, store_ids: on ? f.store_ids.filter(x => x !== st.id) : [...f.store_ids, st.id] }))}
                           />
-                          <span>{st.name}</span>
+                          <span>{displayLocationName(st.name)}</span>
                           {viaPlant && <span style={{ fontSize: 10, color: '#94A3B8' }}>{t('userMgmt.storeViaFactory', '· via factory')}</span>}
                         </label>
                       );
@@ -1473,6 +1532,9 @@ export function UserManagement() {
                     </div>
                     <div className="text-[11px] text-slate-400 mt-1">
                       {r.id} · {access} · {t('userMgmt.userCount', { defaultValue: '{{count}} users', count: userCount })}
+                      {(r.capabilities || []).some(c => c === 'edit_import_batch' || c === 'delete_import_batch') && (
+                        <span> · {t('userMgmt.importFilesBadge', 'Imported files only')}</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -1577,9 +1639,21 @@ export function UserManagement() {
         {/* ── 🔒 Special allowances (privileged) ──────────────────────────────
             Locked by default. Granting one gives this role's holders admin-like
             power (e.g. create users), so toggling requires a password step-up. */}
+        <ImportFileAllowances
+          caps={roleForm.capabilities}
+          onToggle={async (cap, on) => {
+            const ok = await stepUp();
+            if (!ok) return;
+            setRoleForm(f => ({
+              ...f,
+              capabilities: on ? [...f.capabilities.filter(x => x !== cap), cap] : f.capabilities.filter(x => x !== cap),
+            }));
+          }}
+        />
+
         <PanelField label={t('userMgmt.specialAllowances', '🔒 Special allowances (privileged)')}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {CAPABILITIES.map(c => {
+            {CAPABILITIES.filter(c => c.key !== 'edit_import_batch' && c.key !== 'delete_import_batch').map(c => {
               const on = roleForm.capabilities.includes(c.key);
               return (
                 <div key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, border: `1px solid ${on ? '#FDBA74' : '#E2E8F0'}`, background: on ? '#FFF7ED' : '#F8FAFC' }}>
@@ -1628,6 +1702,64 @@ export function UserManagement() {
       {/* Password step-up modal (privileged allowance unlock) */}
       {stepUpModal}
     </>
+  );
+}
+
+const IMPORT_FILE_CAPS: { key: string; title: string; body: string }[] = [
+  {
+    key: 'edit_import_batch',
+    title: 'Edit imported workbook / CSV only',
+    body: 'Edit stock-register rows that an uploaded Excel or CSV created. Hand-entered rows stay as they are.',
+  },
+  {
+    key: 'delete_import_batch',
+    title: 'Delete imported workbook / CSV only',
+    body: 'Delete that uploaded file and the rows it created. Maintenance tickets and every other dashboard entry stay.',
+  },
+];
+
+function ImportFileAllowances({
+  caps, disabled, note, onToggle, title, body, items,
+}: {
+  caps: string[];
+  disabled?: boolean;
+  note?: string;
+  onToggle: (cap: string, on: boolean) => void;
+  title?: string;
+  body?: string;
+  items?: { key: string; title: string; body: string }[];
+}) {
+  const { t } = useTranslation();
+  const list = items ?? IMPORT_FILE_CAPS;
+  return (
+    <div style={{ marginBottom: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, background: '#F8FAFC' }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{title ?? t('userMgmt.importFilesTitle', 'Imported workbook / CSV')}</div>
+      <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 4, lineHeight: 1.45 }}>
+        {body ?? t('userMgmt.importFilesBody', 'These allowances cover an uploaded Excel or CSV only. They do not delete maintenance tickets, or any other entry on the dashboard.')}
+      </div>
+      {note && <div style={{ fontSize: 11.5, color: '#475569', marginTop: 6, lineHeight: 1.45 }}>{note}</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+        {list.map(c => {
+          const on = caps.includes(c.key);
+          return (
+            <div key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, border: `1px solid ${on ? '#86EFAC' : '#E2E8F0'}`, background: '#fff' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A' }}>{t(`userMgmt.cap.${c.key}.title`, c.title)}</div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{t(`userMgmt.cap.${c.key}.body`, c.body)}</div>
+              </div>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => { if (!disabled) onToggle(c.key, !on); }}
+                style={{ width: 44, height: 24, borderRadius: 12, background: on ? '#16A34A' : '#CBD5E1', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative', flexShrink: 0, opacity: disabled ? 0.7 : 1 }}
+              >
+                <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#fff', position: 'absolute', top: 3, transition: 'left 0.2s', left: on ? 22 : 4 }} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

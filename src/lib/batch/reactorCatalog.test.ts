@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import {
   isBatchSheetPlant,
@@ -9,6 +10,9 @@ import {
   isProductionSheetBatchNo,
   isValidReactorBatchNo,
   reactorBatchPrefix,
+  missingReactorBatches,
+  describeMissingSheets,
+  describeMissingRanges,
 } from './reactorCatalog';
 
 describe('reactorCatalog', () => {
@@ -81,6 +85,15 @@ describe('reactorCatalog', () => {
     expect(parseReactorBatchSeq('P34-103')).toBe(103);
     expect(isProductionSheetBatchNo('P12-13')).toBe(true);
     expect(isProductionSheetBatchNo('PBS-12345678')).toBe(true);
+  });
+
+  it('flags the batch numbers skipped between the first and the latest sheet', () => {
+    const gaps = missingReactorBatches(['P12-01', 'P12-09', 'P13-1', 'P13-2']);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].code).toBe('P12');
+    expect(gaps[0].missing).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    expect(describeMissingSheets(gaps[0])).toBe('P12-02 to P12-08');
+    expect(describeMissingRanges(gaps[0])).toBe('02–08');
   });
 
   it('validates reactor batch number format', () => {

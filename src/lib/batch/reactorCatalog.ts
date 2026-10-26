@@ -154,3 +154,77 @@ export function parseReactorBatchSeq(batchNo: string, reactorCode?: string): num
 export function isProductionSheetBatchNo(batchNo: string): boolean {
   return /^PBS-/i.test(batchNo) || /^P\d+-\d+$/i.test(batchNo);
 }
+
+export interface ReactorGap {
+  code: string;
+  /** Sequence numbers from 1 up to the highest sheet that are not on file. */
+  missing: number[];
+  /** Digit width taken from the batch numbers already saved, so P12-01 stays P12-02. */
+  pad: number;
+  /** Highest sequence already on file for this reactor. */
+  highest: number;
+}
+
+/** P12-02, using the same number of digits as the sheets already saved. */
+export function formatPaddedBatchNo(code: string, seq: number, pad: number): string {
+  return `${code}-${String(seq).padStart(Math.max(1, pad), '0')}`;
+}
+
+/**
+ * Numbers skipped on a reactor. P12-01 and P12-09 on file means P12-02 through
+ * P12-08 were never uploaded.
+ */
+export function missingReactorBatches(batchNos: string[]): ReactorGap[] {
+  const byCode = new Map<string, { seqs: Set<number>; pad: number }>();
+  for (const raw of batchNos) {
+    const m = /^(P\d+)-(\d+)$/i.exec((raw || '').trim());
+    if (!m) continue;
+    const code = m[1].toUpperCase();
+    const seq = parseInt(m[2], 10);
+    if (!Number.isFinite(seq) || seq < 1) continue;
+    const slot = byCode.get(code) ?? { seqs: new Set<number>(), pad: 1 };
+    slot.seqs.add(seq);
+    slot.pad = Math.max(slot.pad, m[2].length);
+    byCode.set(code, slot);
+  }
+  const gaps: ReactorGap[] = [];
+  for (const [code, slot] of byCode) {
+    const max = Math.max(...slot.seqs);
+    const missing: number[] = [];
+    for (let n = 1; n < max; n++) {
+      if (!slot.seqs.has(n)) missing.push(n);
+    }
+    if (missing.length) gaps.push({ code, missing, pad: slot.pad, highest: max });
+  }
+  return gaps.sort((a, b) => parseInt(a.code.slice(1), 10) - parseInt(b.code.slice(1), 10));
+}
+
+/** "P12-02 to P12-08" or "P12-02, P12-04 to P12-05". */
+export function describeMissingSheets(gap: ReactorGap): string {
+  return collapseMissing(gap, (n) => formatPaddedBatchNo(gap.code, n, gap.pad), ' to ');
+}
+
+/** "02–08, 12–14" — the reactor code is already the row label. */
+export function describeMissingRanges(gap: ReactorGap): string {
+  return collapseMissing(gap, (n) => String(n).padStart(Math.max(1, gap.pad), '0'), '–');
+}
+
+function collapseMissing(gap: ReactorGap, label: (n: number) => string, between: string): string {
+  const ranges: string[] = [];
+  let start = gap.missing[0];
+  let prev = gap.missing[0];
+  const flush = (a: number, b: number) => {
+    ranges.push(a === b ? label(a) : `${label(a)}${between}${label(b)}`);
+  };
+  for (let i = 1; i <= gap.missing.length; i++) {
+    const n = gap.missing[i];
+    if (n === prev + 1) {
+      prev = n;
+      continue;
+    }
+    flush(start, prev);
+    start = n;
+    prev = n;
+  }
+  return ranges.join(', ');
+}

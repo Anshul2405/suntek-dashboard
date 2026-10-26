@@ -1,8 +1,13 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MentionTextarea } from '../../components/mentions';
 import { useMentionNotifier } from '../../lib/mentions';
 import { useBlacklistGuard } from '../../lib/blacklist/guard';
+import { insertRows, updateRows } from '../../lib/db';
+import { supabase } from '../../lib/supabase';
+import { useToast } from '../../components/ui/toast';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../contexts/RoleContext';
 
 type Tab = 'stock' | 'req';
 
@@ -14,22 +19,19 @@ interface Tank {
 }
 
 interface DrumRow {
+  id: string;
   density: number;
   location: string;
   opening: number;
 }
 
-const TANKS: Tank[] = [
-  { id: 'npg',  label: 'NPG Raw',        color: '#3B82F6', defaultPct: 60 },
-  { id: 'cp12', label: 'CP 1200 Storage', color: '#F59E0B', defaultPct: 25 },
-  { id: 'hcl',  label: 'HCL Byproduct',  color: '#10B981', defaultPct: 85 },
-];
+const TANK_COLORS = ['#3B82F6', '#F59E0B', '#10B981', '#8B5CF6', '#0EA5E9', '#EF4444'];
 
-const DRUM_ROWS: DrumRow[] = [
-  { density: 1200, location: 'SCPL', opening: 23 },
-  { density: 1300, location: 'SCPL', opening: 197 },
-  { density: 1400, location: 'SCPL', opening: 118 },
-];
+async function resolvePlantId(preferred?: string | null): Promise<string | null> {
+  if (preferred) return preferred;
+  const { data } = await supabase.from('plants').select('id').order('name').limit(1).returns<{ id: string }[]>();
+  return data?.[0]?.id ?? null;
+}
 
 const URGENCY_OPTIONS = [
   { value: 'low',    label: 'Low (Routine)' },
@@ -38,9 +40,8 @@ const URGENCY_OPTIONS = [
 ];
 
 /* ─── Tank slider widget ─── */
-function TankWidget({ tank }: { tank: Tank }) {
+function TankWidget({ tank, pct, onChange }: { tank: Tank; pct: number; onChange: (pct: number) => void }) {
   const { t } = useTranslation();
-  const [pct, setPct] = useState(tank.defaultPct);
   const low = pct < 30;
 
   return (
@@ -64,7 +65,7 @@ function TankWidget({ tank }: { tank: Tank }) {
       {low && <div className="text-xs font-bold text-red-500 mb-2">⚠ {t('warehouse.lowLevel')}</div>}
       <input
         type="range" min={0} max={100} value={pct}
-        onChange={e => setPct(Number(e.target.value))}
+        onChange={e => onChange(Number(e.target.value))}
         className="w-full"
       />
       <div className="text-xs text-slate-400 mt-1">{t('warehouse.pctFilled', { pct })}</div>
@@ -73,9 +74,8 @@ function TankWidget({ tank }: { tank: Tank }) {
 }
 
 /* ─── Drum row with editable physical count ─── */
-function DrumRowInput({ row }: { row: DrumRow }) {
+function DrumRowInput({ row, count, onChange }: { row: DrumRow; count: number; onChange: (count: number) => void }) {
   const { t } = useTranslation();
-  const [count, setCount] = useState(row.opening);
   const variance = count - row.opening;
   const hasVariance = count !== row.opening;
 
@@ -88,7 +88,7 @@ function DrumRowInput({ row }: { row: DrumRow }) {
         <input
           type="number"
           value={count}
-          onChange={e => setCount(Number(e.target.value))}
+          onChange={e => onChange(Number(e.target.value))}
           className="w-24 p-2 border rounded-lg text-sm font-mono font-bold focus:outline-none focus:ring-2 transition"
           style={{ borderColor: hasVariance ? '#FCA5A5' : '#E2E8F0' }}
         />
@@ -113,24 +113,54 @@ function DrumRowInput({ row }: { row: DrumRow }) {
 /* ─── Requisition form ─── */
 function RequisitionForm() {
   const { t } = useTranslation();
+  const toast = useToast();
+  const { activeProfile } = useRoleContext();
+  const { allowedPlants } = usePlantScope();
   const fileRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
   const [item, setItem]           = useState('');
   const [qty, setQty]             = useState('');
   const [urgency, setUrgency]     = useState('low');
   const [remarks, setRemarks]     = useState('');
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
-  const [photoName, setPhotoName] = useState<string | null>(null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
   const submittingRef = useRef(false);
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submittingRef.current) return; // double-submit guard
+    if (submittingRef.current) return;
     submittingRef.current = true;
     try {
-      await new Promise(r => setTimeout(r, 800));
-      await notifyMentions(remarks, { entityLabel: `Warehouse requisition · ${item || 'item'}`, route: '/warehouse/requisition' });
+      const plantId = await resolvePlantId(allowedPlants[0]?.id);
+      const urgencyValue = urgency === 'high' ? 'plant_stopper' : urgency === 'medium' ? 'medium' : 'low';
+      let photoUrl: string | null = null;
+      if (photoFile) {
+        try {
+          const { shrinkPhoto, uploadWorkflowImage } = await import('../../lib/cloudinary');
+          const blob = await shrinkPhoto(photoFile);
+          const up = await uploadWorkflowImage(blob, { workflow: 'store-req', kind: 'proof', creator: activeProfile.name, plant: allowedPlants[0]?.name });
+          photoUrl = up.secure_url;
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : t('warehouse.photoFailed', 'The photo could not be uploaded.'));
+          return;
+        }
+      }
+      const { error } = await insertRows('store_requisitions', {
+        item: item.trim(),
+        plant_id: plantId,
+        qty: parseFloat(qty) || 0,
+        urgency: urgencyValue,
+        status: 'pending_store',
+        remarks: remarks.trim() || null,
+        photo_url: photoUrl,
+      });
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      await notifyMentions(remarks, { entityLabel: `Warehouse requisition · ${item || 'item'}`, route: '/dashboard/purchase/storereq?queue=pending' });
       await screenBlacklist(
         [{ value: item, label: 'Item' }, { value: remarks, label: 'Remarks' }],
         { workflow: 'Warehouse Requisition', source: 'entry', entityLabel: `Warehouse requisition · ${item || 'item'}` },
@@ -150,9 +180,9 @@ function RequisitionForm() {
           </svg>
         </div>
         <h3 className="text-xl font-extrabold mb-1">{t('warehouse.requisitionRaised')} ✓</h3>
-        <p className="text-sm text-slate-500 mb-6">{t('warehouse.sentToApprovalQueue', { name: 'Vijay Ji' })}</p>
+        <p className="text-sm text-slate-500 mb-6">{t('warehouse.sentToApprovalQueue', 'It is on the store requisition list for approval.')}</p>
         <button
-          onClick={() => { setItem(''); setQty(''); setRemarks(''); setPhotoName(null); setSubmitted(false); }}
+          onClick={() => { setItem(''); setQty(''); setRemarks(''); setPhotoFile(null); setSubmitted(false); }}
           className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700"
         >
           {t('warehouse.raiseAnother')}
@@ -212,28 +242,23 @@ function RequisitionForm() {
           </label>
           <input
             ref={fileRef} type="file" accept="image/*" capture="environment"
-            className="hidden" onChange={e => setPhotoName(e.target.files?.[0]?.name ?? null)}
+            className="hidden" onChange={e => { setPhotoFile(e.target.files?.[0] ?? null); e.target.value = ''; }}
           />
-          <div
-            onClick={() => fileRef.current?.click()}
-            className="border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-slate-400 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors"
-            style={{ borderColor: photoName ? '#6EE7B7' : '#CBD5E1' }}
-          >
-            {photoName ? (
-              <div className="flex items-center gap-2 text-emerald-600 font-semibold text-sm">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20 6 9 17l-5-5"/>
-                </svg>
-                {photoName}
-              </div>
-            ) : (
-              <>
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mb-2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                </svg>
-                <span className="text-sm font-medium">{t('warehouse.uploadPhotoHint')}</span>
-              </>
-            )}
+          <input
+            ref={galleryRef} type="file" accept="image/*"
+            className="hidden" onChange={e => { setPhotoFile(e.target.files?.[0] ?? null); e.target.value = ''; }}
+          />
+          {photoFile && (
+            <div className="flex items-center gap-2 text-emerald-600 font-semibold text-sm mb-2">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
+              {photoFile.name}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button type="button" onClick={() => fileRef.current?.click()} className="flex-1 rounded-xl border border-slate-200 bg-white py-3 text-xs font-bold text-slate-700">{t('warehouse.takePhotoBtn')}</button>
+            <button type="button" onClick={() => galleryRef.current?.click()} className="flex-1 rounded-xl border border-slate-200 bg-slate-50 py-3 text-xs font-bold text-slate-700">{t('warehouse.chooseFromGallery')}</button>
           </div>
         </div>
         <button
@@ -241,7 +266,7 @@ function RequisitionForm() {
           className="w-full text-white font-bold py-4 rounded-xl mt-2 shadow-lg hover:opacity-90 transition-opacity text-sm"
           style={{ background: '#2563EB', boxShadow: '0 8px 20px -4px rgba(37,99,235,0.35)' }}
         >
-          {t('warehouse.submitToApprovalQueue', { name: 'Vijay Ji' })}
+          {t('warehouse.submitToApprovalQueue', 'Submit to the store requisition list')}
         </button>
       </form>
     </div>
@@ -259,6 +284,101 @@ function WarehouseContent({
   setStockSubmitted: (v: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const toast = useToast();
+  const { activeProfile } = useRoleContext();
+  const { allowedPlants } = usePlantScope();
+  const [tankList, setTankList] = useState<Tank[]>([]);
+  const [drumList, setDrumList] = useState<DrumRow[]>([]);
+  const [levels, setLevels] = useState<Record<string, number>>({});
+  const [drums, setDrums] = useState<Record<string, number>>({});
+  const [stockReady, setStockReady] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [tanksRes, drumsRes] = await Promise.all([
+        supabase.from('tanks').select('id, name, location, level_pct').order('sort_order').returns<{ id: string; name: string; location: string | null; level_pct: number }[]>(),
+        supabase.from('cpm_drum_stock').select('id, location, density, drums').order('location').returns<{ id: string; location: string; density: number; drums: number }[]>(),
+      ]);
+      if (cancelled) return;
+      const loadedTanks = (tanksRes.data || []).map((tk, i) => ({
+        id: tk.id,
+        label: tk.location ? `${tk.name} · ${tk.location}` : tk.name,
+        color: TANK_COLORS[i % TANK_COLORS.length],
+        defaultPct: Math.round(Number(tk.level_pct) || 0),
+      }));
+      const loadedDrums = (drumsRes.data || []).map(row => ({
+        id: row.id,
+        density: Number(row.density),
+        location: row.location,
+        opening: Number(row.drums) || 0,
+      }));
+      setTankList(loadedTanks);
+      setDrumList(loadedDrums);
+      setLevels(Object.fromEntries(loadedTanks.map(tk => [tk.id, tk.defaultPct])));
+      setDrums(Object.fromEntries(loadedDrums.map(row => [row.id, row.opening])));
+      setStockReady(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function submitStock() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const plantId = await resolvePlantId(allowedPlants[0]?.id);
+      if (!plantId) {
+        toast.error(t('warehouse.noPlant', 'No plant is available for this entry.'));
+        return;
+      }
+      if (tankList.length === 0 && drumList.length === 0) {
+        toast.error(t('warehouse.noStockRows', 'No tanks or drum rows are on the register yet.'));
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      if (tankList.length) {
+        const tanks = await insertRows('daily_stock_entries', tankList.map(tk => ({
+          plant_id: plantId,
+          date: today,
+          tank_name: tk.label,
+          level_pct: levels[tk.id] ?? tk.defaultPct,
+          submitted_by: activeProfile.name,
+        })));
+        if (tanks.error) {
+          toast.error(tanks.error.message);
+          return;
+        }
+        for (const tk of tankList) {
+          const pct = levels[tk.id] ?? tk.defaultPct;
+          await updateRows('tanks', { level_pct: pct, alert: pct < 30 }).eq('id', tk.id);
+        }
+      }
+      const drumRows = drumList.length
+        ? await insertRows('drum_inventory', drumList.map(row => ({
+            plant_id: plantId,
+            density: row.density,
+            opening: row.opening,
+            physical_count: drums[row.id] ?? row.opening,
+            date: today,
+            submitted_by: activeProfile.name,
+          })))
+        : { error: null };
+      if (!drumRows.error) {
+        for (const row of drumList) {
+          await updateRows('cpm_drum_stock', { drums: drums[row.id] ?? row.opening }).eq('id', row.id);
+        }
+      }
+      if (drumRows.error) {
+        toast.error(drumRows.error.message);
+        return;
+      }
+      setStockSubmitted(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       {tab === 'stock' && (
@@ -267,9 +387,17 @@ function WarehouseContent({
             <h2 className="text-xl font-bold">{t('warehouse.physicalTankLevels')}</h2>
             <span className="text-sm text-slate-500">{t('warehouse.logVisuallyCheckedLevels')}</span>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-            {TANKS.map(tk => <TankWidget key={tk.id} tank={tk} />)}
-          </div>
+          {!stockReady ? (
+            <p className="text-sm text-slate-500">{t('common.loading', 'Loading…')}</p>
+          ) : tankList.length === 0 ? (
+            <p className="text-sm text-slate-500">{t('warehouse.noTanks', 'No tanks are on the register yet. Add them on CPM Stock first.')}</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+              {tankList.map(tk => (
+                <TankWidget key={tk.id} tank={tk} pct={levels[tk.id] ?? tk.defaultPct} onChange={pct => setLevels(prev => ({ ...prev, [tk.id]: pct }))} />
+              ))}
+            </div>
+          )}
           <div className="flex items-center justify-between mt-8 mb-2">
             <h2 className="text-xl font-bold">{t('warehouse.drumStockCp')}</h2>
           </div>
@@ -285,7 +413,12 @@ function WarehouseContent({
                 </tr>
               </thead>
               <tbody>
-                {DRUM_ROWS.map(r => <DrumRowInput key={r.density} row={r} />)}
+                {drumList.map(r => (
+                  <DrumRowInput key={r.id} row={r} count={drums[r.id] ?? r.opening} onChange={count => setDrums(prev => ({ ...prev, [r.id]: count }))} />
+                ))}
+                {stockReady && drumList.length === 0 && (
+                  <tr><td colSpan={5} className="p-4 text-sm text-slate-500">{t('warehouse.noDrums', 'No drum rows are on the register yet.')}</td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -299,8 +432,10 @@ function WarehouseContent({
               </div>
             ) : (
               <button
-                onClick={() => setStockSubmitted(true)}
-                className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700 shadow-lg transition-colors"
+                type="button"
+                disabled={saving}
+                onClick={() => void submitStock()}
+                className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700 shadow-lg transition-colors disabled:opacity-60"
               >
                 {t('warehouse.submitDailyRegister')}
               </button>
@@ -321,6 +456,7 @@ interface WarehouseProps {
 /* ─── Main export ─── */
 export function Warehouse({ embedded = false }: WarehouseProps) {
   const { t } = useTranslation();
+  const { allowedPlants } = usePlantScope();
   const [tab, setTab]                   = useState<Tab>('stock');
   const [stockSubmitted, setStockSubmitted] = useState(false);
 
@@ -357,7 +493,7 @@ export function Warehouse({ embedded = false }: WarehouseProps) {
           <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center font-bold text-xl">S</div>
           <div>
             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t('warehouse.consoleTitle')}</div>
-            <div className="text-lg font-bold">SCPL Plant</div>
+            <div className="text-lg font-bold">{allowedPlants[0]?.name || t('warehouse.consoleTitle')}</div>
           </div>
         </div>
         <div className="flex gap-6 items-center flex-wrap">

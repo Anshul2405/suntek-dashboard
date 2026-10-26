@@ -5,6 +5,7 @@ import { updateRows } from '../lib/db';
 import { useRoleContext } from '../contexts/RoleContext';
 import { useToast } from './ui/toast';
 import { assetQrUrl, downloadDataUrl, printQrLabel, makeQrToken, safeFileName } from '../lib/far/qr';
+import { displayLocationName } from '../lib/plantLabels';
 
 export interface QrAsset {
   id: string;
@@ -38,7 +39,7 @@ export function AssetQRCard({ asset, onUpdated, compact = false }: {
   const [busy, setBusy] = useState(false);
 
   const label = `${asset.name}${asset.identification_mark ? ` (${asset.identification_mark})` : ''}`;
-  const plantName = asset.plants?.name || '';
+  const plantName = displayLocationName(asset.plants?.name);
 
   function getPng(): string | null {
     const canvas = canvasWrapRef.current?.querySelector('canvas');

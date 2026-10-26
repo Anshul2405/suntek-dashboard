@@ -6,7 +6,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { useAnomalies } from '../../contexts/AnomalyContext';
 import { useTodo } from '../../contexts/TodoContext';
 import { useSearchPalette } from '../../contexts/SearchPaletteContext';
-import { canViewBatchFacet, canViewBatchRegister, hasBatchFacetCaps, isAdminProfile, profileCanAccess } from '../../lib/profiles';
+import { canViewBatchFacet, canViewBatchRegister, hasBatchFacetCaps, isAdminProfile, isManagementProfile, profileCanAccess } from '../../lib/profiles';
 import { SuntekLogo } from '../brand/SuntekLogo';
 
 interface SidebarProps {
@@ -28,10 +28,11 @@ type NavItem = { key: string; path: string; nav?: string; children?: NavItem[] }
 
 /**
  * Factory dropdown children — order matters (first visible item is the accordion
- * default). Paths are explicit because the children mix the Purchase nested
- * routes (/dashboard/purchase/*) with top-level routes (Batch Sheet, Night Manager).
+ * default). Paths are explicit because the children mix plant routes
+ * (/dashboard/purchase/*) with top-level routes (Batch Sheet, Night Manager).
  * `key` is the i18n label key. Routing/permissions are unchanged — this only
  * regroups how the links are presented.
+ * Purchase, Purchase book, Marine Insurance and Labour live under Operations.
  */
 const FACTORY_ITEMS: NavItem[] = [
   { key: 'nav.far', path: '/dashboard/purchase/far', children: [
@@ -41,30 +42,24 @@ const FACTORY_ITEMS: NavItem[] = [
   { key: 'nav.maintenance',    path: '/dashboard/purchase/maint'    },
   { key: 'nav.activityLog',    path: '/dashboard/purchase/activity' },
   { key: 'nav.storeReq',       path: '/dashboard/purchase/storereq' },
-  { key: 'nav.purchaseOrders', path: '/dashboard/purchase/purchase' },
-  { key: 'nav.marineInsurance', path: '/dashboard/purchase/marine'  },
-  { key: 'nav.labour',         path: '/dashboard/purchase/labour'   },
   { key: 'nav.batchSheet',     path: '/dashboard/batches'           },
   { key: 'nav.nightManager',   path: '/dashboard/night-manager'     },
 ];
 
 /**
- * Operations dropdown children. Purchase reuses the Purchase Orders page for now
- * and is expected to grow its own sub-modules later. CP and Stock is the CPM Stock
- * board (display rename only — same /dashboard/stock route).
+ * Operations dropdown children. Purchase is the purchase-order screen (one
+ * menu entry). Purchase book, marine insurance and labour sit with it.
+ * CP and Stock is the CPM Stock board (display rename only — same /dashboard/stock route).
  */
 const OPERATIONS_ITEMS: NavItem[] = [
-  // Purchase reuses the same page as Factory's "Purchase Order". They share a
-  // route, so we tag this one with ?ctx=ops (`nav`) — the highlight logic reads
-  // that marker to light up ONLY the entry the user actually opened, not both.
-  { key: 'nav.purchase',        path: '/dashboard/purchase/purchase', nav: '/dashboard/purchase/purchase?ctx=ops' },
-  { key: 'nav.sales',           path: '/dashboard/sales'             },
-  { key: 'nav.customerHistory', path: '/dashboard/customers'         },
-  { key: 'nav.cpAndStock',      path: '/dashboard/stock'             },
+  { key: 'nav.purchase',        path: '/dashboard/purchase/purchase' },
+  { key: 'nav.purchaseBook',    path: '/dashboard/purchase/book'     },
+  { key: 'nav.marineInsurance', path: '/dashboard/purchase/marine'    },
+  { key: 'nav.labour',          path: '/dashboard/purchase/labour'    },
+  { key: 'nav.sales',           path: '/dashboard/sales'              },
+  { key: 'nav.customerHistory', path: '/dashboard/customers'          },
+  { key: 'nav.cpAndStock',      path: '/dashboard/stock'              },
 ];
-
-/** The route shared by Factory→"Purchase Order" and Operations→"Purchase". */
-const SHARED_PO_ROUTE = '/dashboard/purchase/purchase';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -202,16 +197,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // A dropdown defaults open when the current route is one of its children.
   const inGroup = (paths: string[]) =>
     paths.some((p) => location.pathname === p || location.pathname.startsWith(p + '/'));
-  // The shared Purchase route belongs to Factory unless the user arrived via
-  // Operations (marked with ?ctx=ops). This lets Factory and Operations — which
-  // share that one route — highlight/expand independently instead of together.
-  const onSharedPO = location.pathname === SHARED_PO_ROUTE;
-  const viaOps = onSharedPO && new URLSearchParams(location.search).get('ctx') === 'ops';
   const [factoryOpen, setFactoryOpen] = useState(
-    onSharedPO ? !viaOps : inGroup(FACTORY_ITEMS.map((i) => i.path))
+    inGroup(FACTORY_ITEMS.map((i) => i.path))
   );
   const [operationsOpen, setOperationsOpen] = useState(
-    onSharedPO ? viaOps : inGroup(OPERATIONS_ITEMS.map((i) => i.path))
+    inGroup(OPERATIONS_ITEMS.map((i) => i.path))
   );
   // FAR nested sub-accordion inside Factory (Fixed Assets · QR Code).
   const [farOpen, setFarOpen] = useState(
@@ -270,11 +260,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // WORKSPACE  =  Overview + Factory dropdown + Operations dropdown (+ role entry terminals)
   // REFERENCE  =  Oil Ratio Table · Audit Log
   //
-  // Factory groups the physical-plant modules (FAR, Maintenance, Activity, Store
-  // Req, PO, Batch Sheet, Night Manager). Operations groups the commercial modules
-  // (Purchase, Sales, Customer History, CP and Stock). Both are gated per-child by
-  // canSee(), so a role only sees the children it could already reach — no route or
-  // permission change, only presentation.
+  // Factory groups the plant modules (FAR, Maintenance, Activity, Store Req,
+  // Batch Sheet, Night Manager). Operations groups the commercial modules
+  // (Purchase, Purchase book, Marine, Labour, Sales, Customer History, CP and Stock).
+  // Both are gated per-child by canSee(), so a role only sees the children it could
+  // already reach — no route or permission change, only presentation.
 
   const showOverview = canSee('/dashboard');
   // Personal work queue — available to every profile that has the route granted.
@@ -292,10 +282,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   const showFactory    = !isOperator && visibleFactoryItems.length > 0;
   const showOperations = !isOperator && visibleOperationsItems.length > 0;
 
-  // L1 entry views — shown ONLY for the specific role that owns the task, as flat
-  // items. Admin/Unit Head monitor via the Factory boards, not entry terminals.
-  const showWarehouseEntry = activeProfile.id === 'warehouse_manager';
-  const showNightEntry     = activeProfile.id === 'night_manager';
+  // Entry screens sit in the same place for every login. Admin holds every route,
+  // so Warehouse and Night check-in show for admin as well as the role that uses them.
+  const showWarehouseEntry = canSee('/dashboard/warehouse-entry');
+  const showNightEntry     = canSee('/dashboard/night-entry');
   // Daily log upload: admin + unit_head only. The Technical Team (factory_operator)
   // is the Batch Logger — their only job is "Log Reading" (batch-entry), and
   // /dashboard/daily-log isn't in their allowed routes, so it must not appear.
@@ -339,21 +329,15 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
   // whoever holds the capability; the RPC checks it again server-side, so this
   // only controls whether the link appears.
   const showUploads = can('delete_import_batch');
+  const showAccess = isAdminProfile(activeProfile) || isManagementProfile(activeProfile);
 
   const isActive = (path: string) => {
     if (path === '/dashboard') return location.pathname === '/dashboard';
     return location.pathname.startsWith(path);
   };
 
-  // Child highlight. For the route shared by Factory→Purchase Order and
-  // Operations→Purchase, only the entry the user opened (tracked by ?ctx=ops)
-  // lights up — never both. Same idea for Batch Logger vs Reading History (?tab=).
+  // Child highlight. Batch Logger vs Reading History is split by ?tab=.
   const itemActive = (it: NavItem) => {
-    if (it.path === SHARED_PO_ROUTE) {
-      if (!onSharedPO) return false;
-      const isOpsEntry = it.nav?.includes('ctx=ops') ?? false;
-      return isOpsEntry ? viaOps : !viaOps;
-    }
     if (it.path === '/dashboard/batch-entry' && it.nav?.includes('tab=')) {
       if (location.pathname !== '/dashboard/batch-entry') return false;
       const want = new URLSearchParams(it.nav.split('?')[1] ?? '').get('tab') || 'reading';
@@ -501,7 +485,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
           </>
         )}
 
-        {/* Operations accordion — Purchase · Sales · Customer History · CP and Stock */}
+        {/* Operations accordion — Purchase pages, then Sales · Customer History · CP and Stock */}
         {showOperations && (
           <>
             <a
@@ -544,26 +528,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       {isOperator && (
       <nav className="flex flex-col gap-1">
 
-        {/* Operations — CP/Stock */}
-        {canSee('/dashboard/stock') && (
-          <>
-            <a
-              className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`}
-              onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/stock'); }}
-            >
-              <IconFlask />
-              <span>{t('section.operations')}</span>
-              <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
-            </a>
-            {opsOpen && (
-              <div className="nav-sub">
-                <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Plant — only when Technical was also granted Maintenance / Store Req */}
+        {/* Plant — same slot as Factory on every other login */}
         {showOperatorPlant && (
           <>
             <a
@@ -583,6 +548,15 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             </a>
             {plantOpen && (
               <div className="nav-sub">
+                {showOperatorMaint && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/maint') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/maint')}>{t('nav.maintenance')}</a>
+                )}
+                {showOperatorActivity && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/activity') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/activity')}>{t('nav.activityLog')}</a>
+                )}
+                {showOperatorStoreReq && (
+                  <a className={`nav-link${isActive('/dashboard/purchase/storereq') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/storereq?tab=stock')}>{t('nav.storeReq')}</a>
+                )}
                 {(!hasBatchFacetCaps(activeProfile) || canViewBatchFacet(activeProfile, 'mat') || canViewBatchFacet(activeProfile, 'sheet')) && (
                   <a className={`nav-link${isActive('/dashboard/batches') ? ' active' : ''}`} onClick={() => navTo('/dashboard/batches')}>{t('nav.batchSheet')}</a>
                 )}
@@ -592,15 +566,25 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
                 {hasBatchFacetCaps(activeProfile) && canViewBatchFacet(activeProfile, 'sheet') && (
                   <a className={`nav-link${isActive('/dashboard/batch-entry') && new URLSearchParams(location.search).get('tab') === 'create-sheet' ? ' active' : ''}`} onClick={() => navTo('/dashboard/batch-entry?tab=create-sheet')}>{t('nav.createBatchSheet', 'Create Batch Sheet')}</a>
                 )}
-                {showOperatorActivity && (
-                  <a className={`nav-link${isActive('/dashboard/purchase/activity') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/activity')}>{t('nav.activityLog')}</a>
-                )}
-                {showOperatorMaint && (
-                  <a className={`nav-link${isActive('/dashboard/purchase/maint') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/maint')}>{t('nav.maintenance')}</a>
-                )}
-                {showOperatorStoreReq && (
-                  <a className={`nav-link${isActive('/dashboard/purchase/storereq') ? ' active' : ''}`} onClick={() => navTo('/dashboard/purchase/storereq?tab=stock')}>{t('nav.storeReq')}</a>
-                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Operations — after Factory, same place as every other login */}
+        {canSee('/dashboard/stock') && (
+          <>
+            <a
+              className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`}
+              onClick={() => { setOpsOpen((o) => !o); if (!opsOpen) navTo('/dashboard/stock'); }}
+            >
+              <IconFlask />
+              <span>{t('section.operations')}</span>
+              <svg className="ml-auto transition-transform duration-200" style={{ transform: opsOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="m9 6 6 6-6 6"/></svg>
+            </a>
+            {opsOpen && (
+              <div className="nav-sub">
+                <a className={`nav-link${isActive('/dashboard/stock') ? ' active' : ''}`} onClick={() => navTo('/dashboard/stock')}>{t('nav.cpAndStock')}</a>
               </div>
             )}
           </>
@@ -777,10 +761,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       )}
 
       {/* ── ADMIN (dropdown) — expanded by default ────────────────────────── */}
-      {(showAdmin || showBlacklist || showUploads) && (
+      {(showAdmin || showBlacklist || showUploads || showAccess) && (
       <nav className="flex flex-col gap-1">
         <a
-          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads')) ? ' active' : ''}`}
+          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads') || isActive('/dashboard/access')) ? ' active' : ''}`}
           onClick={() => {
             setAdminOpen((o) => !o);
             if (!adminOpen) navTo(showAdmin ? '/dashboard/users' : showBlacklist ? '/dashboard/blacklist' : '/dashboard/admin/uploads');
@@ -800,6 +784,11 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showBlacklist && (
               <a className={`nav-link${isActive('/dashboard/blacklist') ? ' active' : ''}`} onClick={() => navTo('/dashboard/blacklist')}>
                 <span>{t('nav.blacklist')}</span>
+              </a>
+            )}
+            {showAccess && (
+              <a className={`nav-link${isActive('/dashboard/access') ? ' active' : ''}`} onClick={() => navTo('/dashboard/access')}>
+                <span>Access & backup</span>
               </a>
             )}
             {showUploads && (

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IndianRupee, Wallet, Boxes } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { useQuery } from '@tanstack/react-query';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
@@ -72,7 +73,7 @@ export function CostIntelligence() {
 
   const cSort = useSortable(costed, {
     batch:     c => c.batch.batch_no,
-    plant:     c => c.batch.plants?.name ?? '',
+    plant:     c => displayLocationName(c.batch.plants?.name),
     output:    c => c.outputMT,
     reactor:   c => c.reactorHours,
     material:  c => c.cost.materialCost,
@@ -148,7 +149,7 @@ export function CostIntelligence() {
                 {cSort.sorted.map(({ batch, outputMT, reactorHours, cost }) => (
                   <tr key={batch.id}>
                     <td className="font-semibold">{batch.batch_no}</td>
-                    <td className="text-slate-500">{batch.plants?.name || '—'}</td>
+                    <td className="text-slate-500">{displayLocationName(batch.plants?.name) || '—'}</td>
                     <td className="num">{outputMT.toFixed(1)}</td>
                     <td className="num text-slate-500">{reactorHours.toFixed(1)}</td>
                     <td className="num text-slate-500">{fmtINR(cost.materialCost)}</td>

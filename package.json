@@ -25,6 +25,7 @@
     "date-fns": "^4.3.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "heic2any": "^0.0.4",
     "i18next": "^26.3.3",
     "leaflet": "^1.9.4",
     "lightningcss-darwin-arm64": "^1.33.0",

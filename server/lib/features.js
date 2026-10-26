@@ -18,9 +18,9 @@ import { getPool, sql } from '../db.js';
 // ── Metric catalog (drives the UI selector) ───────────────────────────────────
 export const METRICS = {
   sales:      { label: 'Sales',              unit: 'inr', direction: 'down_bad', desc: 'Daily sales invoice value (VchType 9)' },
-  purchase:   { label: 'Purchase Cost',      unit: 'inr', direction: 'up_bad',   desc: 'Daily purchase value (VchType 14)' },
+  purchase:   { label: 'Purchase Cost',      unit: 'inr', direction: 'up_bad',   desc: 'Daily purchase value (VchType 2)' },
   margin_pct: { label: 'Gross Margin %',     unit: 'pct', direction: 'down_bad', desc: '(Sales − Purchase) / Sales per period' },
-  receipts:   { label: 'Receipts',           unit: 'inr', direction: 'down_bad', desc: 'Cash received from customers (VchType 16)' },
+  receipts:   { label: 'Receipts',           unit: 'inr', direction: 'down_bad', desc: 'Cash received from customers (VchType 14)' },
   payments:   { label: 'Payments',           unit: 'inr', direction: 'up_bad',   desc: 'Cash paid to vendors (VchType 19)' },
   avg_ticket: { label: 'Avg Invoice Value',  unit: 'inr', direction: 'down_bad', desc: 'Sales ÷ invoice count per period' },
   inv_count:  { label: 'Invoice Count',      unit: 'num', direction: 'down_bad', desc: 'Number of sales invoices per period' },
@@ -44,12 +44,12 @@ export async function getDailyBase(anchor) {
     .query(`
       SELECT CAST([Date] AS date) AS d,
         SUM(CASE WHEN VchType=9  THEN VchAmtBaseCur ELSE 0 END) AS sales,
-        SUM(CASE WHEN VchType=14 THEN VchAmtBaseCur ELSE 0 END) AS purchase,
-        SUM(CASE WHEN VchType=16 THEN VchAmtBaseCur ELSE 0 END) AS receipts,
+        SUM(CASE WHEN VchType=2  THEN VchAmtBaseCur ELSE 0 END) AS purchase,
+        SUM(CASE WHEN VchType=14 THEN VchAmtBaseCur ELSE 0 END) AS receipts,
         SUM(CASE WHEN VchType=19 THEN VchAmtBaseCur ELSE 0 END) AS payments,
         SUM(CASE WHEN VchType=9  THEN 1 ELSE 0 END)             AS inv_count
       FROM Tran1
-      WHERE Cancelled = 0 AND VchType IN (9,14,16,19)
+      WHERE Cancelled = 0 AND VchType IN (9,2,14,19)
         AND [Date] >= DATEADD(MONTH,-13,@anchor) AND [Date] <= @anchor
       GROUP BY CAST([Date] AS date)
       ORDER BY d

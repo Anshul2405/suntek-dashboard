@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Download, ShoppingCart, Package, Truck, Hourglass } from 'lucide-react';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
 import { supabase } from '../../../lib/supabase';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { insertRows } from '../../../lib/db';
 import { useMentionNotifier } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
@@ -20,6 +21,7 @@ import { useTextFilter } from '../../../components/ui/TableSearch';
 import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2, InfoBanner } from '../../../components/v2';
 import { AddPurchaseModal } from './AddPurchaseModal';
+import { BusyPurchasesCard } from '../../../components/BusyPurchasesCard';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
 
@@ -61,12 +63,13 @@ const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }>
 // PlantScopeContext — never hard-coded, or a factory rename would leave this
 // dropdown offering names that no longer exist.
 const PORTS = ['Kandla', 'Mundra'];
-const UNITS  = ['nos', 'kg', 'MT', 'L', 'sets', 'boxes'];
+const UNITS  = ['nos', 'feet', 'kg', 'MT', 'L', 'sets', 'boxes'];
 
 export function PurchaseOrders() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [billLightbox, setBillLightbox] = useState<LightboxImage[] | null>(null);
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
@@ -113,7 +116,7 @@ export function PurchaseOrders() {
         .filter(s => s.store_decision === 'unavailable' && (s.busy_transaction_ref || s.supplier_name || s.total_price != null))
         .map(s => {
           const t = tById.get(s.ticket_id);
-          const store = t?.unit ? (UNIT_LABELS[t.unit] || t.unit) : (t?.plants?.name || '—');
+          const store = t?.unit ? (UNIT_LABELS[t.unit] || t.unit) : (displayLocationName(t?.plants?.name) || '—');
           return {
             id: s.id, ticketRef: s.ticket_id.slice(0, 8), ticketId: s.ticket_id, part: s.part_name, equipment: t?.equipment || '', store,
             supplier: s.supplier_name || '—', qty: Number(s.quantity ?? 0),
@@ -175,7 +178,7 @@ export function PurchaseOrders() {
   function handleExport() {
     const rows = (filter === 'all' ? orders : orders.filter(r => r.status === filter));
     exportToXlsx(
-      rows.map(r => ({ material: r.oil_type, supplier: r.company, destination: r.port, quantity: r.book_qty_mt, dispatched: r.dispatched_qty, pending: r.pending_qty, price: r.price })),
+      rows.map(r => ({ material: r.oil_type, supplier: r.company, destination: displayLocationName(r.port), quantity: r.book_qty_mt, dispatched: r.dispatched_qty, pending: r.pending_qty, price: r.price })),
       [
         { header: 'Material / Oil Type', key: 'material' },
         { header: 'Supplier', key: 'supplier' },
@@ -193,9 +196,13 @@ export function PurchaseOrders() {
 
   const list = filter === 'all' ? orders : orders.filter(r => r.status === filter);
   const [poSearch, setPoSearch] = useState('');
-  const filteredList = useTextFilter(list, poSearch, r => [r.oil_type, r.paraffin_type, r.company, r.port]);
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (q) setPoSearch(q);
+  }, [searchParams]);
+  const filteredList = useTextFilter(list, poSearch, r => [r.oil_type, r.paraffin_type, r.company, r.port, displayLocationName(r.port)]);
   const ordersSort = useSortable(filteredList, {
-    oil: r => r.oil_type, paraffin: r => r.paraffin_type, company: r => r.company, port: r => r.port,
+    oil: r => r.oil_type, paraffin: r => r.paraffin_type, company: r => r.company, port: r => displayLocationName(r.port),
     booked: r => r.book_qty_mt, dispatched: r => r.dispatched_qty, pending: r => r.pending_qty,
     price: r => r.price, date: r => r.date,
   });
@@ -256,6 +263,8 @@ export function PurchaseOrders() {
         </div>
       </div>
 
+      <BusyPurchasesCard />
+
       {/* Search / filters */}
       <FilterBar
         className="mb-4"
@@ -272,7 +281,6 @@ export function PurchaseOrders() {
           title={
             <span className="inline-flex items-center gap-2 flex-wrap">
               {t('po.section_material_oil')}
-              <span className="badge" style={{ background: '#E0E7FF', color: '#4338CA', fontWeight: 700, fontSize: 10 }}>⟳ BUSY API</span>
             </span>
           }
           subtitle={t('po.section_material_oil_sub')}
@@ -287,7 +295,6 @@ export function PurchaseOrders() {
             </>
           }
         >
-          {/* BUSY integration status — these POs will auto-sync from BUSY; manual entry is the stopgap until then. */}
           <div className="px-5 pb-4">
             <InfoBanner><b>{t('po.busy_sync_title')}</b> {t('po.busy_sync_body')}</InfoBanner>
           </div>
@@ -320,7 +327,7 @@ export function PurchaseOrders() {
                     <td className="font-semibold">{r.oil_type || '—'}</td>
                     <td className="text-slate-500">{r.paraffin_type || '—'}</td>
                     <td>{r.company || '—'}</td>
-                    <td>{r.port || '—'}</td>
+                    <td>{displayLocationName(r.port) || '—'}</td>
                     <td className="num">{r.book_qty_mt ?? '—'}</td>
                     <td className="num text-green-700">{r.dispatched_qty ?? '—'}</td>
                     <td className="num text-amber-700">{r.pending_qty ?? '—'}</td>
@@ -402,7 +409,7 @@ export function PurchaseOrders() {
             <PanelField label={t('po.field_destination')}>
               <PanelSelect value={form.destination} onChange={e => set('destination', e.target.value)}>
                 {!form.destination && <option value="">{t('po.opt_select_destination', 'Select destination…')}</option>}
-                {allowedPlants.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                {allowedPlants.map(p => <option key={p.id} value={p.name}>{displayLocationName(p.name)}</option>)}
                 {PORTS.map(p => <option key={p} value={p}>{p}</option>)}
                 <option value="Port">{t('po.opt_port', 'Port')}</option>
               </PanelSelect>

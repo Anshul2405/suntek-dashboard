@@ -15,6 +15,7 @@ const VOICE_ROUTES: VoiceRoute[] = [
   { route: '/dashboard/purchase/far', keywords: ['far', 'fixed asset', 'asset', 'स्थायी संपत्ति', 'संपत्ति'] },
   { route: '/dashboard/purchase/storereq', keywords: ['store requisition', 'store req', 'requisition', 'store', 'स्टोर माँग', 'स्टोर'] },
   { route: '/dashboard/purchase/activity', keywords: ['activity log', 'activity', 'गतिविधि'] },
+  { route: '/dashboard/purchase/book', keywords: ['purchase book', 'payments sheet', 'paraffin', 'kolkata', 'shd sheet'] },
   { route: '/dashboard/purchase/marine', keywords: ['marine', 'insurance', 'मरीन', 'बीमा'] },
   { route: '/dashboard/purchase/labour', keywords: ['labour', 'labor', 'श्रम'] },
   { route: '/dashboard/purchase/far', keywords: ['purchase', 'खरीद'] },

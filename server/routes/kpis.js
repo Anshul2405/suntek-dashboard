@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getPool } from '../db.js';
 import { withFallback } from '../lib/fallback.js';
+import { purchaseSum, THIS_MONTH } from '../lib/busySql.js';
 
 const router = Router();
 
@@ -19,11 +20,8 @@ router.get('/overview', withFallback('kpis-overview', async () => {
            AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
         ) AS salesMTD,
 
-        -- Purchase MTD (#2)
-        (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
-         WHERE VchType = 14 AND Cancelled = 0
-           AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
-        ) AS purchaseMTD,
+        -- Purchase MTD. Liquid chlorine token lines are left out.
+        ${purchaseSum(`AND ${THIS_MONTH}`)} AS purchaseMTD,
 
         -- Pending product deliveries (Tran3 Status=1=pending, total balance)
         (SELECT ISNULL(SUM(Balance1), 0) FROM Tran3 WHERE [Status] = 1) AS pendingBills,
@@ -50,30 +48,35 @@ router.get('/overview', withFallback('kpis-overview', async () => {
         (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
          WHERE VchType = 9 AND Cancelled = 0) AS fyRevenue,
 
-        -- FY Purchase
-        (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
-         WHERE VchType = 14 AND Cancelled = 0) AS fyPurchase,
+        -- FY Purchase, liquid chlorine left out.
+        ${purchaseSum('')} AS fyPurchase,
 
         -- Total sales invoices count FY
         (SELECT COUNT(*) FROM Tran1 WHERE VchType = 9 AND Cancelled = 0) AS salesInvoiceCount,
 
         -- Total purchase invoices count FY
-        (SELECT COUNT(*) FROM Tran1 WHERE VchType = 14 AND Cancelled = 0) AS purchaseInvoiceCount,
+        (SELECT COUNT(*) FROM Tran1 WHERE VchType = 2 AND Cancelled = 0) AS purchaseInvoiceCount,
 
         -- Payments made MTD (VchType=19=Payment)
         (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
          WHERE VchType = 19 AND Cancelled = 0
            AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
+           AND [Date] <= CAST(GETDATE() AS DATE)
         ) AS paymentsMTD,
 
-        -- Receipts received MTD (VchType=16=Receipt)
+        -- Receipts received MTD (VchType=14=Receipt)
         (SELECT ISNULL(SUM(VchAmtBaseCur), 0) FROM Tran1
-         WHERE VchType = 16 AND Cancelled = 0
+         WHERE VchType = 14 AND Cancelled = 0
            AND MONTH([Date]) = MONTH(GETDATE()) AND YEAR([Date]) = YEAR(GETDATE())
+           AND [Date] <= CAST(GETDATE() AS DATE)
         ) AS receiptsMTD
     `);
 
-    return result.recordset[0];
+    const row = result.recordset[0];
+    return {
+      ...row,
+      purchaseNote: 'Raw material, liquid chlorine excluded',
+    };
 }));
 
 // KPI #6 Monthly revenue trend (last 6 months)

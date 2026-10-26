@@ -7,7 +7,12 @@ import { fetchActivePlants } from '../../../lib/plants';
 import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
+import { ensureLateApproval, canEditModule, useOpsSettings, recordAudit, loadMyLateRequests, type LateRequest } from '../../../lib/opsControls';
+import { categoryForAmount, plantUsesCategories } from '../../../lib/valueCategory';
+import { billBufferDays } from '../../../lib/datePolicy';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { useRoleContext } from '../../../contexts/RoleContext';
+import { profileHasCapability } from '../../../lib/profiles';
 import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
 import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../../../lib/store/purchaseParse';
 import { reconcileBillAmount } from '../../../lib/nvidiaOcr';
@@ -47,6 +52,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
 }) {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
+  const ops = useOpsSettings();
   const { storeQuery, allowedPlants } = usePlantScope();
   const actorName = activeProfile.name;
 
@@ -71,6 +77,7 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
   const [gstNo, setGstNo] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
   const [purchaseDate, setPurchaseDate] = useState(localToday());
+  const [myLate, setMyLate] = useState<LateRequest[]>([]);
   const [notes, setNotes] = useState('');
   const [knownVendors, setKnownVendors] = useState<string[]>([]);
   const [dupInvoice, setDupInvoice] = useState(false);
@@ -97,6 +104,10 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       if (!alive) return;
       setPlants(base);
       setPlantId(prev => prev || base[0]?.id || '');
+      try {
+        const late = await loadMyLateRequests('purchase', actorName);
+        if (alive) setMyLate(late);
+      } catch { /* banner only */ }
       setStock(si || []);
       // Vendor suggestions from past receipts (best-effort — table may predate migration 53).
       try {
@@ -222,6 +233,23 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       setFieldErr(t('addPurchase.errGst', 'That GST number does not look valid (expected 15 characters like 22AAAAA0000A1Z5).')); return;
     }
     setFieldErr(null);
+    const canAddPurchase = profileHasCapability(activeProfile, 'add_stock_purchase')
+      || canEditModule(ops, activeProfile, 'purchase')
+      || canEditModule(ops, activeProfile, 'stock');
+    if (!canAddPurchase) {
+      setFieldErr('You do not have permission to add purchases.');
+      return;
+    }
+    const allowed = await ensureLateApproval({
+      module: 'purchase',
+      entryDate: purchaseDate,
+      profile: activeProfile,
+      bufferDays: billBufferDays([plantId], ops.bufferDaysByPlant, ops.bufferDays),
+    });
+    if (!allowed) {
+      setFieldErr(t('addPurchase.lateBlocked', 'Not saved. This bill date is older than allowed. A request has gone to Management; once approved, open Add purchase again and use the same date.'));
+      return;
+    }
     setStage('saving');
     try {
       const payload = {
@@ -250,6 +278,29 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       };
       const { data: result, error } = await callRpc<{ already_applied?: boolean; lines_applied?: number }>('apply_stock_purchase', { payload });
       if (error) throw new Error(friendlyRpcError(error.message || ''));
+      if (plantId && plantUsesCategories(plantId, ops.valueCategories)) {
+        for (const ln of valid) {
+          const cat = categoryForAmount(ln.amount, ops.valueCategories.bands);
+          if (!cat) continue;
+          const stamp = (supabase.from('store_items') as unknown as { update: (v: { value_category: string }) => { eq: (c: string, v: string) => Promise<unknown> } }).update({ value_category: cat });
+          if (ln.choice !== 'new') {
+            await stamp.eq('id', ln.choice);
+            continue;
+          }
+          const { data: created } = await supabase.from('store_items').select('id').eq('plant_id', plantId).eq('item_name', ln.name.trim()).order('created_at', { ascending: false }).limit(1);
+          const createdId = (created as { id: string }[] | null)?.[0]?.id;
+          if (createdId) await stamp.eq('id', createdId);
+        }
+      }
+      void recordAudit({
+        module: 'purchase',
+        action: 'bill_uploaded',
+        summary: `Purchase from ${vendor.trim()} dated ${purchaseDate || 'today'}`,
+        actorName: actorName,
+        actorRole: activeProfile.roleLabel,
+        photoUrl: cloudUrl,
+      });
+      setStage('done');
       setAppliedCount(result?.lines_applied ?? valid.length);
       setStage('done');
       onApplied();
@@ -281,14 +332,14 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
         {stage === 'choose' && plants.length === 1 && (
           <div style={{ marginBottom: 14 }}>
             <div style={label}>{t('addPurchase.plant', 'Plant')}</div>
-            <span className="chip active" style={{ cursor: 'default', display: 'inline-block' }}>{plants[0].name}</span>
+            <span className="chip active" style={{ cursor: 'default', display: 'inline-block' }}>{displayLocationName(plants[0].name)}</span>
           </div>
         )}
         {stage === 'choose' && plants.length > 1 && (
           <div style={{ marginBottom: 14 }}>
             <div style={label}>{t('addPurchase.plant', 'Plant')}</div>
             <select value={plantId} onChange={e => setPlantId(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
-              {plants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </select>
           </div>
         )}
@@ -317,6 +368,33 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
                 : t('addPurchase.reading', { defaultValue: 'Reading the bill… ({{file}})', file: fileName })}
             />
             <div style={{ fontSize: 11, color: '#94A3B8' }}>{t('addPurchase.readingSub', 'AI is extracting items & quantities — this can take a few seconds.')}</div>
+          </div>
+        )}
+
+        {myLate.length > 0 && (stage === 'choose' || stage === 'edit') && (
+          <div style={{ fontSize: 12, background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, padding: '8px 10px', marginBottom: 12, color: '#166534' }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>{t('addPurchase.lateTitle', 'Your late bill dates')}</div>
+            {myLate.map(r => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '3px 0' }}>
+                <span>
+                  {fmtLateDate(r.entry_date)} · {r.status === 'approved'
+                    ? t('addPurchase.lateApproved', { defaultValue: 'approved by {{who}}', who: r.reviewed_by || 'Management' })
+                    : t('addPurchase.latePending', 'waiting for Management')}
+                </span>
+                {r.status === 'approved' && r.entry_date && (
+                  <button
+                    type="button"
+                    onClick={() => { setPurchaseDate(r.entry_date!.slice(0, 10)); if (stage === 'choose') startManual(); }}
+                    style={{ ...btnGhost, padding: '4px 10px', fontSize: 12, borderColor: '#86EFAC', color: '#166534' }}
+                  >
+                    {stage === 'edit' && purchaseDate === r.entry_date.slice(0, 10)
+                      ? t('addPurchase.lateInUse', 'Date set')
+                      : t('addPurchase.lateUse', 'Use this date')}
+                  </button>
+                )}
+              </div>
+            ))}
+            <div style={{ color: '#15803D', marginTop: 4 }}>{t('addPurchase.lateHint', 'Upload the bill or enter it manually, then keep this purchase date and save.')}</div>
           </div>
         )}
 
@@ -395,6 +473,12 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
                       </select>
                       {lines.length > 1 && <button onClick={() => setLines(ls => ls.filter(l => l.key !== ln.key))} style={{ border: 'none', background: 'none', color: '#DC2626', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}>×</button>}
                     </div>
+                    {plantId && plantUsesCategories(plantId, ops.valueCategories) && (
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#0F172A', marginTop: 6 }}>
+                        Category {categoryForAmount(ln.amount, ops.valueCategories.bands) || '—'}
+                        <span style={{ fontWeight: 500, color: '#64748B' }}> · from this line’s bill amount. C skips unit-head check on a ticket. B and A follow the normal path.</span>
+                      </div>
+                    )}
                     {/* Match confirmation: top-3 candidates + create-new */}
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
                       <span style={{ fontSize: 10.5, color: '#94A3B8', textTransform: 'uppercase', fontWeight: 600 }}>{cands.length ? t('addPurchase.sameAs', 'Same as?') : t('addPurchase.noMatch', 'No match —')}</span>
@@ -459,3 +543,9 @@ const inputStyle: React.CSSProperties = { boxSizing: 'border-box', border: '1px 
 const pill: React.CSSProperties = { border: '1px solid #E2E8F0', borderRadius: 20, padding: '3px 10px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' };
 const btnPrimary: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, border: 'none', background: '#F47651', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' };
 const btnGhost: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' };
+
+function fmtLateDate(iso: string | null) {
+  if (!iso) return '—';
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}

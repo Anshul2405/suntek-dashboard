@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
@@ -16,12 +17,16 @@ import { ThV2 as Th } from '../../../components/v2';
 import { TableSearch } from '../../../components/ui/TableSearch';
 import { useDirectory, extractMentionIds, truncate } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
+import { ensureLateApproval, useOpsSettings, recordAudit, loadAudit } from '../../../lib/opsControls';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { profileHasCapability, type RoleRow } from '../../../lib/profiles';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import type { Database } from '../../../lib/database.types';
+import { displayLocationName } from '../../../lib/plantLabels';
+import { listedPhotoUrls } from './maintenance/shared';
+import { fetchAllRowsProgressive } from '../../../lib/fetchAll';
 
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
@@ -42,10 +47,47 @@ type UnifiedRow = {
   hasPhoto: boolean;
   photos: LightboxImage[];    // actual evidence images for this row (opens the lightbox)
   ticketRef: string | null;   // short maintenance ticket id, e.g. "f855d730"
-  source: 'manual' | 'maintenance';
+  ticketId: string | null;    // full id, so the ticket number can open the ticket
+  source: 'manual' | 'maintenance' | 'incident' | 'audit' | 'purchase' | 'requisition' | 'far' | 'batch';
 };
 
 const ticketRef = (id: string) => id.slice(0, 8);
+
+function recordHref(
+  row: Pick<UnifiedRow, 'source' | 'key' | 'ticketId' | 'equipment'>,
+  fromPath: string,
+): string | null {
+  const withFrom = (path: string) => {
+    const q = new URLSearchParams();
+    const [base, existing] = path.split('?');
+    if (existing) {
+      new URLSearchParams(existing).forEach((value, key) => q.set(key, value));
+    }
+    q.set('from', fromPath);
+    const s = q.toString();
+    return s ? `${base}?${s}` : base;
+  };
+  if (row.source === 'maintenance' && row.ticketId) {
+    return withFrom(`/dashboard/purchase/maint?ticket=${row.ticketId}`);
+  }
+  if (row.source === 'incident') {
+    const id = row.key.replace(/^incident-/, '');
+    return withFrom(`/dashboard/purchase/maint?tab=incidents&incident=${id}`);
+  }
+  if (row.source === 'purchase') {
+    return `/dashboard/purchase/storereq?tab=stock&receipt=${row.key.replace(/^purchase-/, '')}&from=${encodeURIComponent(fromPath)}`;
+  }
+  if (row.source === 'requisition') {
+    return `/dashboard/purchase/storereq?req=${row.key.replace(/^req-/, '')}&from=${encodeURIComponent(fromPath)}`;
+  }
+  if (row.source === 'far') {
+    return `/dashboard/purchase/far?asset=${row.key.replace(/^far-/, '')}&from=${encodeURIComponent(fromPath)}`;
+  }
+  if (row.source === 'batch' && row.equipment && row.equipment !== '—') {
+    return `/dashboard/batches?highlight=${encodeURIComponent(row.equipment)}&from=${encodeURIComponent(fromPath)}`;
+  }
+  return null;
+}
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
 const photoList = (pairs: [string | null | undefined, string][]): LightboxImage[] =>
   pairs.filter(([u]) => !!u).map(([u, label]) => ({ url: u as string, label }));
@@ -72,7 +114,7 @@ function PicBadge({ photos, onOpen }: { photos: LightboxImage[]; onOpen: () => v
       type="button"
       className="pic-badge"
       title={t('activity.viewNPhotos', { defaultValue: 'View {{count}} photo(s)', count: photos.length })}
-      onClick={onOpen}
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
       style={{ cursor: 'pointer', border: 'none', background: 'none', padding: 0, color: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 2 }}
     >
       <CameraSvg />
@@ -97,16 +139,16 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
 
   const out: UnifiedRow[] = [];
   for (const tk of tickets) {
-    const ref = ticketRef(tk.id);
-    const plant = tk.plants?.name ?? null;
+    const ref = tk.ticket_no || ticketRef(tk.id);
+    const plant = displayLocationName(tk.plants?.name) || null;
 
     // 1) Raised
-    const raisePhotos = photoList([[tk.defective_raise_photo_url, t('activity.photoRaise', 'Raise photo')]]);
+    const raisePhotos = photoList(listedPhotoUrls(tk.defective_raise_photo_url, tk.defective_raise_photo_urls).map(u => [u, t('activity.photoRaise', 'Raise photo')]));
     out.push({
       key: `${tk.id}:raised`, equipment: tk.equipment,
       type: tk.type === 'emergency' ? t('activity.evtEmergencyRaised', 'Emergency raised') : t('activity.evtPeriodicRaised', 'Periodic raised'),
       date: tk.created_at, doneBy: tk.raised_by || tk.assigned_to || null,
-      verifiedBy: null, plant, hasPhoto: raisePhotos.length > 0, photos: raisePhotos, ticketRef: ref, source: 'maintenance',
+      verifiedBy: null, plant, hasPhoto: raisePhotos.length > 0, photos: raisePhotos, ticketRef: ref, ticketId: tk.id, source: 'maintenance',
     });
 
     // 1b) Review cycle — reviewer sent it back for correction at least once.
@@ -117,35 +159,38 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
         key: `${tk.id}:revision`, equipment: tk.equipment,
         type: `${t('activity.evtChangesRequested', 'Changes requested')}${(tk.revision_count ?? 0) > 1 ? ` ·×${tk.revision_count}` : ''}${tk.revision_reason ? ` · ${tk.revision_reason}` : ''}`,
         date: tk.revision_requested_at, doneBy: tk.revision_requested_by || null,
-        verifiedBy: null, plant, hasPhoto: false, photos: [], ticketRef: ref, source: 'maintenance',
+        verifiedBy: null, plant, hasPhoto: false, photos: [], ticketRef: ref, ticketId: tk.id, source: 'maintenance',
       });
     }
 
     // Store-request driven milestones
     for (const sr of srByTicket.get(tk.id) ?? []) {
       if (sr.supplier_name || sr.busy_transaction_ref) {
-        const procPhotos = photoList([[sr.handover_invoice_url, t('activity.photoSupplierInvoice', 'Supplier invoice')]]);
+        const procPhotos = photoList(listedPhotoUrls(sr.handover_invoice_url, sr.handover_invoice_urls).map(u => [u, t('activity.photoSupplierInvoice', 'Supplier invoice')]));
         out.push({
           key: `${sr.id}:procured`, equipment: tk.equipment,
           type: `${t('activity.evtPartProcured', 'Part procured')} · ${sr.part_name}`, date: tk.closed_at || sr.created_at,
           doneBy: sr.supplier_name || t('activity.byProcurement', 'Procurement'), verifiedBy: null, plant,
-          hasPhoto: procPhotos.length > 0, photos: procPhotos, ticketRef: ref, source: 'maintenance',
+          hasPhoto: procPhotos.length > 0, photos: procPhotos, ticketRef: ref, ticketId: tk.id, source: 'maintenance',
         });
       }
       if (sr.handover_confirmed_at) {
-        const hoPhotos = photoList([[sr.handover_photo_url, t('activity.photoHandover', 'Handover photo')], [sr.handover_invoice_url, t('activity.photoHandoverInvoice', 'Handover invoice')]]);
+        const hoPhotos = photoList([
+          ...listedPhotoUrls(sr.handover_photo_url, sr.handover_photo_urls).map(u => [u, t('activity.photoHandover', 'Handover photo')] as [string, string]),
+          ...listedPhotoUrls(sr.handover_invoice_url, sr.handover_invoice_urls).map(u => [u, t('activity.photoHandoverInvoice', 'Handover invoice')] as [string, string]),
+        ]);
         out.push({
           key: `${sr.id}:handover`, equipment: tk.equipment,
           type: `${t('activity.evtPartHandedOver', 'Part handed over')} · ${sr.part_name}`, date: sr.handover_confirmed_at,
           doneBy: t('activity.byStore', 'Store'), verifiedBy: null, plant,
-          hasPhoto: hoPhotos.length > 0, photos: hoPhotos, ticketRef: ref, source: 'maintenance',
+          hasPhoto: hoPhotos.length > 0, photos: hoPhotos, ticketRef: ref, ticketId: tk.id, source: 'maintenance',
         });
       }
     }
 
     // 2) Defective-part decision
     if (tk.defective_part_decision) {
-      const defPhotos = photoList([[tk.defective_part_photo_url, t('activity.photoDefectivePart', 'Defective part')]]);
+      const defPhotos = photoList(listedPhotoUrls(tk.defective_part_photo_url, tk.defective_part_photo_urls).map(u => [u, t('activity.photoDefectivePart', 'Defective part')]));
       const consumed = tk.defective_part_decision === 'consumed';
       out.push({
         key: `${tk.id}:defective`, equipment: tk.equipment,
@@ -157,20 +202,23 @@ function deriveMaintenanceEvents(tickets: TicketRow[], srs: StoreReqRow[], t: TF
               ? t('activity.evtDefectiveMixed', 'Defective parts sent for repair and scrap')
               : t('activity.evtDefectiveSentRepair', 'Defective part sent for repair'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null, verifiedBy: null, plant,
-        hasPhoto: defPhotos.length > 0, photos: defPhotos, ticketRef: ref, source: 'maintenance',
+        hasPhoto: defPhotos.length > 0, photos: defPhotos, ticketRef: ref, ticketId: tk.id, source: 'maintenance',
       });
     }
 
     // 3) Completed / closed
     if (tk.status === 'closed') {
-      const donePhotos = photoList([[tk.completion_photo_url, t('activity.photoCompletion', 'Completion photo')], [tk.defective_part_photo_url, t('activity.photoDefectivePart', 'Defective part')]]);
+      const donePhotos = photoList([
+        ...listedPhotoUrls(tk.completion_photo_url, tk.completion_photo_urls).map(u => [u, t('activity.photoCompletion', 'Completion photo')] as [string, string]),
+        ...listedPhotoUrls(tk.defective_part_photo_url, tk.defective_part_photo_urls).map(u => [u, t('activity.photoDefectivePart', 'Defective part')] as [string, string]),
+      ]);
       out.push({
         key: `${tk.id}:done`, equipment: tk.equipment,
         type: tk.type === 'emergency' ? t('activity.evtRepairCompleted', 'Repair completed') : t('activity.evtPeriodicCheckCompleted', 'Periodic check completed'),
         date: tk.closed_at || tk.created_at, doneBy: tk.assigned_to || null,
         verifiedBy: tk.raised_role || null,
         plant, hasPhoto: donePhotos.length > 0, photos: donePhotos,
-        ticketRef: ref, source: 'maintenance',
+        ticketRef: ref, ticketId: tk.id, source: 'maintenance',
       });
     }
   }
@@ -303,8 +351,11 @@ function ActivityRoleAccessCard() {
 export function ActivityLog() {
   const { t } = useTranslation();
   const toast = useToast();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
+  const ops = useOpsSettings();
   const { scopeQuery } = usePlantScope();
   const { addNotification } = useNotifications();
   const screenBlacklist = useBlacklistGuard();
@@ -317,9 +368,38 @@ export function ActivityLog() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [showManualOnly, setShowManualOnly] = useState(false);
+  const [head, setHead] = useState<'all' | 'tickets' | 'incidents' | 'purchases' | 'store' | 'far' | 'batches' | 'changes'>('all');
+  const [incidents, setIncidents] = useState<{ id: string; what_text: string; who_text: string | null; solution_text: string | null; occurred_at: string; reported_by: string | null; plants?: { name: string } | null }[]>([]);
+  const [audits, setAudits] = useState<{ id: string; created_at: string; actor_name: string | null; module: string | null; summary: string | null }[]>([]);
+  const [purchases, setPurchases] = useState<{ id: string; vendor_name: string; invoice_no: string | null; purchase_date: string | null; created_at: string; actor_name: string | null; plant_id: string; bill_url: string | null }[]>([]);
+  const [requisitions, setRequisitions] = useState<{ id: string; item: string; status: string; raised_by: string | null; created_at: string; plant_id: string | null }[]>([]);
+  const [farRows, setFarRows] = useState<{ id: string; name: string; job_no: string | null; created_at: string; plant_id: string | null; deleted_at: string | null }[]>([]);
+  const [batchRows, setBatchRows] = useState<{ id: string; batch_no: string; created_at: string; created_by_name: string | null; plant_id: string; stage: string }[]>([]);
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   const [search, setSearch] = useState('');
-  const [plantFilter, setPlantFilter] = useState('');
+  const plantFilter = searchParams.get('plant') || '';
+  const setPlantFilter = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('plant', value);
+    else next.delete('plant');
+    setSearchParams(next, { replace: true });
+  };
+  const activityHere = (() => {
+    const next = new URLSearchParams();
+    if (plantFilter) next.set('plant', plantFilter);
+    if (search.trim()) next.set('q', search.trim());
+    if (head !== 'all') next.set('head', head);
+    const s = next.toString();
+    return s ? `/dashboard/purchase/activity?${s}` : '/dashboard/purchase/activity';
+  })();
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (q) setSearch(q);
+    const rawHead = searchParams.get('head');
+    if (rawHead === 'tickets' || rawHead === 'incidents' || rawHead === 'purchases' || rawHead === 'store' || rawHead === 'far' || rawHead === 'batches' || rawHead === 'changes') {
+      setHead(rawHead);
+    }
+  }, [searchParams]);
   const today = new Date().toISOString().split('T')[0];
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
 
@@ -328,6 +408,7 @@ export function ActivityLog() {
       const { data: plantsData } = await fetchActivePlants<{ id: string; name: string }>('id, name');
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
 
+      const ticketSelect = 'id, ticket_no, equipment, type, created_at, raised_by, assigned_to, revision_count, revision_requested_at, revision_reason, revision_requested_by, defective_part_decision, defective_part_photo_url, defective_part_photo_urls, defective_raise_photo_url, defective_raise_photo_urls, status, closed_at, raised_role, completion_photo_url, completion_photo_urls';
       const [logsRes, ticketsRes] = await Promise.all([
         withEmbedFallback(
           scopeQuery(supabase.from('activity_logs').select('*, plants(name)')).order('date', { ascending: false }).returns<ActivityRow[]>(),
@@ -335,8 +416,18 @@ export function ActivityLog() {
           'ActivityLog.logs',
         ),
         withEmbedFallback(
-          scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>(),
-          () => scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>(),
+          fetchAllRowsProgressive<TicketRow>(
+            (from, to) => scopeQuery(supabase.from('maintenance_tickets').select(`${ticketSelect}, plants(name)`), { unitCol: 'unit_id' })
+              .order('created_at', { ascending: false }).order('id', { ascending: false })
+              .range(from, to).returns<TicketRow[]>(),
+            rows => { setTickets(rows); setLoading(false); },
+          ),
+          () => fetchAllRowsProgressive<TicketRow>(
+            (from, to) => scopeQuery(supabase.from('maintenance_tickets').select(ticketSelect), { unitCol: 'unit_id' })
+              .order('created_at', { ascending: false }).order('id', { ascending: false })
+              .range(from, to).returns<TicketRow[]>(),
+            rows => { setTickets(rows); setLoading(false); },
+          ),
           'ActivityLog.tickets',
         ),
       ]);
@@ -345,13 +436,28 @@ export function ActivityLog() {
 
       const tks = ticketsRes.data || [];
       setTickets(tks);
+      setLoading(false);
       const ids = tks.map(x => x.id);
-      if (ids.length) {
-        const { data: srData } = await supabase.from('maintenance_store_requests').select('*').in('ticket_id', ids).returns<StoreReqRow[]>();
-        setStoreReqs(srData || []);
-      } else {
-        setStoreReqs([]);
+      const srRows: StoreReqRow[] = [];
+      const srSelect = 'id, ticket_id, part_name, supplier_name, busy_transaction_ref, handover_invoice_url, handover_invoice_urls, handover_photo_url, handover_photo_urls, handover_confirmed_at, created_at';
+      for (let i = 0; i < ids.length; i += 80) {
+        const chunk = ids.slice(i, i + 80);
+        const { data: srData } = await supabase.from('maintenance_store_requests').select(srSelect).in('ticket_id', chunk).returns<StoreReqRow[]>();
+        if (srData?.length) srRows.push(...srData);
       }
+      setStoreReqs(srRows);
+      const incidentDb = supabase as unknown as { from: (t: string) => any };
+      const { data: incidentRows } = await incidentDb.from('incident_reports').select('id, what_text, who_text, solution_text, occurred_at, reported_by, plants(name)').order('occurred_at', { ascending: false });
+      setIncidents(incidentRows || []);
+      setAudits(await loadAudit(200));
+      const { data: purchaseRows } = await supabase.from('stock_purchase_receipts').select('id, vendor_name, invoice_no, purchase_date, created_at, actor_name, plant_id, bill_url').order('created_at', { ascending: false }).limit(400);
+      setPurchases(purchaseRows || []);
+      const { data: reqRows } = await supabase.from('store_requisitions').select('id, item, status, raised_by, created_at, plant_id').order('created_at', { ascending: false }).limit(400);
+      setRequisitions(reqRows || []);
+      const { data: assetRows } = await supabase.from('fixed_assets').select('id, name, job_no, created_at, plant_id, deleted_at').order('created_at', { ascending: false }).limit(400);
+      setFarRows(assetRows || []);
+      const { data: sheets } = await supabase.from('production_batch_sheets').select('id, batch_no, created_at, created_by_name, plant_id, stage').order('created_at', { ascending: false }).limit(400);
+      setBatchRows(sheets || []);
       setLoadError(false);
     } catch (err) {
       console.error('[ActivityLog] load failed', err);
@@ -372,16 +478,119 @@ export function ActivityLog() {
       date: a.date,
       doneBy: a.done_by,
       verifiedBy: a.verified_by,
-      plant: a.plants?.name ?? null,
+      plant: displayLocationName(a.plants?.name) || null,
       hasPhoto: !!a.photo_url,
       photos: a.photo_url ? [{ url: a.photo_url, label: t('activity.photoActivity', 'Activity photo') }] : [],
       ticketRef: null,
+      ticketId: null,
       source: 'manual',
     }));
     const derived = deriveMaintenanceEvents(tickets, storeReqs, t);
-    const all = showManualOnly ? manual : [...manual, ...derived];
-    return all.sort((a, b) => toMs(b.date) - toMs(a.date));
-  }, [logs, tickets, storeReqs, showManualOnly, t]);
+    const incidentRows: UnifiedRow[] = incidents.map((r) => ({
+      key: `incident-${r.id}`,
+      equipment: r.what_text,
+      type: 'Incident',
+      date: r.occurred_at,
+      doneBy: r.who_text || r.reported_by,
+      verifiedBy: r.solution_text,
+      plant: displayLocationName(r.plants?.name) || null,
+      hasPhoto: false,
+      photos: [],
+      ticketRef: null,
+      ticketId: null,
+      source: 'incident',
+    }));
+    const auditRows: UnifiedRow[] = audits.map((r) => ({
+      key: `audit-${r.id}`,
+      equipment: r.summary || r.module || 'Change',
+      type: 'Record change',
+      date: r.created_at,
+      doneBy: r.actor_name,
+      verifiedBy: r.module,
+      plant: null,
+      hasPhoto: false,
+      photos: [],
+      ticketRef: null,
+      ticketId: null,
+      source: 'audit',
+    }));
+    const plantById = new Map(dbPlants.map((p) => [p.id, displayLocationName(p.name)]));
+    const purchaseRows: UnifiedRow[] = purchases.map((r) => ({
+      key: `purchase-${r.id}`,
+      equipment: r.vendor_name || 'Purchase',
+      type: r.invoice_no ? `Purchase · ${r.invoice_no}` : 'Purchase',
+      date: r.purchase_date || r.created_at,
+      doneBy: r.actor_name,
+      verifiedBy: null,
+      plant: plantById.get(r.plant_id) || null,
+      hasPhoto: !!r.bill_url,
+      photos: r.bill_url ? [{ url: r.bill_url, label: 'Bill' }] : [],
+      ticketRef: null,
+      ticketId: null,
+      source: 'purchase',
+    }));
+    const requisitionRows: UnifiedRow[] = requisitions.map((r) => ({
+      key: `req-${r.id}`,
+      equipment: r.item,
+      type: `Store request · ${r.status.replace(/_/g, ' ')}`,
+      date: r.created_at,
+      doneBy: r.raised_by,
+      verifiedBy: null,
+      plant: (r.plant_id && plantById.get(r.plant_id)) || null,
+      hasPhoto: false,
+      photos: [],
+      ticketRef: null,
+      ticketId: null,
+      source: 'requisition',
+    }));
+    const farHistory: UnifiedRow[] = farRows.map((r) => ({
+      key: `far-${r.id}`,
+      equipment: r.name,
+      type: r.deleted_at ? 'FAR asset removed' : `FAR asset${r.job_no ? ` · ${r.job_no}` : ''}`,
+      date: r.deleted_at || r.created_at,
+      doneBy: null,
+      verifiedBy: null,
+      plant: (r.plant_id && plantById.get(r.plant_id)) || null,
+      hasPhoto: false,
+      photos: [],
+      ticketRef: r.job_no,
+      ticketId: null,
+      source: 'far',
+    }));
+    const batchHistory: UnifiedRow[] = batchRows.map((r) => ({
+      key: `batch-${r.id}`,
+      equipment: r.batch_no,
+      type: `Batch sheet · ${r.stage.replace(/_/g, ' ')}`,
+      date: r.created_at,
+      doneBy: r.created_by_name,
+      verifiedBy: null,
+      plant: plantById.get(r.plant_id) || null,
+      hasPhoto: false,
+      photos: [],
+      ticketRef: null,
+      ticketId: null,
+      source: 'batch',
+    }));
+    const all = showManualOnly
+      ? manual
+      : [...manual, ...derived, ...incidentRows, ...auditRows, ...purchaseRows, ...requisitionRows, ...farHistory, ...batchHistory];
+    const headed = head === 'tickets'
+      ? all.filter((r) => r.source === 'maintenance')
+      : head === 'incidents'
+        ? all.filter((r) => r.source === 'incident')
+        : head === 'purchases'
+          ? all.filter((r) => r.source === 'purchase')
+          : head === 'store'
+            ? all.filter((r) => r.source === 'requisition')
+            : head === 'far'
+              ? all.filter((r) => r.source === 'far')
+              : head === 'batches'
+                ? all.filter((r) => r.source === 'batch')
+                : head === 'changes'
+                  ? all.filter((r) => r.source === 'audit' || r.source === 'manual')
+                  : all;
+    return headed.sort((a, b) => toMs(b.date) - toMs(a.date));
+  }, [logs, tickets, storeReqs, incidents, audits, purchases, requisitions, farRows, batchRows, dbPlants, showManualOnly, head, t]);
 
   const fromMaintenance = rows.filter(r => r.source === 'maintenance').length;
   const verified = rows.filter(r => r.verifiedBy).length;
@@ -391,7 +600,7 @@ export function ActivityLog() {
   // offering names that no longer exist after a rename. The filter compares
   // display names on both sides (rows carry the same live join), so it stays
   // consistent; the entry form below keys off the plant ID.
-  const plantNames = dbPlants.map(p => p.name);
+  const plantNames = [...new Set(dbPlants.map(p => displayLocationName(p.name)).filter(Boolean))].sort();
   const plantOptions = [...dbPlants].sort((a, b) => a.name.localeCompare(b.name));
 
   // Search + plant filter, then paginate — Activity Log grows unbounded over time.
@@ -411,12 +620,14 @@ export function ActivityLog() {
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
   }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${actSort.sort.key}|${actSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(actSort.sorted, { resetKey: `${search}|${plantFilter}|${showManualOnly}|${head}|${actSort.sort.key}|${actSort.sort.dir}` });
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
     if (!form.equipment.trim() || !form.doneBy.trim()) return;
+    const allowed = await ensureLateApproval({ module: 'activity', entryDate: form.date, profile: activeProfile, bufferDays: ops.bufferDays });
+    if (!allowed) { toast.error('Not saved. Management has to approve this date first.'); return; }
     const plant = dbPlants.find(p => p.id === form.plant);
     const { data, error } = await insertRows('activity_logs', {
       equipment: form.equipment,
@@ -432,6 +643,7 @@ export function ActivityLog() {
       return;
     }
     if (data) setLogs(prev => [data as ActivityRow, ...prev]);
+    void recordAudit({ module: 'activity', action: 'logged', summary: `${form.type} · ${form.equipment} · ${form.date}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
 
     // Notify anyone @-tagged in the notes (Teams-style heads-up).
     const mentionIds = extractMentionIds(form.notes, people).filter(id => id !== activeProfile.id);
@@ -519,6 +731,20 @@ export function ActivityLog() {
         </div>
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              {([
+                ['all', 'All history'],
+                ['tickets', 'Tickets & maintenance'],
+                ['incidents', 'Incident reports'],
+                ['purchases', 'Purchases & bills'],
+                ['store', 'Store requests'],
+                ['far', 'FAR'],
+                ['batches', 'Batch sheets'],
+                ['changes', 'Edits & other records'],
+              ] as const).map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setHead(key)} className={`chip${head === key ? ' active' : ''}`}>{label}</button>
+              ))}
+            </div>
             <TableSearch value={search} onChange={setSearch} placeholder={t('activity.searchPh', 'Search equipment, activity, person, ticket…')} style={{ marginBottom: 0 }} />
           </div>
           <select value={plantFilter} onChange={e => setPlantFilter(e.target.value)} style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}>
@@ -543,8 +769,10 @@ export function ActivityLog() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: a.photos.length ? 'pointer' : 'default' }} onClick={() => a.photos.length && setLightbox(a.photos)} title={a.photos.length ? t('activity.viewPhotos', 'View photo(s)') : undefined}>
+              {pageRows.map((a) => {
+                const href = recordHref(a, activityHere);
+                return (
+                <tr key={a.key} style={{ cursor: href ? 'pointer' : 'default' }} onClick={() => { if (href) navigate(href); }} title={href ? 'Open this record' : undefined}>
                   <td className="font-semibold">{a.equipment || '—'}</td>
                   <td className="text-slate-600">
                     {a.type}
@@ -552,14 +780,26 @@ export function ActivityLog() {
                       <span className="badge" style={{ marginLeft: 6, background: '#E0F2FE', color: '#0369A1', fontWeight: 700, fontSize: 10 }}>{t('activity.autoBadge')}</span>
                     )}
                   </td>
-                  <td>{a.ticketRef ? <span className="num text-xs text-slate-500">#{a.ticketRef}</span> : <span className="text-slate-300">—</span>}</td>
+                  <td>
+                    {a.ticketId ? (
+                      <button
+                        type="button"
+                        className="num text-xs"
+                        onClick={e => { e.stopPropagation(); const href = recordHref(a, activityHere); if (href) navigate(href); }}
+                        style={{ color: '#2563EB', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, textDecoration: 'underline' }}
+                      >
+                        #{a.ticketRef}
+                      </button>
+                    ) : <span className="text-slate-300">—</span>}
+                  </td>
                   <td className="text-slate-500 text-xs">{fmtDate(a.date)}</td>
                   <td>{a.doneBy || '—'}</td>
                   <td className="text-slate-500">{a.verifiedBy || '—'}</td>
                   <td>{a.plant || '—'}</td>
                   <td><PicBadge photos={a.photos} onOpen={() => setLightbox(a.photos)} /></td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <TablePagination controls={controls} />
@@ -586,7 +826,7 @@ export function ActivityLog() {
           <PanelField label={t('activity.fieldPlant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
               {!form.plant && <option value="">{t('activity.selectPlant', 'Select factory…')}</option>}
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
           </PanelField>
         </PanelRow>

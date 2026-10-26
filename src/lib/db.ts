@@ -50,7 +50,11 @@ export async function callRpc<T = unknown>(
     | 'soft_delete_user' | 'restore_deleted_user'
     | 'allocate_production_batch_numbers'
     | 'latest_batch_closing_balance'
-    | 'next_job_no',
+    | 'next_job_no'
+    | 'search_maintenance_tickets'
+    | 'search_maintenance_schedules'
+    | 'search_store_requisitions'
+    | 'search_plants',
   args: Record<string, unknown>,
 ): Promise<{ data: T | null; error: { message: string } | null }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

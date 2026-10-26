@@ -12,7 +12,7 @@ export interface SegmentTabItem<K extends string = string> {
 }
 
 /**
- * v2 page-level segment tabs — pill buttons; active = navy fill, white text
+ * v2 page-level segment tabs — active = charcoal + saffron underline
  * (mockups: Periodic / Emergency / Schedule Setup, Requirements / Stock Register / Scrap).
  */
 export function SegmentTabs<K extends string>({
@@ -27,7 +27,14 @@ export function SegmentTabs<K extends string>({
   className?: string;
 }) {
   return (
-    <div className={cn('flex items-center gap-2 flex-wrap', className)} role="tablist">
+    <div
+      className={cn(
+        'flex items-center gap-2 flex-nowrap overflow-x-auto scroll-x -mx-1 px-1 pb-1',
+        'md:flex-wrap md:overflow-visible md:pb-0',
+        className,
+      )}
+      role="tablist"
+    >
       {items.filter(it => !it.hidden).map(it => {
         const active = it.key === value;
         return (
@@ -38,9 +45,10 @@ export function SegmentTabs<K extends string>({
             aria-selected={active}
             onClick={() => onChange(it.key)}
             className={cn(
-              'inline-flex items-center gap-2 px-4 py-2 rounded-[10px] text-[13px] font-medium transition-colors whitespace-nowrap border',
+              'inline-flex items-center gap-2 px-4 py-2.5 md:py-2 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap border shrink-0',
+              'min-h-[44px] md:min-h-0 active:scale-[0.98]',
               active
-                ? 'bg-slate-900 text-white border-slate-900'
+                ? 'bg-[#161616] text-white border-[#161616] shadow-[inset_0_-2px_0_#EF6C00]'
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300',
             )}
           >

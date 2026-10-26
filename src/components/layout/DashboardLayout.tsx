@@ -7,13 +7,16 @@ import { Footer } from './Footer';
 import { RestrictedAccess } from './RestrictedAccess';
 import { useAuth } from '../../hooks/useAuth';
 import { useRoleContext } from '../../contexts/RoleContext';
-import { profileCanAccess } from '../../lib/profiles';
+import { profileCanAccess, isAdminProfile, isManagementProfile } from '../../lib/profiles';
+import { displayLocationName } from '../../lib/plantLabels';
 import { useBlacklist } from '../../contexts/BlacklistContext';
 import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { SearchPaletteProvider } from '../../contexts/SearchPaletteContext';
+import { LateEntryHost } from '../LateEntryHost';
 import { BrandLoader } from '../brand/BrandLoader';
 import { BatchFlowTourHost } from '../tour/BatchFlowTourHost';
+import { MobileTableStack } from './MobileTableStack';
 
 // ── Blacklisted overlay ───────────────────────────────────────────────────────
 
@@ -96,6 +99,7 @@ const PAGE_TITLES: Record<string, L> = {
   '/dashboard/blacklist':       ['nav.blacklist', 'Blacklist'],
   '/dashboard/admin/uploads':   ['nav.uploadHistory', 'Upload History'],
   '/dashboard/users':           ['nav.userManagement', 'User Management'],
+  '/dashboard/access':          ['Access & backup', 'Access & backup'],
   '/dashboard/daily-log':       ['nav.dailyUnitLog', 'Daily Unit Log'],
 };
 
@@ -125,6 +129,7 @@ const BREADCRUMBS: Record<string, readonly L[]> = {
   '/dashboard/working-capital': [C_MONITORING, ['nav.workingCapital', 'Working Capital']],
   '/dashboard/owner': [C_MONITORING, ['nav.ownerIntelligence', 'Owner Intelligence']],
   '/dashboard/users': [C_ADMIN, ['nav.userManagement', 'User Management']],
+  '/dashboard/access': [C_ADMIN, ['Access & backup', 'Access & backup']],
   '/dashboard/blacklist': [C_ADMIN, ['nav.blacklist', 'Blacklist']],
   '/dashboard/admin/uploads': [C_ADMIN, ['nav.uploadHistory', 'Upload History']],
   '/dashboard/daily-log': [C_REFERENCE, ['nav.dailyUnitLog', 'Daily Unit Log']],
@@ -133,16 +138,17 @@ const BREADCRUMBS: Record<string, readonly L[]> = {
   '/dashboard/warehouse-entry': [C_WORKSPACE, ['nav.warehouseConsole', 'Warehouse Console']],
 };
 
-/** Per-sub-page titles/breadcrumbs/subtitles for the Factory dropdown's Purchase routes. */
-const FACTORY_SUBPAGES: Record<string, { title: L; breadcrumb: readonly L[]; subtitle?: L }> = {
+/** Titles and breadcrumbs for routes that used to sit in the Purchase accordion. */
+const PURCHASE_SUBPAGES: Record<string, { title: L; breadcrumb: readonly L[]; subtitle?: L }> = {
   '/dashboard/purchase/far':      { title: ['nav.asset', 'Asset'],                        breadcrumb: [C_FACTORY, ['nav.far', 'FAR'], ['nav.asset', 'Asset']],    subtitle: ['nav.subFar', 'Fixed Asset Register — every factory asset with its financial record.'] },
   '/dashboard/purchase/qr':       { title: ['nav.qrCodes', 'QR Codes'],                   breadcrumb: [C_FACTORY, ['nav.far', 'FAR'], ['nav.qrCodes', 'QR Codes']], subtitle: ['nav.subQr', 'Generate and print QR codes for factory assets.'] },
   '/dashboard/purchase/maint':    { title: ['nav.maintenance', 'Maintenance'],            breadcrumb: [C_FACTORY, ['nav.maintenance', 'Maintenance']],            subtitle: ['nav.subMaint', 'Plan, track and complete machine maintenance.'] },
   '/dashboard/purchase/activity': { title: ['nav.activityLog', 'Activity Log'],           breadcrumb: [C_FACTORY, ['nav.activityLog', 'Activity Log']],           subtitle: ['nav.subActivity', 'Every purchase-linked event, in one stream.'] },
   '/dashboard/purchase/storereq': { title: ['nav.storeRequisition', 'Store Requisition'], breadcrumb: [C_FACTORY, ['nav.storeRequisition', 'Store Requisition']], subtitle: ['nav.subStoreReq', 'Request materials, track approvals, manage stock and scrap.'] },
-  '/dashboard/purchase/purchase': { title: ['nav.purchaseOrder', 'Purchase Order'],       breadcrumb: [C_FACTORY, ['nav.purchaseOrder', 'Purchase Order']],       subtitle: ['nav.subPurchaseOrder', 'Raise and track purchase orders.'] },
-  '/dashboard/purchase/marine':   { title: ['nav.marineInsurance', 'Marine Insurance'],   breadcrumb: [C_FACTORY, ['nav.marineInsurance', 'Marine Insurance']] },
-  '/dashboard/purchase/labour':   { title: ['nav.labour', 'Labour'],                      breadcrumb: [C_FACTORY, ['nav.labour', 'Labour']] },
+  '/dashboard/purchase/purchase': { title: ['nav.purchase', 'Purchase'],                  breadcrumb: [C_OPERATIONS, ['nav.purchase', 'Purchase']],                  subtitle: ['nav.subPurchaseOrder', 'Raise and track purchase orders.'] },
+  '/dashboard/purchase/book':     { title: ['nav.purchaseBook', 'Purchase book'],         breadcrumb: [C_OPERATIONS, ['nav.purchaseBook', 'Purchase book']],         subtitle: ['nav.subPurchaseBook', 'Payments, marine cover, Kolkata, SHD, requirements and dispatch from the Purchase workbook.'] },
+  '/dashboard/purchase/marine':   { title: ['nav.marineInsurance', 'Marine Insurance'],   breadcrumb: [C_OPERATIONS, ['nav.marineInsurance', 'Marine Insurance']] },
+  '/dashboard/purchase/labour':   { title: ['nav.labour', 'Labour'],                      breadcrumb: [C_OPERATIONS, ['nav.labour', 'Labour']] },
 };
 
 /** v2 subtitles for non-purchase pages (rendered under the TopBar title). */
@@ -159,6 +165,7 @@ const PAGE_SUBTITLES: Record<string, L> = {
   '/dashboard/anomalies': ['nav.subAnomalies', 'Open risk flags across modules.'],
   '/dashboard/anomaly-center': ['nav.subAnomalyCenter', 'Investigate and close anomalies.'],
   '/dashboard/users': ['nav.subUsers', 'Staff directory, roles and plant access.'],
+  '/dashboard/access': ['Permissions, late-entry approval, backup and history.', 'Permissions, late-entry approval, backup and history.'],
   '/dashboard/blacklist': ['nav.subBlacklist', 'Restricted persons, vehicles and vendors.'],
   '/dashboard/admin/uploads': ['nav.subUploadHistory', 'Bulk import history and rollbacks.'],
   '/dashboard/daily-log': ['nav.subDailyLog', 'Daily unit sheets by plant.'],
@@ -182,6 +189,7 @@ const PURCHASE_TAB_PATHS = [
   '/dashboard/purchase/activity',
   '/dashboard/purchase/storereq',
   '/dashboard/purchase/purchase',
+  '/dashboard/purchase/book',
   '/dashboard/purchase/qr',
   '/dashboard/purchase/marine',
   '/dashboard/purchase/labour',
@@ -256,21 +264,10 @@ export function DashboardLayout() {
   let subtitle: string | undefined = PAGE_SUBTITLES[lookupPath] ? tl(PAGE_SUBTITLES[lookupPath]) : undefined;
 
   if (path.startsWith('/dashboard/purchase')) {
-    // The horizontal sub-tab strip is gone; show the specific Factory sub-page.
-    // The Purchase Orders page is shared with Operations→Purchase; when reached
-    // that way (?ctx=ops) show the Operations framing instead of Factory's.
-    const viaOps = path === '/dashboard/purchase/purchase'
-      && new URLSearchParams(location.search).get('ctx') === 'ops';
-    if (viaOps) {
-      title = t('nav.purchase', 'Purchase');
-      breadcrumb = tCrumb([C_OPERATIONS, ['nav.purchase', 'Purchase']]);
-      subtitle = undefined;
-    } else {
-      const sub = FACTORY_SUBPAGES[lookupPath] ?? FACTORY_SUBPAGES['/dashboard/purchase/far'];
-      title = tl(sub.title);
-      breadcrumb = tCrumb(sub.breadcrumb);
-      subtitle = sub.subtitle ? tl(sub.subtitle) : undefined;
-    }
+    const sub = PURCHASE_SUBPAGES[lookupPath] ?? PURCHASE_SUBPAGES['/dashboard/purchase/far'];
+    title = tl(sub.title);
+    breadcrumb = tCrumb(sub.breadcrumb);
+    subtitle = sub.subtitle ? tl(sub.subtitle) : undefined;
   }
 
   // ── Route-level access guard ───────────────────────────────────────────────
@@ -290,10 +287,12 @@ export function DashboardLayout() {
   // User Management is reachable by anyone with a user/role-management capability
   // (e.g. a delegated unit head), not only via an explicit route grant.
   const isUserMgmt = path === '/dashboard/users';
+  const isAccess = path === '/dashboard/access';
   const canAccessRoute =
     !activeProfile.standaloneOnly &&
     (isPurchaseRoot ? hasSomePurchaseAccess
       : isUserMgmt ? (can('manage_users') || can('manage_roles') || profileCanAccess(activeProfile, lookupPath))
+      : isAccess ? (isAdminProfile(activeProfile) || isManagementProfile(activeProfile))
       : profileCanAccess(activeProfile, lookupPath));
 
   // Post-login landing: a locked user who hits the Overview ('/dashboard') they
@@ -312,6 +311,7 @@ export function DashboardLayout() {
   return (
     <SearchPaletteProvider>
     <div className="app-shell" data-sidebar-collapsed={collapsed ? 'true' : undefined} style={{ minHeight: '100vh' }}>
+      <MobileTableStack />
       <Sidebar
         user={user}
         onSignOut={signOut}
@@ -324,14 +324,14 @@ export function DashboardLayout() {
       {/* Mobile drawer backdrop */}
       {sidebarOpen && (
         <div
-          className="md:hidden fixed inset-0 bg-slate-900/40 z-40"
+          className="md:hidden fixed inset-0 bg-black/40 z-40"
           onClick={() => setSidebarOpen(false)}
           aria-hidden
         />
       )}
 
-      <main className="min-h-screen p-4 md:p-7 ml-0 md:ml-[var(--sidebar-width,260px)] transition-[margin] duration-200">
-        <div className="max-w-[1500px] mx-auto">
+      <main className="min-h-screen min-w-0 p-3 sm:p-4 md:p-7 ml-0 md:ml-[var(--sidebar-width,260px)] transition-[margin] duration-200">
+        <div className="max-w-[1500px] mx-auto min-w-0">
           <TopBar title={title} breadcrumb={breadcrumb} subtitle={subtitle} onMenu={() => setSidebarOpen(true)} />
 
           {/* DEV-ONLY: no Supabase session → the shell shows the demo admin
@@ -357,7 +357,7 @@ export function DashboardLayout() {
 
           {/* "Viewing as" banner — appears when not in Admin mode */}
           {isViewingAs && (
-            <div className="flex items-center justify-between gap-3 px-4 py-2.5 mb-5 bg-orange-50 border border-orange-200 rounded-2xl">
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5 mb-5 bg-orange-50 border border-orange-200 rounded-lg">
               <div className="flex items-center gap-2.5">
                 <div
                   className={[
@@ -377,7 +377,7 @@ export function DashboardLayout() {
                   </span>
                   <span className="text-orange-600"> · {activeProfile.name}</span>
                   {activeProfile.plant && (
-                    <span className="text-orange-400"> · {activeProfile.plant}</span>
+                    <span className="text-orange-400"> · {displayLocationName(activeProfile.plant)}</span>
                   )}
                 </div>
               </div>
@@ -398,12 +398,14 @@ export function DashboardLayout() {
             ? restrictsAccess && blacklistEntry
               ? <BlacklistedOverlay entry={blacklistEntry} onBack={() => { switchProfile('admin'); navigate('/dashboard'); }} />
               : (
-                // Per-page boundary keyed on path: a crash in one page shows a
-                // localised fallback and resets when the user navigates away,
-                // rather than blanking the whole shell.
+                <>
                 <ErrorBoundary key={path} label={title}>
-                  <Outlet />
+                  <div className="page-enter">
+                    <Outlet />
+                  </div>
                 </ErrorBoundary>
+                <LateEntryHost />
+                </>
               )
             : <RestrictedAccess />
           }

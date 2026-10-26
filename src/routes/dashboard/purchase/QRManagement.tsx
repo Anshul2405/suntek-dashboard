@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Eye, Plus, Check, Building2 } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
-import { withEmbedFallback } from '../../../lib/scopedList';
+import { fetchAllRowsProgressive } from '../../../lib/fetchAll';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { usePagination } from '../../../components/ui/usePagination';
 import { ErrorState } from '../../../components/ui/states';
 import { FilterBar, FilterSelect, ButtonV2, StatusPill, TablePaginationV2 } from '../../../components/v2';
@@ -43,21 +44,30 @@ export function QRManagement() {
     let cancelled = false;
     (async () => {
       setLoading(true); setError(false);
-      const { data, error } = await withEmbedFallback(
-        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('name').returns<AssetRow[]>(),
-        () => scopeQuery(supabase.from('fixed_assets').select('*')).order('name').returns<AssetRow[]>(),
-        'QR.assets',
-      );
+      const pageEmbed = (from: number, to: number) =>
+        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)'))
+          .order('name').order('id').range(from, to).returns<AssetRow[]>();
+      const pageBare = (from: number, to: number) =>
+        scopeQuery(supabase.from('fixed_assets').select('*'))
+          .order('name').order('id').range(from, to).returns<AssetRow[]>();
+      let paged = await fetchAllRowsProgressive<AssetRow>(pageEmbed, rows => {
+        if (!cancelled) { setAssets(rows); setLoading(false); }
+      });
+      if (paged.error) {
+        paged = await fetchAllRowsProgressive<AssetRow>(pageBare, rows => {
+          if (!cancelled) { setAssets(rows); setLoading(false); }
+        });
+      }
       if (cancelled) return;
-      if (error) { setError(true); setLoading(false); return; }
-      setAssets(data || []);
+      if (paged.error) { setError(true); setLoading(false); return; }
+      setAssets(paged.data);
       setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [scopeQuery]);
 
   const plantNames = useMemo(
-    () => [...new Set(assets.map(a => a.plants?.name).filter(Boolean) as string[])].sort(),
+    () => [...new Set(assets.map(a => displayLocationName(a.plants?.name)).filter(Boolean))].sort(),
     [assets],
   );
 
@@ -65,14 +75,16 @@ export function QRManagement() {
     const q = search.trim().toLowerCase();
     const nq = normMark(search);
     return assets.filter(a => {
-      if (plantFilter !== 'all' && a.plants?.name !== plantFilter) return false;
+      if (plantFilter !== 'all' && displayLocationName(a.plants?.name) !== plantFilter) return false;
       if (statusFilter === 'generated' && !a.qr_token) return false;
       if (statusFilter === 'not' && a.qr_token) return false;
       if (!q) return true;
       return (a.name || '').toLowerCase().includes(q)
         || (a.identification_mark || '').toLowerCase().includes(q)
         || (!!nq && normMark(a.identification_mark).includes(nq))
-        || (a.make || '').toLowerCase().includes(q);
+        || (a.make || '').toLowerCase().includes(q)
+        || (a.job_no || '').toLowerCase().includes(q)
+        || (a.serial_no || '').toLowerCase().includes(q);
     });
   }, [assets, search, plantFilter, statusFilter]);
 
@@ -81,7 +93,7 @@ export function QRManagement() {
     const val = (a: AssetRow): string => {
       switch (sort.key) {
         case 'mark':      return normMark(a.identification_mark);
-        case 'plant':     return (a.plants?.name || '').toLowerCase();
+        case 'plant':     return displayLocationName(a.plants?.name).toLowerCase();
         case 'status':    return a.qr_token ? '1' : '0';
         case 'generated': return a.qr_generated_at || '';
         default:          return (a.name || '').toLowerCase();
@@ -161,7 +173,7 @@ export function QRManagement() {
                     <tr key={a.id} onClick={() => openDetail(a)} style={{ cursor: 'pointer' }}>
                       <td className="font-semibold text-slate-700">{a.name}</td>
                       <td className="text-slate-500">{a.identification_mark || '—'}</td>
-                      <td className="text-slate-500">{a.plants?.name || '—'}</td>
+                      <td className="text-slate-500">{displayLocationName(a.plants?.name) || '—'}</td>
                       <td>
                         {a.qr_token
                           ? <StatusPill tone="green" icon={<Check strokeWidth={3} />} label={t('far.qrGenerated', 'Generated')} />

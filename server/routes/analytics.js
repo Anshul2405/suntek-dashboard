@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { purchaseSum, PURCHASE_LINES, purchaseKeptExpr } from '../lib/busySql.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -22,17 +23,15 @@ router.get('/kpis', async (req, res) => {
       // ── EXISTING: core aggregates ─────────────────────────────────────────────
       pool.request().query(`
         SELECT
-          (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=16 AND Cancelled=0) AS fyReceipts,
-          (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=19 AND Cancelled=0) AS fyPayments,
+          (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=14 AND Cancelled=0 AND [Date] <= CAST(GETDATE() AS DATE)) AS fyReceipts,
+          (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=19 AND Cancelled=0 AND [Date] <= CAST(GETDATE() AS DATE)) AS fyPayments,
           (SELECT COUNT(DISTINCT MasterCode1) FROM Tran1 WHERE VchType=9 AND Cancelled=0) AS uniqueCustomersFY,
           (SELECT COUNT(DISTINCT MasterCode1) FROM Tran1 WHERE VchType=9 AND Cancelled=0
              AND MONTH([Date])=MONTH(GETDATE()) AND YEAR([Date])=YEAR(GETDATE())) AS uniqueCustomersMTD,
           (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=9 AND Cancelled=0
              AND MONTH([Date])=MONTH(DATEADD(MONTH,-1,GETDATE()))
              AND YEAR([Date])=YEAR(DATEADD(MONTH,-1,GETDATE()))) AS prevMonthSales,
-          (SELECT ISNULL(SUM(VchAmtBaseCur),0) FROM Tran1 WHERE VchType=14 AND Cancelled=0
-             AND MONTH([Date])=MONTH(DATEADD(MONTH,-1,GETDATE()))
-             AND YEAR([Date])=YEAR(DATEADD(MONTH,-1,GETDATE()))) AS prevMonthPurchase,
+          ${purchaseSum(`AND MONTH(t.[Date])=MONTH(DATEADD(MONTH,-1,GETDATE())) AND YEAR(t.[Date])=YEAR(DATEADD(MONTH,-1,GETDATE()))`)} AS prevMonthPurchase,
           (SELECT COUNT(*) FROM Tran1 WHERE VchType=9 AND Cancelled=0
              AND MONTH([Date])=MONTH(DATEADD(MONTH,-1,GETDATE()))
              AND YEAR([Date])=YEAR(DATEADD(MONTH,-1,GETDATE()))) AS prevMonthInvoiceCount,
@@ -103,30 +102,35 @@ router.get('/kpis', async (req, res) => {
           COUNT(DISTINCT CASE WHEN MONTH([Date])=MONTH(GETDATE()) AND YEAR([Date])=YEAR(GETDATE())
             THEN MasterCode1 END) AS activeSuppliersMTD
         FROM Tran1
-        WHERE VchType=14 AND Cancelled=0
+        WHERE VchType=2 AND Cancelled=0
       `),
 
       // ── NEW KPI 8: Top 5 suppliers by FY purchase spend ──────────────────────
       pool.request().query(`
         SELECT TOP 5
           m.Name AS name,
-          SUM(t.VchAmtBaseCur) AS fyPurchase
-        FROM Tran1 t JOIN Master1 m ON t.MasterCode1=m.Code
-        WHERE t.VchType=14 AND t.Cancelled=0 AND YEAR(t.[Date])=YEAR(GETDATE())
-        GROUP BY t.MasterCode1, m.Name
-        ORDER BY SUM(t.VchAmtBaseCur) DESC
+          SUM(ABS(t2.Value1)) AS fyPurchase
+        FROM Tran2 t2
+        JOIN Tran1 t ON t.VchCode = t2.VchCode AND t.VchType = 2 AND t.Cancelled = 0
+          AND YEAR(t.[Date]) = YEAR(GETDATE())
+          AND t.[Date] <= CAST(GETDATE() AS DATE)
+        JOIN Master1 m ON m.Code = t2.MasterCode1 AND m.MasterType = 2 AND m.ParentGrp = 117
+        GROUP BY m.Name
+        ORDER BY SUM(ABS(t2.Value1)) DESC
       `),
 
       // ── NEW KPI 12: Monthly purchase trend (last 6 months) ───────────────────
       pool.request().query(`
         SELECT
-          YEAR([Date]) AS yr, MONTH([Date]) AS mo,
-          SUM(VchAmtBaseCur) AS purchase,
+          YEAR(t.[Date]) AS yr, MONTH(t.[Date]) AS mo,
+          SUM(${purchaseKeptExpr('t')}) AS purchase,
           COUNT(*) AS invoiceCount
-        FROM Tran1
-        WHERE VchType=14 AND Cancelled=0
-          AND [Date] >= DATEADD(MONTH,-5,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1))
-        GROUP BY YEAR([Date]), MONTH([Date])
+        FROM Tran1 t
+        ${PURCHASE_LINES}
+        WHERE t.VchType=2 AND t.Cancelled=0
+          AND t.[Date] >= DATEADD(MONTH,-5,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1))
+          AND t.[Date] <= CAST(GETDATE() AS DATE)
+        GROUP BY YEAR(t.[Date]), MONTH(t.[Date])
         ORDER BY yr, mo
       `),
 
@@ -134,8 +138,9 @@ router.get('/kpis', async (req, res) => {
       pool.request().query(`
         SELECT
           ISNULL((SELECT SUM(VchAmtBaseCur) FROM Tran1
-            WHERE VchType=16 AND Cancelled=0
-            AND MONTH([Date])=MONTH(GETDATE()) AND YEAR([Date])=YEAR(GETDATE())),0) AS receiptsMTD,
+            WHERE VchType=14 AND Cancelled=0
+            AND MONTH([Date])=MONTH(GETDATE()) AND YEAR([Date])=YEAR(GETDATE())
+            AND [Date] <= CAST(GETDATE() AS DATE)),0) AS receiptsMTD,
           ISNULL((SELECT SUM(g.TaxAmt + ISNULL(g.TaxAmt1,0))
             FROM VchGSTSumItemWise g
             WHERE g.VchType=9
@@ -144,8 +149,8 @@ router.get('/kpis', async (req, res) => {
                 AND MONTH(t.[Date])=MONTH(GETDATE()) AND YEAR(t.[Date])=YEAR(GETDATE()))),0) AS gstOutputMTD,
           ISNULL((SELECT SUM(g.TaxAmt + ISNULL(g.TaxAmt1,0))
             FROM VchGSTSumItemWise g
-            WHERE g.VchType=14
-              AND EXISTS (SELECT 1 FROM Tran1 t WHERE t.VchNo=g.VchNo AND t.VchType=14
+            WHERE g.VchType=2
+              AND EXISTS (SELECT 1 FROM Tran1 t WHERE t.VchNo=g.VchNo AND t.VchType=2
                 AND t.Cancelled=0
                 AND MONTH(t.[Date])=MONTH(GETDATE()) AND YEAR(t.[Date])=YEAR(GETDATE()))),0) AS gstInputMTD,
           (SELECT COUNT(*) FROM (
@@ -170,7 +175,7 @@ router.get('/kpis', async (req, res) => {
     const ov = await pool.request().query(`
       SELECT
         ISNULL((SELECT SUM(VchAmtBaseCur) FROM Tran1 WHERE VchType=9 AND Cancelled=0),0) AS fyRevenue,
-        ISNULL((SELECT SUM(VchAmtBaseCur) FROM Tran1 WHERE VchType=14 AND Cancelled=0),0) AS fyPurchase,
+        ${purchaseSum('')} AS fyPurchase,
         ISNULL((SELECT SUM(VchAmtBaseCur) FROM Tran1 WHERE VchType=9 AND Cancelled=0
           AND MONTH([Date])=MONTH(GETDATE()) AND YEAR([Date])=YEAR(GETDATE())),0) AS salesMTD,
         (SELECT ISNULL(SUM(net),0) FROM (

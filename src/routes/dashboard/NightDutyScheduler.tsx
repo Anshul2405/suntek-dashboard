@@ -8,6 +8,7 @@ import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { StatCard, SectionCard, ButtonV2, FilterBar, FilterSelect, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { exportToCsv } from '../../lib/utils/exportCsv';
+import { displayLocationName } from '../../lib/plantLabels';
 
 /**
  * Night-duty scheduler — shown to users with the `allocate_night_duty` capability
@@ -134,7 +135,7 @@ export function NightDutyScheduler() {
   }), [accts, myAccountId, isGlobal, plantIds, tiers, roleTier, myRank]);
 
   const acctName = useMemo(() => Object.fromEntries(accts.map(a => [a.id, a.name])), [accts]);
-  const plantName = useMemo(() => Object.fromEntries(plants.map(p => [p.id, p.name])), [plants]);
+  const plantName = useMemo(() => Object.fromEntries(plants.map(p => [p.id, displayLocationName(p.name)])), [plants]);
 
   // Search subordinates by name / role / level.
   const filteredSubs = useMemo(() => {
@@ -392,7 +393,7 @@ export function NightDutyScheduler() {
           style={{ width: '100%', padding: '8px 11px', border: '1px solid #E2E8F0', borderRadius: 10, fontSize: 12.5, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}
         >
           <option value="auto">{t('nightBoard.autoOwnPlant', "Auto — each person's own plant")}</option>
-          {plants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {plants.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
         </select>
         <div className="text-[10.5px] text-slate-400 mt-1">{t('nightBoard.dutyPlantHint', 'Pick a specific plant to schedule someone at a plant other than their own — e.g. a second duty the same night at another plant.')}</div>
       </div>
@@ -496,7 +497,7 @@ export function NightDutyScheduler() {
           onReset={resetSchedFilters}
         >
           <FilterSelect icon={<Building2 />} value={schedPlant} onChange={setSchedPlant}
-            options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plants.map(p => ({ value: p.name, label: p.name }))]} />
+            options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plants.map(p => ({ value: displayLocationName(p.name), label: displayLocationName(p.name) }))]} />
           <div className="flex items-center gap-1.5">
             <input type="date" value={schedFrom} onChange={e => setSchedFrom(e.target.value)}
               className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />

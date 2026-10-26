@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Gauge, CheckCircle2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { StatCard, StatusPill, InfoBanner, type PillTone } from '../../components/v2';
@@ -135,14 +136,14 @@ export function PredictiveQCBoard() {
                 <div className="flex items-start justify-between mb-2">
                   <div>
                     <div className="text-base font-heading font-semibold">{t('predictiveQc.batchLabel', { no: p.batch.batch_no })}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">{t('predictiveQc.batchMeta', { plant: p.batch.plants?.name || '—', grade: p.grade, count: p.live.length })}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{t('predictiveQc.batchMeta', { plant: displayLocationName(p.batch.plants?.name) || '—', grade: p.grade, count: p.live.length })}</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusPill tone={cfg.pill} dot label={t('predictiveQc.status_' + p.status)} />
                     <NotesButton
                       entityType="active_batch"
                       entityId={p.batch.id}
-                      entityLabel={`Batch ${p.batch.batch_no}${p.batch.plants?.name ? ' · ' + p.batch.plants.name : ''}`}
+                      entityLabel={`Batch ${p.batch.batch_no}${p.batch.plants?.name ? ' · ' + displayLocationName(p.batch.plants.name) : ''}`}
                       route="/dashboard/predictive-qc"
                     />
                   </div>

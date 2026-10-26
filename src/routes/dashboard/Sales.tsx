@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { EmptyState } from '../../components/ui/states';
 import { usePagination } from '../../components/ui/usePagination';
 import { useTextFilter } from '../../components/ui/TableSearch';
@@ -14,7 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../lib/supabase';
 import { insertRows } from '../../lib/db';
-import { useSalesMTD, useSalesContracts, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
+import { useSalesMTD, useSalesContracts, useSalesSites, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
 import { DeltaBadge, BulletCompare } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { exportToXlsx } from '../../lib/utils/exportXlsx';
@@ -40,8 +41,14 @@ export function Sales() {
   const [showModal, setShowModal] = useState(false);
   const { activeProfile } = useRoleContext();
   const { data: salesKPIs } = useSalesMTD();
+  const { data: sites } = useSalesSites();
   const { data: liveContracts } = useSalesContracts();
   const [salesSearch, setSalesSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (q) setSalesSearch(q);
+  }, [searchParams]);
   const contractRows = liveContracts || [];
   const filteredContracts = useTextFilter(contractRows, salesSearch, c => [c.customer, c.status]);
   const salesSort = useSortable(filteredContracts, {
@@ -163,12 +170,43 @@ export function Sales() {
             caption={t('sales.partiesSundryDebtors')} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
-          <KpiInfoButton info={{ title: 'Receipts MTD', what: 'Cash actually received from customers this month via receipt vouchers. Excludes sales invoices not yet paid. Key indicator of real cash inflow.', source: 'BUSY DB', tables: ['Tran1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=16 (Receipt), Cancelled=0, current month' }} />
+          <KpiInfoButton info={{ title: 'Receipts MTD', what: 'Cash actually received from customers this month via receipt vouchers. Excludes sales invoices not yet paid. Key indicator of real cash inflow.', source: 'BUSY DB', tables: ['Tran1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=14 (Receipt), Cancelled=0, current month' }} />
           <StatCard className="h-full" icon={<Wallet />} tone="green"
             label={t('sales.receiptsLabel')}
             value={salesKPIs ? fmtINR(salesKPIs.receiptsMTD) : '…'}
             caption={t('sales.customerPaymentsReceived')} />
         </div>
+      </div>
+
+      <div className="grid grid-cols-12 gap-4 mb-4">
+        {([
+          ['shd', t('sales.shdSalesLabel')],
+          ['kolkata', t('sales.kolkataSalesLabel')],
+        ] as const).map(([key, label]) => {
+          const desk = sites?.[key];
+          return (
+            <div key={key} className="col-span-12 sm:col-span-6 relative">
+              <KpiInfoButton info={{
+                title: label,
+                what: 'Sales invoices this month for parties whose Busy name marks this desk.',
+                source: 'BUSY DB',
+                tables: ['Tran1', 'Master1'],
+                filter: 'VchType=9, current month, party name',
+              }} />
+              <StatCard className="h-full" icon={<Factory />} tone={key === 'shd' ? 'amber' : 'blue'}
+                label={label}
+                value={desk ? fmtINR(desk.salesMTD) : '…'}
+                caption={desk
+                  ? t('sales.siteInvoices', { count: desk.invoiceCount })
+                  : t('sales.siteWaiting', 'Waiting for the first Busy read')} />
+              {!desk && (
+                <Link className="text-sm text-sky-700 mt-2 inline-block" to={`/dashboard/purchase/book?tab=${key}`}>
+                  {t('sales.openSheet', 'Open the sheet')}
+                </Link>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Analytics KPI row */}
@@ -228,7 +266,7 @@ export function Sales() {
 
           {/* Active Suppliers */}
           <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
-            <KpiInfoButton info={{ title: 'Active Suppliers FY / MTD', what: 'Number of unique supplier parties that had at least one purchase invoice this financial year (FY) and this month (MTD). The top-5 concentration % shows if spend is dangerously concentrated in a few vendors.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=14, Cancelled=0 · COUNT DISTINCT MasterCode1' }} />
+            <KpiInfoButton info={{ title: 'Active Suppliers FY / MTD', what: 'Number of unique supplier parties that had at least one purchase invoice this financial year (FY) and this month (MTD). The top-5 concentration % shows if spend is dangerously concentrated in a few vendors.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1', filter: 'VchType=2, Cancelled=0 · COUNT DISTINCT MasterCode1' }} />
             <StatCard className="h-full" icon={<Factory />} tone="blue"
               label={t('sales.activeSuppliersLabel')}
               value={analytics.activeSuppliersFY}
@@ -264,7 +302,7 @@ export function Sales() {
 
           {/* GST Net Position */}
           <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
-            <KpiInfoButton info={{ title: 'GST Net Position MTD', what: 'GST Output (collected from customers) minus GST Input ITC (paid to suppliers). Positive = amount payable to government. Negative = ITC refund position.', source: 'Derived', formula: 'GST Net = Output MTD − Input ITC MTD', tables: ['VchGSTSumItemWise'], dbPath: 'BusyFY2026 > dbo > Tables > VchGSTSumItemWise', filter: 'Output: VchType=9 · Input: VchType=14, current month' }} />
+            <KpiInfoButton info={{ title: 'GST Net Position MTD', what: 'GST Output (collected from customers) minus GST Input ITC (paid to suppliers). Positive = amount payable to government. Negative = ITC refund position.', source: 'Derived', formula: 'GST Net = Output MTD − Input ITC MTD', tables: ['VchGSTSumItemWise'], dbPath: 'BusyFY2026 > dbo > Tables > VchGSTSumItemWise', filter: 'Output: VchType=9 · Input: VchType=2, current month' }} />
             <StatCard className="h-full" icon={<Scale />}
               tone={analytics.gstNetMTD > 0 ? 'red' : 'green'}
               valueTone={analytics.gstNetMTD > 0 ? 'red' : 'green'}
@@ -312,7 +350,7 @@ export function Sales() {
 
       {/* Info banner */}
       <div className="relative mb-4">
-        <KpiInfoButton info={{ title: 'Sales → Ops Pipeline', what: 'Explains the auto-cascade: when a sale is logged in BUSY, it triggers stock deduction, contract balance update, labour cost posting, and syncs back to this dashboard — all without manual re-entry. This card is an informational note, not a data tile.', source: 'Mock data', note: 'Static explainer banner. No data source.' }} />
+        <KpiInfoButton info={{ title: 'Where this page reads from', what: 'Sales, receipts, outstanding, GST and the customer table are read from Busy on the Busy PC and pushed here every few minutes. The dashboard never writes to Busy. Contracts typed with New contract are saved only in this software.', source: 'BUSY DB', note: 'Explainer note, not a data tile.' }} />
         <InfoBanner tone="amber">
           <div className="font-semibold text-slate-800">{t('sales.feedsTitle')}</div>
           <div className="text-[12px] text-slate-600 mt-1">{t('sales.feedsBody')}</div>

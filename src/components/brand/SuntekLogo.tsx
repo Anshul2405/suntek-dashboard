@@ -19,7 +19,7 @@ export function SuntekLogo({
   withWordmark = false,
   inverse = false,
 }: SuntekLogoProps) {
-  const titleColor = inverse ? '#FFFFFF' : '#0A1628';
+  const titleColor = inverse ? '#FFFFFF' : '#161616';
   const subColor = inverse ? 'rgba(255,255,255,0.55)' : '#64748B';
 
   return (

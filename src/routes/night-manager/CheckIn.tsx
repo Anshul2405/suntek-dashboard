@@ -52,6 +52,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
   const streamRef = useRef<MediaStream | null>(null);
   // Fallback file input for browsers that block getUserMedia
   const fileRef   = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
   // GPS
   const [gpsState, setGpsState] = useState<GpsState>('idle');
@@ -124,7 +125,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
           : t('checkin.errCameraAccess')
       );
       // Auto-fallback: open file picker
-      setTimeout(() => fileRef.current?.click(), 400);
+      setTimeout(() => galleryRef.current?.click(), 400);
     }
   }
 
@@ -499,9 +500,27 @@ export function CheckIn({ embedded = false }: CheckInProps) {
             className="hidden"
             onChange={handleFileChange}
           />
+          <input
+            ref={galleryRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleFileChange}
+          />
 
           {/* Camera action buttons */}
           <div className="p-4 space-y-3">
+            {(cameraState === 'idle' || cameraState === 'live') && (
+              <button
+                type="button"
+                onClick={() => galleryRef.current?.click()}
+                className="w-full font-bold rounded-xl py-3 flex items-center justify-center gap-2 text-sm border border-slate-200 hover:bg-slate-50 transition-colors"
+                style={{ color: '#334155' }}
+              >
+                {t('checkin.chooseFromGallery')}
+              </button>
+            )}
+
             {cameraState === 'idle' && (
               <button
                 onClick={startCamera}
@@ -549,7 +568,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
 
             {cameraState === 'cam_error' && (
               <button
-                onClick={() => fileRef.current?.click()}
+                onClick={() => galleryRef.current?.click()}
                 className="w-full text-white font-bold rounded-xl py-4 flex items-center justify-center gap-2 text-base"
                 style={{ background: '#64748B' }}
               >

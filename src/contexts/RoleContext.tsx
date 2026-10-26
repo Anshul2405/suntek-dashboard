@@ -1,14 +1,17 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, BATCH_SHEET_ROUTES } from '../lib/profiles';
+import { roleToProfile, ADMIN_FALLBACK, isAdminProfile, profileHasCapability, unionRoleAccess } from '../lib/profiles';
 import type { MockProfile, RoleRow } from '../lib/profiles';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
 import { applyLanguage, hasStoredLanguage } from '../i18n';
 
+const PREVIEW_KEY = 'suntek.previewProfile';
+
 type DbUser = Pick<
   Database['public']['Tables']['user_accounts']['Row'],
   'id' | 'name' | 'role_id' | 'role_label' | 'plant_name' | 'access_note' | 'auth_user_id' | 'created_at' | 'photo_url'
 >;
+type UserRoleLink = { user_account_id: string; role_id: string };
 
 /** The DB profile data we resolve for the logged-in user (before role mapping). */
 type SessionProfile = { role: string | null; name: string | null; photo_url?: string | null };
@@ -118,6 +121,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   const [rolesStatus, setRolesStatus] = useState<RolesStatus>('loading');
   // DB directory (active user_accounts rows).
   const [dbUsers, setDbUsers] = useState<DbUser[]>([]);
+  const [userRoleLinks, setUserRoleLinks] = useState<UserRoleLink[]>([]);
 
   // The DB profile data resolved for the logged-in user (role id + name), before
   // it's mapped through the role catalog. null = no session / still resolving.
@@ -128,7 +132,20 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   // True once the session resolution attempt has completed (with or without a user).
   const [sessionResolved, setSessionResolved] = useState(false);
   // Admin-only "preview as" selection. null = view as self.
-  const [previewProfileId, setPreviewProfileId] = useState<string | null>(null);
+  // Kept per browser tab so a reload or tab switch does not drop it.
+  const [previewProfileId, setPreviewProfileIdState] = useState<string | null>(() => {
+    try { return sessionStorage.getItem(PREVIEW_KEY); } catch { return null; }
+  });
+  const setPreviewProfileId = useCallback((id: string | null) => {
+    setPreviewProfileIdState(id);
+    try {
+      if (id) sessionStorage.setItem(PREVIEW_KEY, id);
+      else sessionStorage.removeItem(PREVIEW_KEY);
+    } catch { /* private mode */ }
+  }, []);
+  // Supabase fires SIGNED_IN every time a browser tab becomes visible and when
+  // another tab refreshes the shared token. Only a different user is a real login.
+  const lastAuthUserRef = useRef<string | null | undefined>(undefined);
   // The logged-in Supabase auth user id — the exact link to this person's
   // directory (db) identity, used to bridge notification ids. null = no session.
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
@@ -228,11 +245,17 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
-      resolveFromSession(session?.user?.id ?? null);
+      const uid = session?.user?.id ?? null;
+      if (lastAuthUserRef.current === undefined) lastAuthUserRef.current = uid;
+      resolveFromSession(uid);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setPreviewProfileId(null); // reset any preview on login/logout
-      resolveFromSession(session?.user?.id ?? null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const uid = session?.user?.id ?? null;
+      const prev = lastAuthUserRef.current;
+      lastAuthUserRef.current = uid;
+      if (prev !== undefined && prev === uid && event !== 'USER_UPDATED') return;
+      if (prev !== undefined && prev !== uid) setPreviewProfileId(null);
+      resolveFromSession(uid);
     });
 
     // Admin may grant a second role while this person is already logged in.
@@ -253,17 +276,24 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── DB directory — built from active user_accounts rows ─────────────────────
   useEffect(() => {
     async function loadDbUsers() {
-      const { data } = await supabase
-        .from('user_accounts')
-        .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
-        .eq('is_active', true)
-        .returns<DbUser[]>();
+      const [{ data }, { data: links }] = await Promise.all([
+        supabase
+          .from('user_accounts')
+          .select('id, name, role_id, role_label, plant_name, access_note, auth_user_id, created_at, photo_url')
+          .eq('is_active', true)
+          .returns<DbUser[]>(),
+        supabase
+          .from('user_roles')
+          .select('user_account_id, role_id')
+          .returns<UserRoleLink[]>(),
+      ]);
       if (data) setDbUsers(data);
+      if (links) setUserRoleLinks(links);
     }
     loadDbUsers();
   }, []);
@@ -287,7 +317,17 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         photoUrl: u.photo_url ?? undefined,
       };
       if (role) {
-        out.push(roleToProfile(role, overrides));
+        const extra = userRoleLinks
+          .filter((l) => l.user_account_id === u.id)
+          .map((l) => roleMap.get(l.role_id))
+          .filter((r): r is RoleRow => !!r);
+        const all = [role, ...extra.filter((r) => r.id !== role.id)];
+        const access = unionRoleAccess(all);
+        out.push(roleToProfile(role, {
+          ...overrides,
+          allowedDashboardRoutes: access.allowed_routes,
+          capabilities: access.capabilities,
+        }));
       } else {
         // Unknown role → a locked directory entry (no access), still taggable.
         out.push({
@@ -300,7 +340,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       }
     }
     return out;
-  }, [dbUsers, roleMap, rolesStatus]);
+  }, [dbUsers, roleMap, rolesStatus, userRoleLinks]);
 
   const allProfiles = directory;
 
@@ -319,14 +359,8 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
         .filter((r): r is RoleRow => !!r);
       const all = [role, ...extraRoles.filter((r) => r.id !== role.id)];
       if (all.length > 1) {
-        let routes = all.some((r) => r.allowed_routes?.includes('*'))
-          ? ['*']
-          : [...new Set(all.flatMap((r) => r.allowed_routes ?? []))];
-        const capabilities = [...new Set(all.flatMap((r) => r.capabilities ?? []))];
-        if (!routes.includes('*') && all.some((r) => r.id === 'factory_operator')) {
-          routes = [...new Set([...routes, ...BATCH_SHEET_ROUTES])];
-        }
-        return { ...base, allowedDashboardRoutes: routes, capabilities };
+        const access = unionRoleAccess(all);
+        return { ...base, allowedDashboardRoutes: access.allowed_routes, capabilities: access.capabilities };
       }
       return base;
     }

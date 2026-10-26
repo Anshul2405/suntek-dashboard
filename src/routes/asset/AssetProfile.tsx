@@ -7,6 +7,7 @@ import {
   Clock, PackageSearch, Hourglass, History, FileText, ScrollText, ChevronRight,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { displayLocationName } from '../../lib/plantLabels';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { statusBadge } from '../dashboard/purchase/maintenance/shared';
 import { matchAsset } from '../../lib/far/assets';
@@ -213,7 +214,7 @@ export function AssetProfile() {
   }
   function printQr() {
     const png = qrPng();
-    if (png && asset) printQrLabel({ pngDataUrl: png, title: heroLabel, subtitle: asset.plants?.name || '', footer: t('far.qrPrintFooter', { defaultValue: 'Asset #{{id}} · scan to open the digital profile', id: asset.id.slice(0, 8) }) });
+    if (png && asset) printQrLabel({ pngDataUrl: png, title: heroLabel, subtitle: displayLocationName(asset.plants?.name), footer: t('far.qrPrintFooter', { defaultValue: 'Asset #{{id}} · scan to open the digital profile', id: asset.id.slice(0, 8) }) });
   }
 
   return (
@@ -259,7 +260,7 @@ export function AssetProfile() {
               <div className="font-heading font-semibold text-[26px] leading-tight">{asset.name}</div>
               <div className="text-[13.5px] text-slate-500 mt-0.5">
                 {asset.identification_mark ? <strong className="text-slate-700">{asset.identification_mark}</strong> : null}
-                {asset.plants?.name ? `${asset.identification_mark ? '  •  ' : ''}${asset.plants.name}` : ''}
+                {asset.plants?.name ? `${asset.identification_mark ? '  •  ' : ''}${displayLocationName(asset.plants.name)}` : ''}
               </div>
               <div className="flex gap-2 mt-2.5 flex-wrap">
                 {stats.openCount
@@ -312,7 +313,7 @@ export function AssetProfile() {
               <Field label={t('far.thInvoiceNo', 'Invoice no')} value={asset.invoice_no} />
               <Field label={t('far.thDateOfPurchase', 'Date of purchase')} value={fmtDate(asset.purchase_date)} />
               <Field label={t('far.thAccountHead', 'Account head')} value={asset.account_head} />
-              <Field label={t('common.plant', 'Plant')} value={asset.plants?.name} />
+              <Field label={t('common.plant', 'Plant')} value={displayLocationName(asset.plants?.name)} />
             </div>
           </div>
 

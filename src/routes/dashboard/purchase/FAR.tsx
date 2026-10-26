@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
+import { displayLocationName } from '../../../lib/plantLabels';
 // Shared humanizer — a user must never be shown a raw error object.
 import { humanizeError as errMsg } from '../../../lib/errors';
 import { insertRows, updateRows } from '../../../lib/db';
+import { ensureLateApproval, canEditModule, canDeleteModule, useOpsSettings, recordAudit } from '../../../lib/opsControls';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
 import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
@@ -14,13 +16,13 @@ import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
 import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
-import { StatCard, SectionCard, ButtonV2, SegmentTabs, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { Boxes, Wrench, Camera, Download, Upload, Plus } from 'lucide-react';
+import { SectionCard, ButtonV2, SegmentTabs, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
+import { Wrench, Download, Upload, Plus } from 'lucide-react';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary';
 import * as XLSX from 'xlsx';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
-import { withEmbedFallback } from '../../../lib/scopedList';
+import { fetchAllRowsProgressive } from '../../../lib/fetchAll';
 import { groupAssetsByType, normMark, matchAsset } from '../../../lib/far/assets';
 import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
 import { normalizeAssetDate } from '../../../lib/far/dates';
@@ -97,6 +99,9 @@ interface MaintEntry {
   part: string;
   cost: number;
   procuredQty: number;
+  /** A part was handed over from the store for an in-house repair. */
+  issuedFromStore: boolean;
+  issuedQty: number;
   billUrl: string | null;
   status: string;
   created_at: string;
@@ -172,7 +177,7 @@ function PicCell({ asset, onUpload, onView }: {
         )}
       </button>
       <input
-        ref={inputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+        ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }}
         onChange={async e => {
           const f = e.target.files?.[0];
           e.target.value = '';
@@ -187,19 +192,19 @@ function PicCell({ asset, onUpload, onView }: {
 
 /** Per-group expanded asset list — extracted so it can own its own sort state
  *  (hooks can't run inside the group .map()). */
-function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic, onViewPic, onOpenMaint, onRaise }: {
+function AssetDetailTable({ assets, showPlant, maintByAsset, onUploadPic, onViewPic, onOpenMaint, onRaise, onEdit, onDelete }: {
   assets: AssetRow[];
-  jobMap: Map<string, string>;
   showPlant: boolean;
   maintByAsset: Map<string, MaintEntry[]>;
   onUploadPic: (asset: AssetRow, file: File) => Promise<void>;
   onViewPic: (asset: AssetRow) => void;
   onOpenMaint: (asset: AssetRow, entries: MaintEntry[]) => void;
   onRaise: (asset: AssetRow) => void;
+  onEdit: (asset: AssetRow) => void;
+  onDelete: (asset: AssetRow) => void;
 }) {
   const { t } = useTranslation();
   const s = useSortable(assets, {
-    job: a => jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no),
     mark: a => a.identification_mark,
     make: a => a.make,
     serial: a => a.serial_no,
@@ -207,20 +212,19 @@ function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic
     capacity: a => a.capacity,
     year: a => a.year,
     value: a => (a.value == null ? null : Number(a.value)),
-    plant: a => a.plants?.name ?? null,
+    plant: a => displayLocationName(a.plants?.name) || null,
     repairs: a => (maintByAsset.get(a.id)?.length ?? 0),
   });
   return (
     <div className="overflow-x-auto scroll-x">
       <table className="dt2" style={{ margin: 0 }}>
-        <thead><tr><Th sortKey="job" s={s}>{t('far.thJobNo', 'Job No')}</Th><Th sortKey="mark" s={s}>{t('far.thMark', 'Mark')}</Th><Th sortKey="make" s={s}>{t('far.thMake', 'Make')}</Th><Th sortKey="serial" s={s}>{t('far.thSerial', 'Serial')}</Th><Th sortKey="model" s={s}>{t('far.thModel')}</Th><Th sortKey="capacity" s={s} className="num">{t('far.thCapacity')}</Th><Th sortKey="year" s={s} firstDir="desc" className="num">{t('far.thYear')}</Th><Th sortKey="value" s={s} firstDir="desc" className="num">{t('far.thValue', 'Value')}</Th>{showPlant && <Th sortKey="plant" s={s}>{t('far.rowPlant')}</Th>}<Th sortKey="repairs" s={s} firstDir="desc" className="num">{t('far.thRepairs', 'Repairs')}</Th><th>{t('far.thPic')}</th><th></th></tr></thead>
+        <thead><tr><Th sortKey="mark" s={s}>{t('far.thMark', 'Mark')}</Th><Th sortKey="make" s={s}>{t('far.thMake', 'Make')}</Th><Th sortKey="serial" s={s}>{t('far.thSerial', 'Serial')}</Th><Th sortKey="model" s={s}>{t('far.thModel')}</Th><Th sortKey="capacity" s={s} className="num">{t('far.thCapacity')}</Th><Th sortKey="year" s={s} firstDir="desc" className="num">{t('far.thYear')}</Th><Th sortKey="value" s={s} firstDir="desc" className="num">{t('far.thValue', 'Value')}</Th>{showPlant && <Th sortKey="plant" s={s}>{t('far.rowPlant')}</Th>}<Th sortKey="repairs" s={s} firstDir="desc" className="num">{t('far.thRepairs', 'Repairs')}</Th><th>{t('far.thPic')}</th><th></th></tr></thead>
         <tbody>
           {s.sorted.map(a => {
             const repairs = maintByAsset.get(a.id) ?? [];
             const openRepairs = repairs.filter(e => e.status !== 'closed').length;
             return (
             <tr key={a.id}>
-              <td className="font-mono text-xs font-semibold text-slate-700">{jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)}</td>
               <td className="text-slate-500 text-xs">{a.identification_mark || '—'}</td>
               <td className="text-slate-500 text-xs">{a.make || '—'}</td>
               <td className="text-slate-500 text-xs">{a.serial_no || '—'}</td>
@@ -228,7 +232,7 @@ function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic
               <td className="num text-xs">{a.capacity || '—'}</td>
               <td className="num text-xs">{a.year || '—'}</td>
               <td className="num text-xs font-semibold">{a.value ? `₹ ${Number(a.value).toLocaleString('en-IN')}` : '—'}</td>
-              {showPlant && <td className="text-slate-500 text-xs">{a.plants?.name || '—'}</td>}
+              {showPlant && <td className="text-slate-500 text-xs">{displayLocationName(a.plants?.name) || '—'}</td>}
               <td className="num">
                 {repairs.length === 0 ? (
                   <span className="text-slate-300 text-xs">—</span>
@@ -253,6 +257,8 @@ function AssetDetailTable({ assets, jobMap, showPlant, maintByAsset, onUploadPic
                   className="text-[11px] font-semibold text-blue-600"
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
                 >{t('far.raiseTicket', 'Raise ticket')}</button>
+                <button type="button" onClick={() => onEdit(a)} className="text-[11px] font-semibold" style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8, fontFamily: 'inherit' }}>Edit</button>
+                <button type="button" onClick={() => onDelete(a)} className="text-[11px] font-semibold text-red-600" style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8, fontFamily: 'inherit' }}>Delete</button>
               </td>
             </tr>
           );
@@ -269,7 +275,9 @@ export function FAR() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
-  const { activeProfile } = useRoleContext();
+  const [searchParams] = useSearchParams();
+  const { activeProfile, activePersonId } = useRoleContext();
+  const ops = useOpsSettings();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   // Machine-photo lightbox (PIC column → view).
   const [picView, setPicView] = useState<LightboxImage[] | null>(null);
@@ -295,12 +303,35 @@ export function FAR() {
     setPicView([{ url: asset.photo_url, label: `${asset.name}${asset.identification_mark ? ` · ${asset.identification_mark}` : ''}` }]);
   }
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [asOf, setAsOf] = useState('');
   const [saved, setSaved] = useState(false);
   const [assets, setAssets] = useState<AssetRow[]>([]);
   const [expandedType, setExpandedType] = useState<string | null>(null);
   const [equipSearch, setEquipSearch] = useState('');
+  const [repairSearch, setRepairSearch] = useState('');
+  const [repairOpenOnly, setRepairOpenOnly] = useState(false);
   const [equipPlantFilter, setEquipPlantFilter] = useState<string[]>([]); // empty = all plants (combined)
   const [equipOpenTable, setEquipOpenTable] = useState(false);            // the big list is hidden until asked
+
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (!q) return;
+    setEquipSearch(q);
+    setEquipOpenTable(true);
+  }, [searchParams]);
+
+  const focusAssetId = searchParams.get('asset');
+  const focusAsset = useMemo(
+    () => (focusAssetId ? assets.find(a => a.id === focusAssetId) ?? null : null),
+    [assets, focusAssetId],
+  );
+  useEffect(() => {
+    if (!focusAsset) return;
+    setEquipOpenTable(true);
+    setEquipSearch(focusAsset.name || '');
+    setExpandedType((focusAsset.name || 'Unnamed').trim());
+  }, [focusAsset]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   // The ONE factory this FAR belongs to. Formerly a multi-select that
   // flat-mapped every parsed row across each chosen factory — "sharing" a FAR
@@ -341,29 +372,61 @@ export function FAR() {
       const { data: plantsData } = await fetchActivePlants<{ id: string; name: string }>('id, name');
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
 
-      const { data, error } = await withEmbedFallback(
-        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('created_at', { ascending: false }).returns<AssetRow[]>(),
-        () => scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).returns<AssetRow[]>(),
-        'FAR.assets',
-      );
-      if (error) throw error;
-      const loaded = data || [];
+      const keepId = searchParams.get('asset');
+      const keep = (rows: AssetRow[]) => rows.filter(a => !a.deleted_at || a.id === keepId);
+      const pageEmbed = (from: number, to: number) =>
+        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)'))
+          .order('created_at', { ascending: false }).order('id')
+          .range(from, to).returns<AssetRow[]>();
+      const pageBare = (from: number, to: number) =>
+        scopeQuery(supabase.from('fixed_assets').select('*'))
+          .order('created_at', { ascending: false }).order('id')
+          .range(from, to).returns<AssetRow[]>();
+      let paged = await fetchAllRowsProgressive<AssetRow>(pageEmbed, rows => {
+        setAssets(keep(rows));
+        setLoading(false);
+      });
+      if (paged.error) {
+        // eslint-disable-next-line no-console
+        console.error('[FAR.assets] query failed; retrying without the plants(name) embed:', paged.error);
+        paged = await fetchAllRowsProgressive<AssetRow>(pageBare, rows => {
+          setAssets(keep(rows));
+          setLoading(false);
+        });
+      }
+      if (paged.error) throw paged.error;
+      const loaded = keep(paged.data);
       setAssets(loaded);
       setLoadError(false);
+      setLoading(false);
+      const day = new Date().toISOString().slice(0, 10);
+      const snap = supabase as unknown as { from: (t: string) => any };
+      if (loaded.length) {
+        void snap.from('far_daily').upsert(loaded.map(a => ({
+          snapshot_date: day,
+          asset_id: a.id,
+          payload: a,
+        })), { onConflict: 'snapshot_date,asset_id' });
+      }
       persistMissingJobNos('fixed_assets', loaded, 'FAR').then(map => {
         setAssets(prev => prev.map(a => ({ ...a, job_no: map.get(a.id) ?? a.job_no })));
       }).catch(() => { /* column may not exist until 0019 is applied */ });
 
       // Maintenance/repair cost register — emergency tickets + their part costs.
+      // Slim columns, and the asset table is already on screen (setLoading above).
       const { data: tickets } = await supabase.from('maintenance_tickets')
-        .select('*, plants(name)').eq('type', 'emergency')
-        .order('created_at', { ascending: false }).returns<MaintTicketRow[]>();
+        .select('id, equipment, status, closed_at, created_at, far_asset_id, pm_bill_total, plants(name)')
+        .eq('type', 'emergency')
+        .order('created_at', { ascending: false })
+        .limit(1000)
+        .returns<MaintTicketRow[]>();
       const ids = (tickets || []).map((tk) => tk.id);
-      let srs: MaintStoreReqRow[] = [];
-      if (ids.length) {
+      const srs: MaintStoreReqRow[] = [];
+      const srSelect = 'ticket_id, part_name, quantity, store_decision, purchase_required, handover_confirmed_at, total_price, busy_transaction_ref';
+      for (let i = 0; i < ids.length; i += 80) {
         const { data: srData } = await supabase.from('maintenance_store_requests')
-          .select('*').in('ticket_id', ids).returns<MaintStoreReqRow[]>();
-        srs = srData || [];
+          .select(srSelect).in('ticket_id', ids.slice(i, i + 80)).returns<MaintStoreReqRow[]>();
+        if (srData?.length) srs.push(...srData);
       }
       const srByTicket = new Map<string, MaintStoreReqRow[]>();
       srs.forEach((s) => { if (!s.ticket_id) return; const arr = srByTicket.get(s.ticket_id); if (arr) arr.push(s); else srByTicket.set(s.ticket_id, [s]); });
@@ -372,6 +435,11 @@ export function FAR() {
         const primary = rows[0];
         const procuredRows = rows.filter(r => r.store_decision === 'unavailable' || r.purchase_required);
         const procuredQty = procuredRows.reduce((n, r) => n + (Number(r.quantity) || 0), 0);
+        const issuedRows = rows.filter(r =>
+          !!r.handover_confirmed_at
+          || ((tk.status === 'pending_defective_return' || tk.status === 'closed') && r.store_decision === 'available'),
+        );
+        const issuedQty = issuedRows.reduce((n, r) => n + (Number(r.quantity) || 0), 0);
         // Cost = the Purchase Manager's aggregate bill for this ticket, else any per-row prices.
         const rowCost = rows.reduce((n, r) => n + (Number(r.total_price) || 0), 0);
         const cost = Number(tk.pm_bill_total) || rowCost || 0;
@@ -379,10 +447,12 @@ export function FAR() {
         return {
           id: tk.id,
           equipment: tk.equipment,
-          plant: tk.plants?.name || '—',
+          plant: displayLocationName(tk.plants?.name) || '—',
           part: primary?.part_name || t('far.inHouseRepair', 'In-house repair'),
           cost,
           procuredQty,
+          issuedFromStore: issuedRows.length > 0,
+          issuedQty,
           billUrl: tk.pm_bill_url ?? null,
           status: tk.status,
           created_at: tk.created_at,
@@ -441,7 +511,7 @@ export function FAR() {
    */
   const plantChips = useMemo(() => {
     const withData = new Set(plantsInFar.map(p => p.id));
-    return plantOptions.map(p => ({ id: p.id, name: p.name, hasData: withData.has(p.id) }));
+    return plantOptions.map(p => ({ id: p.id, name: displayLocationName(p.name), hasData: withData.has(p.id) }));
   }, [plantOptions, plantsInFar]);
 
   /**
@@ -483,9 +553,14 @@ export function FAR() {
 
   const jobMap = useMemo(() => assignSequentialJobNos(assets, 'FAR'), [assets]);
 
+  function farHere() {
+    const q = searchParams.toString();
+    return q ? `/dashboard/purchase/far?${q}` : '/dashboard/purchase/far';
+  }
+
   function raiseTicketForAsset(asset: AssetRow) {
     const mark = asset.identification_mark ? ` (${asset.identification_mark})` : '';
-    navigate(`/dashboard/purchase/maint?raise=1&far=${asset.id}&equip=${encodeURIComponent(`${asset.name}${mark}`)}&plant=${asset.plant_id || ''}`);
+    navigate(`/dashboard/purchase/maint?raise=1&far=${asset.id}&equip=${encodeURIComponent(`${asset.name}${mark}`)}&plant=${asset.plant_id || ''}&from=${encodeURIComponent(farHere())}`);
   }
 
   // Equipment List — a derived, grouped view of the FAR (the PM master).
@@ -493,15 +568,21 @@ export function FAR() {
     const q = equipSearch.trim().toLowerCase();
     let filtered = assets;
     if (equipPlantFilter.length) filtered = filtered.filter(a => a.plant_id && equipPlantFilter.includes(a.plant_id));
-    if (q) filtered = filtered.filter(a => (a.name || '').toLowerCase().includes(q) || normMark(a.identification_mark).includes(normMark(q)) || (jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)).toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
+    if (q) filtered = filtered.filter(a =>
+      (a.name || '').toLowerCase().includes(q)
+      || normMark(a.identification_mark).includes(normMark(q))
+      || (jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)).toLowerCase().includes(q)
+      || a.id.toLowerCase().includes(q)
+      || displayLocationName(a.plants?.name).toLowerCase().includes(q)
+      || (a.plants?.name || '').toLowerCase().includes(q)
+      || (a.serial_no || '').toLowerCase().includes(q)
+      || (a.make || '').toLowerCase().includes(q)
+    );
     return groupAssetsByType(filtered);
   }, [assets, equipSearch, equipPlantFilter, jobMap]);
   const groupSort = useSortable(equipGroups, {
     type: g => g.type,
     count: g => g.count,
-    job: g => g.assets
-      .map(a => jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0] || '',
   }, { key: 'type', dir: 'asc' });
   // Representative (most common non-empty) value for a group column.
   const repVal = (vals: (string | number | null)[]) => {
@@ -550,10 +631,12 @@ export function FAR() {
   );
   useEffect(() => { if (!selectedFY && fyList.length) setSelectedFY(fyList[0]); }, [fyList, selectedFY]);
   const activeFY = selectedFY || fyList[0] || null;
+  const fyQuery = repairSearch.trim().toLowerCase();
   const fyEntries = useMemo(
-    () => farRelatedEntries.filter(e => e.fy === activeFY)
+    () => (repairOpenOnly ? farRelatedEntries.filter(e => e.status !== 'closed') : farRelatedEntries.filter(e => e.fy === activeFY))
+      .filter(e => !fyQuery || [e.equipment, e.part, e.status, e.id].join(' ').toLowerCase().includes(fyQuery))
       .sort((a, b) => (b.closed_at || b.created_at).localeCompare(a.closed_at || a.created_at)),
-    [farRelatedEntries, activeFY],
+    [farRelatedEntries, activeFY, fyQuery, repairOpenOnly],
   );
   const fyTotal = fyEntries.reduce((s, e) => s + e.cost, 0);
   const fyLastUpdated = fyEntries.reduce((mx, e) => { const d = e.closed_at || e.created_at; return d > mx ? d : mx; }, '');
@@ -568,7 +651,7 @@ export function FAR() {
     cost: e => e.cost,
   }, { key: 'closed', dir: 'desc' });
   const groupPg = usePagination(groupSort.sorted, { resetKey: `${groupSort.sorted.length}|${groupSort.sort.key}|${groupSort.sort.dir}` });
-  const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
+  const fyPg = usePagination(fySort.sorted, { resetKey: `${activeFY ?? ''}|${fyQuery}|${fySort.sort.key}|${fySort.sort.dir}` });
 
   // ── Pic-proof coverage — % of registered assets with a photo on file ─────────
   const picCoverage = assets.length
@@ -726,14 +809,20 @@ export function FAR() {
 
   async function handleSave() {
     if (!form.mark.trim() || !form.model.trim()) return;
+    if (!canEditModule(ops, activeProfile, 'far')) {
+      toast.error('You do not have permission to add FAR assets.');
+      return;
+    }
+    const allowed = await ensureLateApproval({ module: 'FAR', entryDate: form.purchaseDate, profile: activeProfile, bufferDays: ops.bufferDays });
+    if (!allowed) {
+      toast.error('Not saved. Management has to approve this purchase date first.');
+      return;
+    }
     const plantId = form.plant || plantOptions[0]?.id || null;
-    const allocated = await allocateNextJobNos('FAR', 1);
-    const jobNo = allocated[0] || nextJobNo(assets.map(a => a.job_no), 'FAR');
     const payload = {
       plant_id: plantId,
       name: form.mark,
       identification_mark: form.mark,
-      job_no: jobNo,
       model: form.model || null,
       capacity: form.capacity || null,
       origin: form.origin || null,
@@ -743,10 +832,20 @@ export function FAR() {
       purchase_date: form.purchaseDate || null,
       account_head: form.account || null,
     };
-    let { data, error } = await insertRows('fixed_assets', payload).select('*, plants(name)').single();
+    if (editingId) {
+      const { data, error } = await updateRows('fixed_assets', payload).eq('id', editingId).select('*, plants(name)').single();
+      if (error) { toast.error(`${t('far.saveFailed')}: ${error.message}`); return; }
+      if (data) setAssets(prev => prev.map(a => a.id === editingId ? data as AssetRow : a));
+      void recordAudit({ module: 'far', action: 'asset_edited', summary: `Edited FAR asset ${form.mark}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
+      setSaved(true);
+      setTimeout(() => { setOpen(false); setSaved(false); setEditingId(null); }, 800);
+      return;
+    }
+    const allocated = await allocateNextJobNos('FAR', 1);
+    const jobNo = allocated[0] || nextJobNo(assets.map(a => a.job_no), 'FAR');
+    let { data, error } = await insertRows('fixed_assets', { ...payload, job_no: jobNo }).select('*, plants(name)').single();
     if (error && /job_no/i.test(error.message || '')) {
-      const { job_no: _omit, ...withoutJob } = payload;
-      ({ data, error } = await insertRows('fixed_assets', withoutJob).select('*, plants(name)').single());
+      ({ data, error } = await insertRows('fixed_assets', payload).select('*, plants(name)').single());
     }
 
     if (error) {
@@ -754,43 +853,90 @@ export function FAR() {
       return;
     }
     if (data) setAssets(prev => [data as AssetRow, ...prev]);
+    void recordAudit({ module: 'far', action: 'asset_added', summary: `Added FAR asset ${form.mark}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
     setSaved(true);
     setTimeout(() => { setOpen(false); setSaved(false); setForm({ mark: '', model: '', capacity: '', origin: 'India', year: new Date().getFullYear().toString(), value: '', invoice: '', purchaseDate: today, account: 'Plant & Machinery', plant: plantOptions[0]?.id ?? '' }); }, 1600);
   }
 
-  function handleClose() { setOpen(false); setSaved(false); }
+  function handleClose() { setOpen(false); setSaved(false); setEditingId(null); }
+
+  function openEdit(asset: AssetRow) {
+    if (!canEditModule(ops, activeProfile, 'far')) {
+      toast.error('You do not have permission to edit FAR assets.');
+      return;
+    }
+    setEditingId(asset.id);
+    setForm({
+      mark: asset.identification_mark || asset.name || '',
+      model: asset.model || '',
+      capacity: asset.capacity || '',
+      origin: asset.origin || 'India',
+      year: asset.year ? String(asset.year) : '',
+      value: asset.value != null ? String(asset.value) : '',
+      invoice: asset.invoice_no || '',
+      purchaseDate: asset.purchase_date || today,
+      account: asset.account_head || 'Plant & Machinery',
+      plant: asset.plant_id || '',
+    });
+    setOpen(true);
+  }
+
+  async function deleteAsset(asset: AssetRow) {
+    if (!canDeleteModule(ops, activeProfile, 'far', activePersonId)) {
+      toast.error('You do not have permission to delete FAR assets.');
+      return;
+    }
+    if (!window.confirm(`Delete ${asset.name}? It stays in the history for earlier dates.`)) return;
+    const { error } = await updateRows('fixed_assets', { deleted_at: new Date().toISOString() }).eq('id', asset.id);
+    if (error) { toast.error(error.message); return; }
+    setAssets(prev => prev.filter(a => a.id !== asset.id));
+    void recordAudit({ module: 'far', action: 'asset_deleted', summary: `Deleted FAR asset ${asset.name}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
+  }
+
+  async function createFarReport() {
+    const day = asOf || new Date().toISOString().slice(0, 10);
+    const snap = supabase as unknown as { from: (t: string) => any };
+    const { data } = await snap.from('far_daily').select('asset_id, payload').eq('snapshot_date', day);
+    const snapped = ((data || []) as { payload: AssetRow }[]).map(r => r.payload).filter(Boolean);
+    const rows = snapped.length
+      ? snapped
+      : assets.filter(a => (a.created_at || '').slice(0, 10) <= day);
+    const history = maintEntries.filter(e => (e.created_at || '').slice(0, 10) <= day && rows.some(a => a.id === e.farAssetId || a.name === e.equipment));
+    exportToCsv(`far-${day}`, [
+      { header: 'Asset', key: 'name' },
+      { header: 'Mark', key: 'identification_mark' },
+      { header: 'Plant', key: 'plant' },
+      { header: 'Value', key: 'value' },
+      { header: 'Repairs up to this date', key: 'repairs' },
+    ], rows.map(a => ({
+      name: a.name,
+      identification_mark: a.identification_mark,
+      plant: displayLocationName(a.plants?.name),
+      value: a.value,
+      repairs: history.filter(h => h.farAssetId === a.id || h.equipment === a.name).map(h => `${h.part} (${h.status})`).join('; '),
+    })), [
+      ['Suntek FAR as of', day],
+      ['Assets on this date', rows.length],
+      ['Repair and maintenance lines included', history.length],
+    ]);
+  }
 
   return (
     <>
-      {/* KPI row */}
-      <div className="grid grid-cols-12 gap-4 mb-4">
-        <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
-          {/* Factories are NOT enumerated here — the list is DB-driven and has
-              changed twice (migration 58's rename, migration 69's Drum Plant).
-              A hard-coded roster in help text goes stale silently. */}
-          <KpiInfoButton info={{ title: 'Total Fixed Assets', what: 'Count of all capitalised fixed assets registered across the factories you have access to. Each asset is named and tracked in the FAR, and belongs to exactly one factory.', source: 'Form entry', formLabel: 'Add Asset form', formPath: '/dashboard/purchase/far', note: 'Live count from the Supabase fixed_assets table, scoped to your factories.' }} />
-          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={assets.length}
-            onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            viewLabel={t('far.viewRegister', 'View register')}
-            caption={plantsInFar.length === 0
-              ? t('far.captionNoFactories', 'no assets registered yet')
-              : plantsInFar.length === 1
-                ? t('far.captionOneFactory', { defaultValue: 'in {{plant}}', plant: plantsInFar[0].name })
-                : t('far.captionNFactories', { defaultValue: 'across {{count}} factories', count: plantsInFar.length })} />
-        </div>
-        <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
-          <KpiInfoButton info={{ title: 'Assets Flagged for Repair', what: 'Count of fixed assets that have been flagged as requiring repair or maintenance and are awaiting resolution. High count = production downtime risk.', source: 'Derived', note: 'Open (not yet closed) emergency maintenance tickets from the maintenance workflow.' }} />
-          <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
-            onView={() => farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            viewLabel={t('far.viewRepairs', 'View FAR repairs')} />
-        </div>
-        <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
-          <KpiInfoButton info={{ title: 'Pic-Proof Coverage', what: 'Percentage of registered assets that have a photo on file as proof of existence. Required for insurance claims and audits. Target 100%.', source: 'Derived', note: 'Assets with a photo on file ÷ total registered assets. 0% when the FAR is empty. Updates as photos are added or removed.' }} />
-          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={`${picCoverage}%`}
-            caption={<div className="progress mt-1"><div style={{ width: `${picCoverage}%` }}></div></div>}
-            onView={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            viewLabel={t('far.viewRegister', 'View register')} />
-        </div>
+      <div className="erp-query">
+        <button type="button" onClick={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+          <span className="erp-q-label">{t('far.totalFixedAssets')}</span>
+          <span className="erp-q-n">{assets.length}</span>
+        </button>
+        <button type="button" data-hot={farRelatedEntries.some(e => e.status !== 'closed') ? 'true' : undefined}
+          onClick={() => { setRepairOpenOnly(true); setRepairSearch(''); farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+          <span className="erp-q-label">{t('far.repairFlagged')}</span>
+          <span className="erp-q-n">{farRelatedEntries.filter(e => e.status !== 'closed').length}</span>
+        </button>
+        <button type="button" onClick={() => farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+          <span className="erp-q-label">{t('far.picProofCoverage')}</span>
+          <span className="erp-q-n">{picCoverage}%</span>
+        </button>
       </div>
 
       {/* ── Maintenance & Repairs by Financial Year (FAR-linked only) ──────── */}
@@ -806,6 +952,18 @@ export function FAR() {
         }
       >
 
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <input
+            value={repairSearch}
+            onChange={e => setRepairSearch(e.target.value)}
+            placeholder="Search ticket, equipment, part or status…"
+            className="w-full max-w-md rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold"
+          />
+          <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-600">
+            <input type="checkbox" checked={repairOpenOnly} onChange={e => setRepairOpenOnly(e.target.checked)} />
+            {t('far.openRepairsOnly', 'Open repairs only')}
+          </label>
+        </div>
         {/* Financial-year tabs */}
         {fyList.length === 0
           ? <span className="text-xs text-slate-400 block mb-4">{t('far.noMaintRecorded')}</span>
@@ -840,7 +998,7 @@ export function FAR() {
                   )}
                   {fyPg.pageRows.map(e => (
                     <tr key={e.id} onClick={() => setDrillEntry(e)} style={{ cursor: 'pointer' }}>
-                      <td className="num text-xs text-slate-500">#{e.id.slice(0, 8)}</td>
+                      <td className="num text-xs text-slate-500">{e.id.slice(0, 8)}</td>
                       <td className="font-semibold text-slate-700">{e.equipment}</td>
                       <td className="text-slate-500 text-xs">{e.part}</td>
                       <td className="text-slate-500 text-xs">{e.status.replace(/_/g, ' ')}</td>
@@ -865,7 +1023,7 @@ export function FAR() {
 
       {/* FAR register */}
       <div className="relative" ref={farRegisterRef}>
-        <KpiInfoButton info={{ title: 'Fixed Asset Register (FAR)', what: 'Complete list of all capitalized fixed assets across 4 plants. Each asset must be individually named on the FAR to be covered by the marine/fire insurance policy. Photo proof required for audit. New assets added via the "+ Add asset" slide panel.', source: 'Form entry', formLabel: '+ Add asset form', formPath: '/dashboard/purchase/far', note: 'Data from FAR_DATA mock (mockData.ts). Future: Supabase fixed_assets table.' }} />
+        <KpiInfoButton info={{ title: 'Fixed Asset Register (FAR)', what: 'Complete list of all capitalized fixed assets across 4 plants. Each asset must be individually named on the FAR to be covered by the marine/fire insurance policy. Photo proof required for audit. New assets added via the "+ Add asset" slide panel.', source: 'Form entry', formLabel: '+ Add asset form', formPath: '/dashboard/purchase/far', note: 'Live from the fixed_assets table. A photo on the row is the audit proof.' }} />
       <SectionCard
         title={t('far.fixedAssetRegister')}
         subtitle={t('far.equipMasterSubtitle', { defaultValue: 'Equipment master for Preventive Maintenance — grouped by type · {{types}} types · {{assets}} assets', types: equipGroups.length, assets: assets.length })}
@@ -874,7 +1032,9 @@ export function FAR() {
             <ButtonV2 variant="outline" icon={<Upload />} onClick={() => { setImportOpen(o => !o); if (importStage === 'done') resetImport(); }}>
               {t('far.importCsvExcel')}
             </ButtonV2>
-            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
+            <input type="date" value={asOf} onChange={e => setAsOf(e.target.value)} title="Report the register as it stood on this date" style={{ border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 8px', font: 'inherit', fontSize: 12 }} />
+            <ButtonV2 variant="outline" onClick={() => void createFarReport()}>Create report</ButtonV2>
+            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => { setEditingId(null); setOpen(true); }}>
               {t('far.registerAsset')}
             </ButtonV2>
           </>
@@ -925,7 +1085,7 @@ export function FAR() {
                       const on = importPlantId === p.id;
                       return (
                         <button key={p.id} onClick={() => setImportPlantId(p.id)}
-                          className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{p.name}</button>
+                          className={`chip${on ? ' active' : ''}`}>{on ? '✓ ' : ''}{displayLocationName(p.name)}</button>
                       );
                     })}
                   </div>
@@ -1045,18 +1205,32 @@ export function FAR() {
                   </div>
                 )}
                 <input value={equipSearch} onChange={e => setEquipSearch(e.target.value)} placeholder={t('far.searchEquipPh', 'Search equipment type, mark or job no…')} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 12px', fontSize: 13, marginBottom: 10, outline: 'none', background: '#fff' }} />
+                {focusAsset && (
+                  <div style={{ border: '1px solid #FDE68A', background: '#FFFBEB', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#92400E', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Asset</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: '#0F172A', marginTop: 2 }}>{focusAsset.name}</div>
+                    <div style={{ fontSize: 12, color: '#475569', marginTop: 4, lineHeight: 1.5 }}>
+                      {displayLocationName(focusAsset.plants?.name) || '—'}
+                      {focusAsset.identification_mark ? ` · ${focusAsset.identification_mark}` : ''}
+                      {focusAsset.job_no ? ` · ${focusAsset.job_no}` : ''}
+                      {focusAsset.make ? ` · ${focusAsset.make}` : ''}
+                      {focusAsset.model ? ` · ${focusAsset.model}` : ''}
+                      {focusAsset.year ? ` · ${focusAsset.year}` : ''}
+                      {focusAsset.deleted_at ? ' · removed' : ''}
+                    </div>
+                  </div>
+                )}
                 <div className="overflow-x-auto scroll-x" style={{ maxHeight: 460 }}>
                   <table className="dt2">
                     <thead>
                       <tr>
                         <Th sortKey="type" s={groupSort}>{t('far.thEquipmentType', 'Equipment Type')}</Th>
                         <Th sortKey="count" s={groupSort} firstDir="desc" className="num">{t('far.thCount', 'Count')}</Th>
-                        <Th sortKey="job" s={groupSort}>{t('far.thJobNo', 'Job No')}</Th>
                         <th>{t('far.thMake', 'Make')}</th><th>{t('far.thModel')}</th><th>{t('far.thCapacity')}</th><th>{t('far.thYear')}</th><th>{t('far.thIdMarks', 'Identification Marks')}</th><th></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {groupSort.sorted.length === 0 && <tr><td colSpan={9} className="text-center text-slate-400 py-6 text-sm">{assets.length === 0 ? t('far.noAssetsYet') : t('far.noEquipmentMatches', 'No equipment matches.')}</td></tr>}
+                      {groupSort.sorted.length === 0 && <tr><td colSpan={8} className="text-center text-slate-400 py-6 text-sm">{assets.length === 0 ? t('far.noAssetsYet') : t('far.noEquipmentMatches', 'No equipment matches.')}</td></tr>}
                       {groupPg.pageRows.map(g => {
                         const open = expandedType === g.type;
                         const make = repVal(g.assets.map(a => a.make));
@@ -1065,16 +1239,11 @@ export function FAR() {
                         const years = g.assets.map(a => a.year).filter((y): y is number => y != null);
                         const yr = years.length ? (Math.min(...years) === Math.max(...years) ? String(Math.min(...years)) : `${Math.min(...years)}–${Math.max(...years)}`) : '—';
                         const marks = g.assets.map(a => a.identification_mark).filter(Boolean);
-                        const jobs = g.assets
-                          .map(a => jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no))
-                          .filter(Boolean)
-                          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
                         return (
                           <React.Fragment key={g.type}>
                             <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedType(open ? null : g.type)}>
                               <td className="font-semibold text-slate-700">{open ? '▾ ' : '▸ '}{g.type}</td>
                               <td className="num font-bold">{g.count}</td>
-                              <td className="font-mono text-xs font-semibold text-slate-700">{jobs.slice(0, 3).join(', ')}{jobs.length > 3 ? ` ${t('far.nMore', { defaultValue: '+{{count}} more', count: jobs.length - 3 })}` : ''}</td>
                               <td className="text-slate-500 text-xs">{make.text}{make.mixed ? ' …' : ''}</td>
                               <td className="text-slate-500 text-xs">{model.text}{model.mixed ? ' …' : ''}</td>
                               <td className="text-slate-500 text-xs">{cap.text}{cap.mixed ? ' …' : ''}</td>
@@ -1084,8 +1253,8 @@ export function FAR() {
                             </tr>
                             {open && (
                               <tr>
-                                <td colSpan={9} style={{ background: '#F8FAFC', padding: 0 }}>
-                                  <AssetDetailTable assets={g.assets} jobMap={jobMap} showPlant={plantsInFar.length >= 1} maintByAsset={maintByAsset} onUploadPic={handleAssetPicUpload} onViewPic={handleAssetPicView} onOpenMaint={(asset, entries) => setAssetMaint({ asset, entries })} onRaise={raiseTicketForAsset} />
+                                <td colSpan={8} style={{ background: '#F8FAFC', padding: 0 }}>
+                                  <AssetDetailTable assets={g.assets} showPlant={plantsInFar.length >= 1} maintByAsset={maintByAsset} onUploadPic={handleAssetPicUpload} onViewPic={handleAssetPicView} onOpenMaint={(asset, entries) => setAssetMaint({ asset, entries })} onRaise={raiseTicketForAsset} onEdit={openEdit} onDelete={deleteAsset} />
                                 </td>
                               </tr>
                             )}
@@ -1146,7 +1315,7 @@ export function FAR() {
           <PanelField label={t('far.fldPlant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
               {!form.plant && <option value="">{t('far.selectFactory', 'Select factory…')}</option>}
-              {plantOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {plantOptions.map(p => <option key={p.id} value={p.id}>{displayLocationName(p.name)}</option>)}
             </PanelSelect>
           </PanelField>
         </PanelRow>
@@ -1224,10 +1393,10 @@ export function FAR() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[13px] font-semibold text-slate-700">{e.part}</span>
-                      <span className="num text-[13px] font-bold" style={{ color: e.cost ? '#15803D' : '#94A3B8' }}>{e.cost ? inr(e.cost) : t('far.inHouseNoPart')}</span>
+                      <span className="num text-[13px] font-bold" style={{ color: e.cost || e.issuedFromStore ? '#15803D' : '#94A3B8' }}>{e.cost ? inr(e.cost) : e.issuedFromStore ? t('far.storePartInHouse') : t('far.inHouseNoPart')}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2 mt-1">
-                      <span className="text-[11px] text-slate-500">#{e.id.slice(0, 8)} · {e.status.replace(/_/g, ' ')} · {e.fy}</span>
+                      <span className="text-[11px] text-slate-500">{e.id.slice(0, 8)} · {e.status.replace(/_/g, ' ')} · {e.fy}</span>
                       <span className="text-[11px] text-slate-400">{e.closed_at ? fmtDT(e.closed_at) : fmtDT(e.created_at)}</span>
                     </div>
                   </button>
@@ -1236,9 +1405,9 @@ export function FAR() {
               <button
                 type="button"
                 onClick={() => { const a = assetMaint.asset; setAssetMaint(null); raiseTicketForAsset(a); }}
-                style={{ display: 'block', width: '100%', marginTop: 8, fontSize: 13, fontWeight: 700, color: '#fff', background: '#0A1628', border: 'none', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
+                style={{ display: 'block', width: '100%', marginTop: 8, fontSize: 13, fontWeight: 700, color: '#fff', background: '#161616', border: 'none', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
               >{t('far.raiseTicket', 'Raise ticket')}</button>
-              <a href="/dashboard/purchase/maint" style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB' }}>{t('far.openInMaintenance')} →</a>
+              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?from=${encodeURIComponent(farHere())}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}
@@ -1264,15 +1433,20 @@ export function FAR() {
               <Row k={t('far.rowRaisedAt')} v={fmtDT(drillEntry.created_at)} />
               <Row k={t('far.rowClosedAt')} v={drillEntry.closed_at ? fmtDT(drillEntry.closed_at) : t('far.openDash')} />
               {drillEntry.procuredQty > 0 && <Row k={t('far.rowQtyProcured', 'Qty procured')} v={String(drillEntry.procuredQty)} />}
+              {drillEntry.issuedFromStore && <Row k={t('far.rowIssuedFromStore', 'Issued from store')} v={drillEntry.issuedQty > 0 ? String(drillEntry.issuedQty) : '—'} />}
               {drillEntry.busyRef && <Row k={t('far.rowBusyRef')} v={drillEntry.busyRef} />}
               <div style={{ marginTop: 14, padding: '14px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: '#15803D' }}>{drillEntry.procuredQty > 0 ? t('far.procurementCost', 'Procurement cost') : t('far.cost')}</span>
-                <span style={{ fontSize: 18, fontWeight: 800, color: '#15803D' }}>{drillEntry.cost ? inr(drillEntry.cost) : t('far.inHouseNoPart')}</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: '#15803D' }}>{drillEntry.cost ? inr(drillEntry.cost) : drillEntry.issuedFromStore ? t('far.storePartInHouse') : t('far.inHouseNoPart')}</span>
               </div>
               {drillEntry.billUrl && (
                 <a href={drillEntry.billUrl} target="_blank" rel="noreferrer" style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB' }}>{t('far.viewSupplierBill', 'View supplier bill')} ↗</a>
               )}
-              <a href="/dashboard/purchase/maint" style={{ display: 'block', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB' }}>{t('far.openInMaintenance')} →</a>
+              <button
+                type="button"
+                onClick={() => navigate(`/dashboard/purchase/maint?ticket=${drillEntry.id}&from=${encodeURIComponent(farHere())}`)}
+                style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+              >{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}

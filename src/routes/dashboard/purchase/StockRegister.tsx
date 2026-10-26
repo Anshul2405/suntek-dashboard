@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
 import { humanizeError as errMsg } from '../../../lib/errors';
 import { fetchActivePlants } from '../../../lib/plants';
+import { displayLocationName } from '../../../lib/plantLabels';
 import { insertRows } from '../../../lib/db';
 import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows } from '../../../components/ui/states';
@@ -15,12 +16,14 @@ import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile, profileHasCapability } from '../../../lib/profiles';
+import { canDeleteModule, canEditModule, ensureLateApproval, recordAudit, useOpsSettings } from '../../../lib/opsControls';
+import { billBufferDays } from '../../../lib/datePolicy';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
 import { registerIdOf } from '../../../lib/store/registers';
 import { assignSequentialJobNos, jobNoStock, persistMissingJobNos, ticketShort } from '../../../lib/jobNo';
-import { fetchAllRows } from '../../../lib/fetchAll';
+import { fetchAllRows, fetchAllRowsProgressive } from '../../../lib/fetchAll';
 import { createImportBatch, setImportBatchRowCount, buildItemOwnerMap, resolveItemOwner } from '../../../lib/imports/batches';
 import { AddPurchaseModal } from './AddPurchaseModal';
 import { AnomalyReviewModal } from './AnomalyReviewModal';
@@ -35,7 +38,31 @@ interface StoreBreakdown { id: string; plantId: string | null; plant: string; op
 interface MergedRow {
   key: string; itemName: string; equipment: string; model: string | null; unit: string;
   opening: number; onHand: number; issued: number; procured: number; repaired: number; stores: StoreBreakdown[];
-  jobNo: string; ticketNos: string[];
+  jobNo: string; ticketNos: string[]; entryAt: string;
+}
+
+interface BillHit { itemKey: string; url: string; at: string; by: string | null; }
+
+function stockItemKey(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
+}
+
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA');
+}
+
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 const CHUNK = 500;
@@ -119,6 +146,7 @@ function snapshotFallbackItems(months: StockMonthRow[]): RegisterItem[] {
       plant_id: row.plant_id,
       store_id: row.store_id,
       job_no: null,
+      value_category: null,
       reserved_qty: 0,
       item_name: row.item_name,
       unit: row.unit,
@@ -155,23 +183,75 @@ const inputStyle: React.CSSProperties = {
 export function StockRegister() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const { storeQuery, allowedPlants, stores, allowedStores, storeIdFor } = usePlantScope();
-  const { activeProfile } = useRoleContext();
+  const { activeProfile, activePersonId } = useRoleContext();
 
   const [items, setItems] = useState<RegisterItem[]>([]);
   const [months, setMonths] = useState<StockMonthRow[]>([]);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [ticketList, setTicketList] = useState<{ item: string; ids: string[] } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAnoms, setShowAnoms] = useState(false);
   const [showSettled, setShowSettled] = useState(false);   // resolved / false-positive rows
   const [resolutions, setResolutions] = useState<AnomalyResolutionRow[]>([]);
   const [reviewItem, setReviewItem] = useState<ReviewedAnomaly | null>(null);
-  const [collapsed, setCollapsed] = useState(true);        // the 400+ row table is hidden until asked
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== 'undefined' ? !window.matchMedia('(max-width: 767px)').matches : true,
+  );        // desktop: collapsed until asked; phone: open so cards are usable
   const [plantFilter, setPlantFilter] = useState<string[]>([]); // empty = all plants (merged)
   const [showPurchase, setShowPurchase] = useState(false);
+  const [purchaseLinkSeen, setPurchaseLinkSeen] = useState(false);
+  const purchaseLinked = searchParams.get('addPurchase') === '1';
+  if (purchaseLinked && !purchaseLinkSeen) {
+    setPurchaseLinkSeen(true);
+    setShowPurchase(true);
+  }
+
+  // Cmd+K / Quick search lands here with ?q=STK-001 (or item name).
+  useEffect(() => {
+    const q = (searchParams.get('q') || '').trim();
+    if (!q) return;
+    setSearch(q);
+    setCollapsed(false);
+  }, [searchParams]);
+
+  const receiptId = searchParams.get('receipt');
+  const [openedReceipt, setOpenedReceipt] = useState<{
+    id: string;
+    vendor_name: string | null;
+    invoice_no: string | null;
+    purchase_date: string | null;
+    amount: number | null;
+    bill_url: string | null;
+    actor_name: string | null;
+    notes: string | null;
+    lines: { item_name: string | null; qty: number | null; unit: string | null }[];
+  } | null>(null);
+  useEffect(() => {
+    if (!receiptId) { setOpenedReceipt(null); return; }
+    let cancel = false;
+    void (async () => {
+      const { data } = await supabase.from('stock_purchase_receipts')
+        .select('id, vendor_name, invoice_no, purchase_date, amount, bill_url, actor_name, notes')
+        .eq('id', receiptId)
+        .limit(1)
+        .returns<{ id: string; vendor_name: string | null; invoice_no: string | null; purchase_date: string | null; amount: number | null; bill_url: string | null; actor_name: string | null; notes: string | null }[]>();
+      const row = data?.[0];
+      if (!row || cancel) { if (!cancel) setOpenedReceipt(null); return; }
+      const { data: lines } = await supabase.from('stock_purchase_lines')
+        .select('item_name, qty, unit')
+        .eq('receipt_id', receiptId)
+        .returns<{ item_name: string | null; qty: number | null; unit: string | null }[]>();
+      if (cancel) return;
+      setOpenedReceipt({ ...row, lines: lines || [] });
+      setCollapsed(false);
+    })();
+    return () => { cancel = true; };
+  }, [receiptId]);
 
   // Import flow
   const [stage, setStage] = useState<'idle' | 'uploading' | 'parsing' | 'review' | 'importing' | 'done' | 'error'>('idle');
@@ -199,8 +279,16 @@ export function StockRegister() {
 
   const canUploadExcel =
     isAdminProfile(activeProfile);
-  const canDeleteStockItem =
-    canUploadExcel || activeProfile.allowedDashboardRoutes.includes('*');
+  const ops = useOpsSettings();
+  const allowStockEdit = canEditModule(ops, activeProfile, 'stock');
+  const allowStockDelete = canDeleteModule(ops, activeProfile, 'stock', activePersonId);
+  const allowImportEdit = profileHasCapability(activeProfile, 'edit_import_batch');
+  // Import edit covers rows the workbook created. It does not open hand-entered
+  // rows, and it never grants the row-delete or ticket-delete switches.
+  const canEditStockRow = (it: StockItem) => allowStockEdit || (allowImportEdit && !!it.created_by_batch_id);
+  const [billHits, setBillHits] = useState<BillHit[]>([]);
+  const [billTarget, setBillTarget] = useState<MergedRow | null>(null);
+  const billFileRef = useRef<HTMLInputElement>(null);
 
   async function load() {
     try {
@@ -218,14 +306,21 @@ export function StockRegister() {
           .range(from, to)
           .returns<RegisterItem[]>()
           .then(({ data, error }) => ({ data, error }));
-      let siRes = await fetchAllRows<RegisterItem>(pageItems('*, plants(name)'));
+      let siRes = await fetchAllRowsProgressive<RegisterItem>(pageItems('*, plants(name)'), rows => {
+        setItems(rows);
+        setLoading(false);
+      });
       if (siRes.error) {
         console.error('[StockRegister.items] embed failed; retrying without plants(name):', siRes.error);
-        siRes = await fetchAllRows<RegisterItem>(pageItems('*'));
+        siRes = await fetchAllRowsProgressive<RegisterItem>(pageItems('*'), rows => {
+          setItems(rows);
+          setLoading(false);
+        });
       }
       if (siRes.error) throw siRes.error;
       const loaded = siRes.data || [];
       setItems(loaded);
+      setLoading(false);
       persistMissingJobNos('store_items', loaded, 'STK').then(map => {
         setItems(prev => prev.map(it => ({ ...it, job_no: map.get(it.id) ?? it.job_no })));
       }).catch(() => { /* column may not exist until 0019 is applied */ });
@@ -261,6 +356,7 @@ export function StockRegister() {
         }
         setIssueTickets(map);
       } catch { setIssueTickets({}); }
+      void loadBills();
     } catch (e) {
       console.error('[StockRegister] load failed', e);
     } finally {
@@ -268,6 +364,75 @@ export function StockRegister() {
     }
   }
   useEffect(() => { load(); }, [storeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadBills() {
+    try {
+      const db = supabase as unknown as { from: (t: string) => any };
+      const [receiptsRes, linesRes, extraRes] = await Promise.all([
+        supabase.from('stock_purchase_receipts').select('id, bill_url, created_at, actor_name').not('bill_url', 'is', null).order('created_at', { ascending: false }).limit(800).returns<{ id: string; bill_url: string | null; created_at: string; actor_name: string | null }[]>(),
+        supabase.from('stock_purchase_lines').select('item_name, receipt_id').limit(3000).returns<{ item_name: string | null; receipt_id: string }[]>(),
+        db.from('stock_bill_uploads').select('item_key, bill_url, uploaded_at, uploaded_by').order('uploaded_at', { ascending: false }).limit(500),
+      ]);
+      const receiptRows = (receiptsRes.data || []) as { id: string; bill_url: string | null; created_at: string; actor_name: string | null }[];
+      const lineRows = (linesRes.data || []) as { item_name: string | null; receipt_id: string }[];
+      const receipts = new Map(receiptRows.map(r => [r.id, r]));
+      const hits: BillHit[] = [];
+      for (const line of lineRows) {
+        const rec = receipts.get(line.receipt_id);
+        if (!rec?.bill_url || !line.item_name) continue;
+        hits.push({ itemKey: stockItemKey(line.item_name), url: rec.bill_url, at: rec.created_at, by: rec.actor_name });
+      }
+      for (const row of extraRes.data || []) {
+        if (!row.bill_url) continue;
+        hits.push({ itemKey: row.item_key, url: row.bill_url, at: row.uploaded_at, by: row.uploaded_by });
+      }
+      hits.sort((a, b) => b.at.localeCompare(a.at));
+      setBillHits(hits);
+    } catch {
+      setBillHits([]);
+    }
+  }
+
+  async function uploadItemBill(file: File) {
+    const row = billTarget;
+    if (!row) return;
+    const entryDate = (row.entryAt || '').slice(0, 10);
+    const allowed = await ensureLateApproval({
+      module: 'stock bill',
+      entryDate,
+      profile: activeProfile,
+      bufferDays: billBufferDays(row.stores.map((s) => s.plantId), ops.bufferDaysByPlant, ops.bufferDays),
+    });
+    if (!allowed) {
+      toast.error('Bill not uploaded. Management has to approve this late upload first.');
+      return;
+    }
+    try {
+      const up = await uploadWorkflowFile(file, { workflow: 'store-req', subfolder: 'stock-bills', kind: 'item-bill', creator: activeProfile.name });
+      const db = supabase as unknown as { from: (t: string) => any };
+      const { error } = await db.from('stock_bill_uploads').insert({
+        item_key: row.key,
+        item_name: row.itemName,
+        entry_date: entryDate || null,
+        bill_url: up.secure_url,
+        uploaded_by: activeProfile.name,
+        late: false,
+      });
+      if (error) throw error;
+      await recordAudit({
+        module: 'stock',
+        action: 'bill_uploaded',
+        summary: `Uploaded a bill for ${row.itemName}`,
+        actorName: activeProfile.name,
+        actorRole: activeProfile.roleLabel,
+        photoUrl: up.secure_url,
+      });
+      toast.success('Bill saved on the stock row.');
+      await loadBills();
+    } catch (e) {
+      toast.error(errMsg(e, { action: 'upload this bill', context: 'StockRegister.bill' }));
+    }
+  }
 
   // When the living register is empty but monthly snapshots exist, show the
   // latest month's closing balances so search still works (e.g. Cup brush).
@@ -279,7 +444,7 @@ export function StockRegister() {
 
   // (No plantOptions here: this screen is keyed on STORES, not factories — see
   // storeChips below. A factory list was left over from before the store split.)
-  const plantName = (id: string | null) => plants.find(p => p.id === id)?.name || '—';
+  const plantName = (id: string | null) => displayLocationName(plants.find(p => p.id === id)?.name) || '—';
 
   // Live anomalies from persisted snapshots (latest two months). Respects the active
   // store filter so the count always matches the visible table (fixes the count being
@@ -306,7 +471,7 @@ export function StockRegister() {
       const ms = monthsFromRows(rows);
       if (!ms.length) continue;
       // `pid` may now be a store id, so resolve the label from either master.
-      const plant = pid === '—' ? undefined : (stores.find(s => s.id === pid)?.name ?? plantName(pid));
+      const plant = pid === '—' ? undefined : displayLocationName(stores.find(s => s.id === pid)?.name ?? plantName(pid));
       // EVERY consecutive pair, not just the newest. Reconciling only the last
       // two months meant an unresolved discrepancy silently disappeared the
       // moment a newer month was uploaded — a real mismatch inside June stopped
@@ -387,9 +552,9 @@ export function StockRegister() {
     for (const it of registerItems) {
       const id = registerIdOf(it);
       if (!id) continue;
-      const label = it.store_id
-        ? (stores.find(s => s.id === it.store_id)?.name ?? t('storereq.store', 'Store'))
-        : (it.plants?.name || plantName(it.plant_id));
+      const label = displayLocationName(it.store_id
+        ? (stores.find(s => s.id === it.store_id)?.name || '')
+        : (it.plants?.name || plantName(it.plant_id))) || t('storereq.store', 'Store');
       seen.set(id, label);
     }
     return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
@@ -411,7 +576,7 @@ export function StockRegister() {
     const withData = new Set(plantsInData.map(p => p.id));
     if (allowedStores.length) {
       return allowedStores
-        .map(s => ({ id: s.id, name: s.name, hasData: withData.has(s.id) }))
+        .map(s => ({ id: s.id, name: displayLocationName(s.name), hasData: withData.has(s.id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
     }
     return plantsInData.map(p => ({ ...p, hasData: true }));
@@ -460,17 +625,29 @@ export function StockRegister() {
       const job = stockJobMap.get(it.id) || jobNoStock(it.id, it.job_no);
       const hay = normSearch([it.item_name, it.equipment || '', it.model || '', job, ...tickets.map(ticketShort)].join(' '));
       if (q && !hay.includes(q)) continue;
-      const key = it.item_name.toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '').trim();
-      const store = { id: it.id, plantId: it.plant_id, plant: (it.store_id ? stores.find(s => s.id === it.store_id)?.name : null) || it.plants?.name || plantName(it.plant_id), opening: Number(it.baseline_qty), onHand: Number(it.on_hand), issued: Number(it.issued_qty), procured: Number(it.ticket_procured_qty || 0), repaired: Number(it.repaired_qty || 0), raw: it };
+      const key = stockItemKey(it.item_name);
+      const store = { id: it.id, plantId: it.plant_id, plant: displayLocationName((it.store_id ? stores.find(s => s.id === it.store_id)?.name : null) || it.plants?.name || plantName(it.plant_id)), opening: Number(it.baseline_qty), onHand: Number(it.on_hand), issued: Number(it.issued_qty), procured: Number(it.ticket_procured_qty || 0), repaired: Number(it.repaired_qty || 0), raw: it };
       const ex = map.get(key);
       if (ex) {
         ex.opening += store.opening; ex.onHand += store.onHand; ex.issued += store.issued; ex.procured += store.procured; ex.repaired += store.repaired; ex.stores.push(store);
+        const stamp = it.created_at || it.updated_at || '';
+        if (stamp > ex.entryAt) ex.entryAt = stamp;
         for (const tid of tickets) if (!ex.ticketNos.includes(tid)) ex.ticketNos.push(tid);
       }
-      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets] });
+      else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets], entryAt: it.created_at || it.updated_at || '' });
     }
-    return [...map.values()].sort((a, b) => a.itemName.localeCompare(b.itemName));
+    return [...map.values()].sort((a, b) => (b.entryAt || '').localeCompare(a.entryAt || '') || a.itemName.localeCompare(b.itemName));
   }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const billsByKey = useMemo(() => {
+    const map = new Map<string, BillHit[]>();
+    for (const hit of billHits) {
+      const list = map.get(hit.itemKey) || [];
+      list.push(hit);
+      map.set(hit.itemKey, list);
+    }
+    return map;
+  }, [billHits]);
 
   const summary = useMemo(() => {
     let inStock = 0, low = 0, out = 0;
@@ -480,13 +657,14 @@ export function StockRegister() {
 
   // Column sort — click a header to sort by it (toggles asc/desc).
   const mergedSort = useSortable(merged, {
+    date: r => (billsByKey.get(r.key) || [])[0]?.at || r.entryAt || '',
     item: r => r.itemName,
     opening: r => r.opening,
     onHand: r => r.onHand,
     issued: r => r.issued,
     procured: r => r.procured,
     status: r => (r.onHand <= 0 ? 0 : r.onHand <= 2 ? 1 : 2),
-  }, { key: 'item', dir: 'asc' });
+  }, { key: 'date', dir: 'desc' });
 
   // Paginate the register — it can hold hundreds of items per plant.
   const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${search}|${plantFilter.join(',')}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
@@ -633,6 +811,7 @@ export function StockRegister() {
 
   // ── Manual edit (requires justification, logged to Activity Log) ─────────────
   function openEdit(it: StockItem) {
+    if (!canEditStockRow(it)) return;
     if (isSnapshotItem(it.id)) {
       toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
       return;
@@ -649,7 +828,7 @@ export function StockRegister() {
   }
 
   async function saveEdit() {
-    if (!editItem) return;
+    if (!editItem || !canEditStockRow(editItem)) return;
     const reason = editForm.reason.trim();
     if (!reason) { toast.error(t('storereq.stockToastNeedJust', 'A justification is required for any stock edit.')); return; }
     const oldOnHand = Number(editItem.on_hand);
@@ -692,6 +871,7 @@ export function StockRegister() {
         done_by: activeProfile.name, plant_id: editItem.plant_id,
         note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${equipmentChanged ? `Equipment "${oldEquipment || '—'}" → "${newEquipment || '—'}". ` : ''}${modelChanged ? `Model "${oldModel || '—'}" → "${newModel || '—'}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
       });
+      void recordAudit({ module: 'stock', action: 'edited', summary: `Edited ${newName}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
       setEditItem(null);
       toast.success(t('storereq.stockToastSaved', 'Stock updated and logged to the Activity Log.'));
       await load();
@@ -701,7 +881,7 @@ export function StockRegister() {
   }
 
   function openDelete(it: StockItem) {
-    if (!canDeleteStockItem) return;
+    if (!allowStockDelete) return;
     if (isSnapshotItem(it.id)) {
       toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
       return;
@@ -711,7 +891,7 @@ export function StockRegister() {
   }
 
   async function confirmDelete() {
-    if (!deleteItem || !canDeleteStockItem) return;
+    if (!deleteItem || !allowStockDelete) return;
     const reason = deleteReason.trim();
     if (!reason) {
       toast.error(t('storereq.stockDeleteNeedJust', 'A justification is required to delete a stock item.'));
@@ -727,6 +907,7 @@ export function StockRegister() {
         plant_id: deleteItem.plant_id,
         note: `Deleted stock item "${deleteItem.item_name}" (on-hand ${Number(deleteItem.on_hand)} ${normalizeUnit(deleteItem.unit)}). ${reason}`,
       });
+      void recordAudit({ module: 'stock', action: 'deleted', summary: `Deleted stock item ${deleteItem.item_name}. ${reason}`, actorName: activeProfile.name, actorRole: activeProfile.roleLabel });
       // Movement history cascades with the row (store_stock_events.item_id ON DELETE CASCADE).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { error } = await (supabase.from('store_items') as any).delete().eq('id', deleteItem.id);
@@ -746,19 +927,112 @@ export function StockRegister() {
 
   const multiStore = plantFilter.length !== 1 && plantsInData.length > 1;
 
+  function openTicketFromStock(tid: string) {
+    const back = new URLSearchParams({ tab: 'stock' });
+    if (search.trim()) back.set('q', search.trim());
+    navigate(`/dashboard/purchase/maint?ticket=${encodeURIComponent(tid)}&from=${encodeURIComponent(`/dashboard/purchase/storereq?${back.toString()}`)}`);
+  }
+
+  function renderTicketLinks(itemName: string, ids: string[], phone: boolean) {
+    if (!ids.length) return <span className="text-slate-300">—</span>;
+    const shown = ids.slice(0, 3);
+    const extra = ids.length - shown.length;
+    const btn = phone
+      ? 'min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-blue-600 bg-blue-50 border border-blue-100'
+      : 'num text-blue-600 font-semibold mr-1';
+    const more = phone
+      ? 'min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-slate-600 bg-slate-50 border border-slate-200'
+      : 'num text-slate-500 font-semibold';
+    return (
+      <>
+        {shown.map(tid => (
+          <button
+            key={tid}
+            type="button"
+            onClick={() => openTicketFromStock(tid)}
+            className={btn}
+            style={phone ? undefined : { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+            title={t('storereq.open_ticket', 'Open maintenance ticket')}
+          >#{ticketShort(tid)}</button>
+        ))}
+        {extra > 0 && (
+          <button
+            type="button"
+            onClick={() => setTicketList({ item: itemName, ids })}
+            className={more}
+            style={phone ? undefined : { background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+            title={t('storereq.ticketsForItem', { item: itemName })}
+          >{t('storereq.moreTickets', { n: extra })}</button>
+        )}
+      </>
+    );
+  }
+
   return (
-    <div className="card2 p-6 mb-5">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-        <div>
+    <div className="card2 p-4 sm:p-6 mb-5">
+      {openedReceipt && (
+        <div style={{ border: '1px solid #FDE68A', background: '#FFFBEB', borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: '#92400E', textTransform: 'uppercase' }}>Purchase</div>
+              <div style={{ fontSize: 16, fontWeight: 800, marginTop: 2 }}>{openedReceipt.vendor_name || 'Purchase'}</div>
+              <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
+                {openedReceipt.invoice_no ? `Bill ${openedReceipt.invoice_no}` : 'No bill number'}
+                {openedReceipt.purchase_date ? ` · ${openedReceipt.purchase_date}` : ''}
+                {openedReceipt.amount != null ? ` · ₹${Number(openedReceipt.amount).toLocaleString('en-IN')}` : ''}
+                {openedReceipt.actor_name ? ` · ${openedReceipt.actor_name}` : ''}
+              </div>
+              {openedReceipt.lines.length > 0 && (
+                <div style={{ fontSize: 12, color: '#0F172A', marginTop: 6 }}>
+                  {openedReceipt.lines.map((ln, i) => `${ln.item_name || 'Item'}${ln.qty != null ? ` × ${ln.qty}${ln.unit ? ` ${ln.unit}` : ''}` : ''}`).join(', ')}
+                </div>
+              )}
+              {openedReceipt.notes && <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>{openedReceipt.notes}</div>}
+              {openedReceipt.bill_url && (
+                <a href={openedReceipt.bill_url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 8, fontSize: 12, fontWeight: 700, color: '#2563EB' }}>Open bill</a>
+              )}
+            </div>
+            <button type="button" onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('receipt');
+              setSearchParams(next, { replace: true });
+            }} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748B', fontSize: 18 }}>×</button>
+          </div>
+        </div>
+      )}
+      {ticketList && (
+        <div style={overlay} onClick={() => setTicketList(null)}>
+          <div style={{ ...modal, width: 'min(420px, 100%)', maxHeight: 'min(70vh, 560px)', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 6 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{t('storereq.ticketsForItem', { item: ticketList.item })}</div>
+              <button type="button" onClick={() => setTicketList(null)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: '#64748B' }} aria-label={t('storereq.stockClose', 'Close')}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>{t('storereq.ticketsForItemCount', { n: ticketList.ids.length })}</div>
+            <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {ticketList.ids.map(tid => (
+                <button
+                  key={tid}
+                  type="button"
+                  onClick={() => openTicketFromStock(tid)}
+                  style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#2563EB', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}
+                >#{ticketShort(tid)}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <input ref={billFileRef} type="file" accept="image/*,application/pdf" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadItemBill(f); e.target.value = ''; }} />
+      <div className="flex items-start sm:items-center justify-between mb-3 flex-col sm:flex-row gap-3">
+        <div className="min-w-0">
           <div className="text-base font-bold font-heading">{t('storereq.stockHeading', 'Stock register')}</div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-slate-500 leading-snug">
             {t('storereq.stockSubtitle', 'Software register — Excel / raw upload does not write to Busy. OP − Issue (+ restock / repair / manual) = CL.')}
             {latestUpload ? ` · ${t('storereq.stockLatestMonth', { defaultValue: 'Latest month: {{month}}', month: latestUpload.slice(0, 7) })}` : ''}
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           {items.length > 0 && !fromSnapshot && profileHasCapability(activeProfile, 'add_stock_purchase') && (
-            <button onClick={() => setShowPurchase(true)} className="pill px-4 py-2 font-semibold text-sm" style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#334155', cursor: 'pointer' }}>{t('storereq.stockAddPurchase', '＋ Add Purchase')}</button>
+            <button onClick={() => setShowPurchase(true)} className="pill px-4 py-2.5 font-semibold text-sm min-h-[44px] md:min-h-0" style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#334155', cursor: 'pointer' }}>{t('storereq.stockAddPurchase', '＋ Add Purchase')}</button>
           )}
           {/* The delete-a-bad-upload flow lives in Admin → Upload History, but
               the moment you NEED it is while you are standing here looking at a
@@ -875,7 +1149,12 @@ export function StockRegister() {
                 </div>
               )}
 
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('storereq.stockSearchPh', 'Search item, job no, or ticket #…')} style={{ ...inputStyle, width: '100%', marginBottom: 12 }} />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder={t('storereq.stockSearchPh', 'Search item, equipment, or ticket #…')}
+                style={{ ...inputStyle, width: '100%', marginBottom: 12, minHeight: 44, fontSize: 16 }}
+              />
 
               {/* Anomalies — open ones count; settled (resolved / false-positive) collapse
                   behind a toggle. Review actions go through the resolve_stock_anomaly RPC. */}
@@ -969,33 +1248,46 @@ export function StockRegister() {
                 </div>
               )}
 
-              <div className="overflow-x-auto scroll-x">
+              {/* Desktop wide table — hidden below md so the phone is not crushed. */}
+              <div className="overflow-x-auto scroll-x desktop-only-table hidden md:block">
                 <table className="dt2">
                   <thead>
                     <tr>
+                      <Th sortKey="date" s={mergedSort} firstDir="desc">{t('storereq.stockColDate', 'Date')}</Th>
                       <Th sortKey="item" s={mergedSort}>{t('storereq.col_item', 'Item')}</Th>
-                      <th>{t('storereq.col_jobNo', 'Job No')}</th>
                       <th>{t('storereq.col_equipment', 'Equipment')}</th>
                       {multiStore && <th>{t('storereq.stockColStores', 'Stores')}</th>}
                       <th>{t('storereq.field_unit', 'Unit')}</th>
                       <Th sortKey="opening" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColOp', 'OP')}</Th>
                       <Th sortKey="issued" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColIssued', 'Issue')}</Th>
                       <Th sortKey="onHand" s={mergedSort} firstDir="desc" className="num">{t('storereq.stockColCl', 'CL')}</Th>
+                      <th>Bill</th>
+                      <th>Bill upload date & time</th>
                       <th>{t('storereq.col_ticket', 'Ticket #')}</th>
                       <Th sortKey="status" s={mergedSort} firstDir="desc">{t('storereq.col_status', 'Status')}</Th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 11 : 10} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
-                    {pageRows.map(m => {
+                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 13 : 12} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
+                    {pageRows.map((m, idx) => {
                       const st = stockStatus(m.onHand);
                       const isOpen = expanded === m.key;
                       const single = m.stores.length === 1;
+                      const stamp = (billsByKey.get(m.key) || [])[0]?.at || m.entryAt || '';
+                      const prevStamp = idx > 0 ? ((billsByKey.get(pageRows[idx - 1].key) || [])[0]?.at || pageRows[idx - 1].entryAt || '') : '';
+                      const showDay = stamp && dayKey(stamp) !== dayKey(prevStamp);
                       return (
                         <React.Fragment key={m.key}>
+                          {showDay && (
+                            <tr>
+                              <td colSpan={multiStore ? 13 : 12} style={{ background: '#161616', color: '#F3EFE8', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', padding: '8px 10px' }}>
+                                {fmtDay(stamp)}
+                              </td>
+                            </tr>
+                          )}
                           <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : m.key)}>
+                            <td className="text-xs text-slate-500 whitespace-nowrap">{stamp ? fmtDay(stamp) : '—'}</td>
                             <td className="font-semibold text-slate-700">{m.itemName}</td>
-                            <td className="font-mono text-xs text-slate-500">{m.jobNo}</td>
                             <td className="text-slate-500 text-xs">{m.equipment}{m.model ? ` · ${m.model}` : ''}</td>
                             {multiStore && <td className="text-slate-500 text-xs">{single ? m.stores[0].plant : t('storereq.stockStoresCount', { defaultValue: '{{n}} stores', n: m.stores.length })}</td>}
                             <td className="text-slate-500 text-xs">{m.unit}</td>
@@ -1005,25 +1297,32 @@ export function StockRegister() {
                               title={t('storereq.stockClHint', { defaultValue: 'Closing = OP − Issue + restock / repair / manual. New: {{fresh}} · Repaired: {{repaired}}', fresh: m.onHand - m.repaired, repaired: m.repaired })}>
                               {m.onHand}{m.repaired > 0 && <span aria-label={`includes ${m.repaired} repaired unit(s)`} style={{ color: '#7C3AED' }}>*</span>}
                             </td>
+                            <td onClick={e => e.stopPropagation()}>
+                              {(() => {
+                                const list = billsByKey.get(m.key) || [];
+                                const latest = list[0];
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    {latest
+                                      ? <a href={latest.url} target="_blank" rel="noreferrer" title="View bill"><img src={latest.url} alt="Bill" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 6, border: '1px solid #E2E8F0' }} /></a>
+                                      : <span className="text-slate-300">—</span>}
+                                    {allowStockEdit && (
+                                      <button type="button" onClick={() => { setBillTarget(m); billFileRef.current?.click(); }} style={{ fontSize: 11, fontWeight: 700, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>Upload</button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="text-xs font-extrabold text-slate-800 whitespace-nowrap">{(billsByKey.get(m.key) || [])[0] ? fmtWhen(billsByKey.get(m.key)![0].at) : '—'}</td>
                             <td className="text-xs" onClick={e => e.stopPropagation()}>
-                              {m.ticketNos.length === 0 ? <span className="text-slate-300">—</span> : m.ticketNos.slice(0, 3).map(tid => (
-                                <button
-                                  key={tid}
-                                  type="button"
-                                  onClick={() => navigate(`/dashboard/purchase/maint?ticket=${tid}`)}
-                                  className="num text-blue-600 font-semibold mr-1"
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
-                                  title={t('storereq.open_ticket', 'Open maintenance ticket')}
-                                >#{ticketShort(tid)}</button>
-                              ))}
-                              {m.ticketNos.length > 3 ? <span className="text-slate-400">+{m.ticketNos.length - 3}</span> : null}
+                              {renderTicketLinks(m.itemName, m.ticketNos, false)}
                             </td>
                             <td><span className="badge" style={{ background: st.bg, color: st.color, fontWeight: 700 }}>{t(STATUS_LABEL_KEYS[st.key], st.label)}</span></td>
                             <td>
-                              {single && !fromSnapshot ? (
+                              {single && !fromSnapshot && (canEditStockRow(m.stores[0].raw) || allowStockDelete) ? (
                                 <span className="inline-flex items-center gap-2 text-xs" onClick={e => e.stopPropagation()}>
-                                  <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
-                                  {canDeleteStockItem && (
+                                  {canEditStockRow(m.stores[0].raw) && <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
+                                  {allowStockDelete && (
                                     <button onClick={() => openDelete(m.stores[0].raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                   )}
                                 </span>
@@ -1034,7 +1333,21 @@ export function StockRegister() {
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={multiStore ? 11 : 10} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
+                              <td colSpan={multiStore ? 13 : 12} style={{ background: '#F8FAFC', padding: '8px 12px' }}>
+                                {(billsByKey.get(m.key) || []).length > 0 && (
+                                  <div style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: 11, fontWeight: 800, color: '#334155', marginBottom: 4 }}>Bill history · newest first</div>
+                                    {(billsByKey.get(m.key) || []).map((b, i) => (
+                                      <div key={`${b.url}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, marginBottom: 4 }}>
+                                        <a href={b.url} target="_blank" rel="noreferrer"><img src={b.url} alt="" style={{ width: 42, height: 42, objectFit: 'cover', borderRadius: 6 }} /></a>
+                                        <div>
+                                          <div className="font-extrabold">{fmtWhen(b.at)}</div>
+                                          <div style={{ color: '#64748B' }}>{b.by || '—'}</div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                                 {m.stores.map(s => (
                                   <div key={s.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, fontSize: 11.5, color: '#64748B', padding: '3px 0' }}>
                                     <strong style={{ color: '#334155', minWidth: 70 }}>{s.plant}</strong>
@@ -1045,10 +1358,10 @@ export function StockRegister() {
                                     <span style={{ color: '#7C3AED' }}>{t('storereq.stockExpProcuredTickets', 'Procured for tickets')}: <strong>{s.procured}</strong></span>
                                     {Number(s.raw.procured_qty) > 0 && <span>+ {t('storereq.stockExpRestocked', 'Restocked')}: <strong>{Number(s.raw.procured_qty)}</strong></span>}
                                     <span>{t('storereq.stockExpManual', 'Manual')}: <strong>{Number(s.raw.manual_delta) > 0 ? '+' : ''}{Number(s.raw.manual_delta)}</strong></span>
-                                    {!fromSnapshot && (
+                                    {!fromSnapshot && (canEditStockRow(s.raw) || allowStockDelete) && (
                                       <span className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                                        <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
-                                        {canDeleteStockItem && (
+                                        {canEditStockRow(s.raw) && <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
+                                        {allowStockDelete && (
                                           <button onClick={() => openDelete(s.raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                         )}
                                       </span>
@@ -1063,6 +1376,115 @@ export function StockRegister() {
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Phone: one card per item — readable type, tap to expand detail. */}
+              <div className="mobile-stack flex flex-col gap-2.5 md:hidden">
+                {mergedSort.sorted.length === 0 && (
+                  <div className="text-center text-slate-400 py-8 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</div>
+                )}
+                {pageRows.map(m => {
+                  const st = stockStatus(m.onHand);
+                  const isOpen = expanded === m.key;
+                  const single = m.stores.length === 1;
+                  const equipLine = [m.equipment, m.model].filter(Boolean).join(' · ');
+                  const showEquip = equipLine && equipLine.toLowerCase() !== m.itemName.toLowerCase();
+                  return (
+                    <div
+                      key={m.key}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setExpanded(isOpen ? null : m.key)}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(isOpen ? null : m.key); } }}
+                      className="rounded-[12px] border border-slate-200 bg-white p-3.5 active:bg-slate-50"
+                      style={{ borderLeft: `3px solid ${st.color}` }}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[15px] font-semibold text-slate-800 leading-snug break-words">{m.itemName}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-slate-500">
+                            {m.unit && <span>{m.unit}</span>}
+                            {multiStore && (
+                              <span>· {single ? m.stores[0].plant : t('storereq.stockStoresCount', { defaultValue: '{{n}} stores', n: m.stores.length })}</span>
+                            )}
+                          </div>
+                          {showEquip && <div className="mt-0.5 text-[12px] text-slate-400 truncate">{equipLine}</div>}
+                        </div>
+                        <span className="badge shrink-0" style={{ background: st.bg, color: st.color, fontWeight: 700 }}>{t(STATUS_LABEL_KEYS[st.key], st.label)}</span>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                        <div className="rounded-lg bg-slate-50 py-2 px-1">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t('storereq.stockColOp', 'OP')}</div>
+                          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-slate-700">{m.opening}</div>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 py-2 px-1">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t('storereq.stockColIssued', 'Issue')}</div>
+                          <div className="mt-0.5 text-[16px] font-bold tabular-nums" style={{ color: m.issued > 0 ? '#2563EB' : '#94A3B8' }}>{m.issued || '—'}</div>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 py-2 px-1">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t('storereq.stockColCl', 'CL')}</div>
+                          <div className="mt-0.5 text-[16px] font-bold tabular-nums" style={{ color: st.color }}>
+                            {m.onHand}{m.repaired > 0 && <span style={{ color: '#7C3AED' }}>*</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between gap-2" onClick={e => e.stopPropagation()}>
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Bill upload</div>
+                          <div className="text-[13px] font-extrabold text-slate-800">{(billsByKey.get(m.key) || [])[0] ? fmtWhen(billsByKey.get(m.key)![0].at) : '—'}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {(billsByKey.get(m.key) || [])[0] && (
+                            <a href={billsByKey.get(m.key)![0].url} target="_blank" rel="noreferrer" className="text-[13px] font-bold text-blue-600">View bill</a>
+                          )}
+                          {allowStockEdit && (
+                            <button type="button" onClick={() => { setBillTarget(m); billFileRef.current?.click(); }} className="min-h-[36px] px-3 rounded-lg text-[13px] font-bold text-blue-700 bg-blue-50 border border-blue-100">Upload</button>
+                          )}
+                        </div>
+                      </div>
+
+                      {(m.ticketNos.length > 0 || (single && !fromSnapshot)) && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2" onClick={e => e.stopPropagation()}>
+                          {renderTicketLinks(m.itemName, m.ticketNos, true)}
+                          {single && !fromSnapshot && (canEditStockRow(m.stores[0].raw) || allowStockDelete) && (
+                            <>
+                              {canEditStockRow(m.stores[0].raw) && <button type="button" onClick={() => openEdit(m.stores[0].raw)} className="min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-blue-600 bg-white border border-slate-200">{t('storereq.stockEdit', 'Edit')}</button>}
+                              {allowStockDelete && (
+                                <button type="button" onClick={() => openDelete(m.stores[0].raw)} className="min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-red-600 bg-white border border-red-100">{t('storereq.stockDelete', 'Delete')}</button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {isOpen && (
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" onClick={e => e.stopPropagation()}>
+                          {m.stores.map(s => (
+                            <div key={s.id} className="text-[12.5px] text-slate-600 space-y-1">
+                              <div className="font-semibold text-slate-800">{s.plant}</div>
+                              <div>{t('storereq.stockColOnHand', 'On-hand')}: <strong>{s.onHand}</strong>
+                                {s.repaired > 0 && <> · <span style={{ color: '#7C3AED' }}>{t('storereq.stockExpRepairedStock', 'Repaired stock')}: <strong>{s.repaired}</strong></span></>}
+                              </div>
+                              <div>{t('storereq.stockExpBaseline', 'Baseline')} ({s.raw.baseline_month?.slice(0, 7) || '—'}): <strong>{Number(s.raw.baseline_qty)}</strong>
+                                {' '}− {t('storereq.stockExpIssuedFromStore', 'Issued from store')}: <strong>{Number(s.raw.issued_qty)}</strong>
+                              </div>
+                              {!fromSnapshot && (canEditStockRow(s.raw) || allowStockDelete) && (
+                                <div className="flex gap-2 pt-1">
+                                  {canEditStockRow(s.raw) && <button type="button" onClick={() => openEdit(s.raw)} className="min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-blue-600 border border-slate-200">{t('storereq.stockEdit', 'Edit')}</button>}
+                                  {allowStockDelete && (
+                                    <button type="button" onClick={() => openDelete(s.raw)} className="min-h-[36px] px-3 rounded-lg text-[13px] font-semibold text-red-600 border border-red-100">{t('storereq.stockDelete', 'Delete')}</button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <TablePagination controls={controls} />
             </div>
@@ -1114,15 +1536,15 @@ export function StockRegister() {
                   <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'uppercase', marginBottom: 4 }}>{t('storereq.stockStoreBelongs', 'Store this file belongs to')}</div>
                   <select value={importStore} onChange={e => setImportStore(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
                     {storeOptions.length === 0 && <option value="">{t('storereq.stockNoStoreOpt', '(no store)')}</option>}
-                    {storeOptions.map(st => <option key={st.id} value={st.id}>{st.name}</option>)}
+                    {storeOptions.map(st => <option key={st.id} value={st.id}>{displayLocationName(st.name)}</option>)}
                   </select>
                   {storeOptions.length === 0 ? (
                     <div style={{ marginTop: 8, fontSize: 12, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, padding: '8px 10px' }}>
-                      {t('storereq.stockNoStoresConfigured', 'No stores configured yet. Refresh after admin seeds Rehla / Ganjam / Sikandrabad / Drum stores.')}
+                      {t('storereq.stockNoStoresConfigured', 'No stores configured yet. Refresh after admin seeds SCPL/SPPL store, Ganjam, Madan and Drum stores.')}
                     </div>
                   ) : (
                     <div style={{ marginTop: 6, fontSize: 11, color: '#94A3B8' }}>
-                      {t('storereq.stockStoreHint', 'Jharkhand workbook → Rehla Common Store. Ganjam, Sikandrabad and Drum Plant each have their own register.')}
+                      {t('storereq.stockStoreHint', 'Jharkhand workbook → SCPL/SPPL store. Ganjam, Madan and Drum Plant each have their own register.')}
                     </div>
                   )}
                 </div>

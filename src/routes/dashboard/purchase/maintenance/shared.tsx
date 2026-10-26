@@ -1,5 +1,10 @@
 import React, { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Camera, ImageUp } from 'lucide-react';
+import { shrinkPhoto } from '../../../../lib/cloudinary';
+import { retainPhoto } from '../../../../lib/photoCheck';
+import { CameraCapture } from '../../../../components/CameraCapture';
+import { useToast } from '../../../../components/ui/toast';
 
 /** Loose translator signature so callers can pass react-i18next's `t` without type friction. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,13 +29,13 @@ export function freqSortRank(frequency: string): number {
 }
 
 export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: string; color: string }> = {
-  open:                     { label: 'Open',              labelKey: 'maint.statusOpen',             bg: '#DBEAFE', color: '#2563EB' },
+  open:                     { label: 'Open',              labelKey: 'maint.statusOpen',             bg: '#F3EFE8', color: '#161616' },
   in_progress:              { label: 'In Progress',       labelKey: 'maint.statusInProgress',       bg: '#FEF3C7', color: '#D97706' },
   pending_store:            { label: 'Pending Store',     labelKey: 'maint.statusPendingStore',     bg: '#FEF3C7', color: '#D97706' },
-  pending_unit_head:        { label: 'Pending Approval',  labelKey: 'maint.statusPendingApproval',  bg: '#EDE9FE', color: '#7C3AED' },
-  pending_purchase:         { label: 'Purchasing',        labelKey: 'maint.statusPurchasing',       bg: '#EDE9FE', color: '#7C3AED' },
-  pending_purchase_manager: { label: 'Bill & Dispatch',   labelKey: 'maint.statusBillDispatch',     bg: '#FAE8FF', color: '#A21CAF' },
-  pending_handover:         { label: 'Handover',          labelKey: 'maint.statusHandover',         bg: '#F3E8FF', color: '#9333EA' },
+  pending_unit_head:        { label: 'Pending Approval',  labelKey: 'maint.statusPendingApproval',  bg: '#FFF3E6', color: '#D84315' },
+  pending_purchase:         { label: 'Purchasing',        labelKey: 'maint.statusPurchasing',       bg: '#FFF3E6', color: '#D84315' },
+  pending_purchase_manager: { label: 'Bill & Dispatch',   labelKey: 'maint.statusBillDispatch',     bg: '#FFF3E6', color: '#B45309' },
+  pending_handover:         { label: 'Handover',          labelKey: 'maint.statusHandover',         bg: '#F3EFE8', color: '#161616' },
   pending_defective_return: { label: 'Used or return',    labelKey: 'maint.statusDefectiveReturn',  bg: '#FEF3C7', color: '#D97706' },
   changes_requested:        { label: 'Changes Requested', labelKey: 'maint.statusChangesRequested', bg: '#FEF2F2', color: '#DC2626' },
   closed:                   { label: 'Closed',            labelKey: 'maint.statusClosed',           bg: '#DCFCE7', color: '#16A34A' },
@@ -131,52 +136,130 @@ export function calculateNextDue(frequency: string, from?: string | Date | null)
   return d.toISOString();
 }
 
-// ── PhotoUploader ─────────────────────────────────────────────────────────────
+// ── Photos ────────────────────────────────────────────────────────────────────
 
-export function PhotoUploader({ onBlobReady, label, hint }: {
+const MAX_TICKET_PHOTOS = 8;
+
+/** First-photo column plus any extra urls, with duplicates removed. */
+export function listedPhotoUrls(single?: string | null, many?: readonly string[] | null): string[] {
+  const out: string[] = [];
+  const add = (u?: string | null) => {
+    const v = (u || '').trim();
+    if (v && !out.includes(v)) out.push(v);
+  };
+  add(single);
+  for (const u of many ?? []) add(u);
+  return out;
+}
+
+export function PhotoUploader({ onBlobReady, onBlobsReady, label, hint }: {
   onBlobReady: (blob: Blob | null) => void;
+  /** Every photo currently attached, in the order they were added. */
+  onBlobsReady?: (blobs: Blob[]) => void;
   label?: string;
   hint?: string;
 }) {
   const { t } = useTranslation();
+  const toast = useToast();
   const labelTxt = label ?? t('maint.attachPhotoProof', 'Attach photo proof');
   const hintTxt = hint ?? t('maint.takeOrUploadPhoto', 'Take or upload a photo');
-  const [preview, setPreview] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [items, setItems] = useState<{ url: string; blob: Blob }[]>([]);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPreview(URL.createObjectURL(file));
-    onBlobReady(file);
+  function publish(next: { url: string; blob: Blob }[]) {
+    setItems(next);
+    const blobs = next.map(item => item.blob);
+    onBlobsReady?.(blobs);
+    onBlobReady(blobs[0] ?? null);
   }
 
-  function clear() {
-    setPreview(null);
-    onBlobReady(null);
-    if (inputRef.current) inputRef.current.value = '';
+  async function addBlobs(blobs: Blob[]) {
+    const room = MAX_TICKET_PHOTOS - items.length;
+    const picked = blobs.slice(0, Math.max(0, room));
+    if (!picked.length) {
+      toast.error(t('maint.photoLimit', { defaultValue: 'You can attach up to {{n}} photos.', n: MAX_TICKET_PHOTOS }));
+      return;
+    }
+    if (blobs.length > picked.length) {
+      toast.error(t('maint.photoLimit', { defaultValue: 'You can attach up to {{n}} photos.', n: MAX_TICKET_PHOTOS }));
+    }
+    const added: { url: string; blob: Blob }[] = [];
+    for (const file of picked) {
+      try {
+        // Drop the raw camera file immediately. On a phone it is a temp file that
+        // can vanish before submit, and the full-size upload dies with "Failed to fetch".
+        const blob = await shrinkPhoto(file);
+        added.push({ url: URL.createObjectURL(blob), blob });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : t('maint.photoPrepareFailed', 'This photo could not be prepared. Take it again.'));
+      }
+    }
+    if (added.length) publish([...items, ...added]);
   }
+
+  function onGallery(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    // Copy starts before the picker is cleared. Some phones blank the file otherwise.
+    const pending = files.map((f) => retainPhoto(f, f.name));
+    e.target.value = '';
+    void (async () => {
+      const blobs: Blob[] = [];
+      for (const job of pending) {
+        try {
+          blobs.push(await job);
+        } catch {
+          toast.error(t('maint.photoPrepareFailed', 'This photo could not be prepared. Take it again.'));
+        }
+      }
+      if (blobs.length) await addBlobs(blobs);
+    })();
+  }
+
+  function removeAt(index: number) {
+    const gone = items[index];
+    if (gone) URL.revokeObjectURL(gone.url);
+    publish(items.filter((_, i) => i !== index));
+  }
+
+  const pickBtn: React.CSSProperties = {
+    flex: 1, padding: '10px 8px', borderRadius: 12, border: '1px solid #E2E8F0',
+    background: '#fff', color: '#334155', fontWeight: 700, fontSize: 12,
+    cursor: 'pointer', fontFamily: 'inherit',
+  };
 
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{labelTxt}</div>
       <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 10 }}>{hintTxt}</div>
-      {preview ? (
-        <div style={{ position: 'relative' }}>
-          <img src={preview} alt="Preview" style={{ width: '100%', maxHeight: 180, objectFit: 'cover', borderRadius: 12 }} />
-          <button onClick={clear} style={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', background: 'rgba(0,0,0,0.55)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
-        </div>
-      ) : (
-        <div onClick={() => inputRef.current?.click()} style={{ border: '2px dashed #CBD5E1', borderRadius: 12, padding: '20px 16px', textAlign: 'center', cursor: 'pointer', background: '#F8FAFC' }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="1.5" style={{ margin: '0 auto 6px' }}>
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-            <circle cx="12" cy="13" r="4"/>
-          </svg>
-          <div style={{ fontSize: 12, color: '#64748B', fontWeight: 500 }}>{t('maint.tapToUploadPhoto', 'Tap to upload a photo')}</div>
-          <div style={{ fontSize: 11, color: '#CBD5E1', marginTop: 2 }}>{t('maint.jpgPngCameraHint', 'JPG / PNG · opens camera on mobile')}</div>
+      {items.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          {items.map((item, i) => (
+            <div key={item.url} style={{ position: 'relative', width: 96 }}>
+              <img src={item.url} alt="" style={{ width: 96, height: 72, objectFit: 'cover', borderRadius: 10, border: '1px solid #E2E8F0', display: 'block' }} />
+              <button type="button" onClick={() => removeAt(i)} aria-label={t('common.remove', 'Remove')} style={{ position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: '50%', background: 'rgba(0,0,0,0.55)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>×</button>
+            </div>
+          ))}
         </div>
       )}
-      <input ref={inputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFile} />
+      {items.length < MAX_TICKET_PHOTOS && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" onClick={() => setCameraOpen(true)} style={{ ...pickBtn, background: '#0F172A', color: '#fff', borderColor: '#0F172A', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <Camera size={14} /> {t('maint.takePhotoBtn', 'Live photo')}
+          </button>
+          <button type="button" onClick={() => galleryRef.current?.click()} style={{ ...pickBtn, background: '#F8FAFC', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <ImageUp size={14} /> {t('maint.chooseFromGallery', 'Upload from library')}
+          </button>
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 6 }}>{t('maint.jpgPngCameraHint', 'Live photo opens the camera. Upload from library picks a saved picture.')}</div>
+      <input ref={galleryRef} type="file" accept="image/*,.heic,.heif" multiple style={{ display: 'none' }} onChange={onGallery} />
+      <CameraCapture
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        title={t('maint.takePhotoBtn', 'Live photo')}
+        onCapture={(blob) => { void addBlobs([blob]); }}
+      />
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   resolveCoaGravity,
   type CoaParamKey,
 } from './coaCatalog';
+import { coaLetterheadForPlant } from './coaLetterhead';
 import {
   TDS_APPEARANCE,
   TDS_BLURB,
@@ -26,7 +27,7 @@ function escapeHtml(s: string): string {
   ));
 }
 
-function openPrintWindow(title: string, bodyHtml: string): void {
+function openPrintWindow(title: string, bodyHtml: string, extraCss = ''): void {
   const w = window.open('', '_blank', 'width=900,height=1100');
   if (!w) {
     window.alert('Pop-up blocked — allow pop-ups to print / save PDF.');
@@ -71,7 +72,9 @@ function openPrintWindow(title: string, bodyHtml: string): void {
     .toolbar { display: none !important; }
     body { padding: 12px; }
     .accent-bar { print-color-adjust: exact; }
+    @page { size: A4; margin: 12mm; }
   }
+  ${extraCss}
 </style></head>
 <body>
   <div class="toolbar">
@@ -166,36 +169,35 @@ export function printCoa(opts: {
   const params = coaParamsForGravity(gravity, family);
   const product = coaProductName();
   const logo = `${window.location.origin}/brand/suntek-official.png`;
-  const dateStr = opts.date || new Date().toLocaleDateString('en-IN');
+  const dateStr = formatCoaDate(opts.date);
 
   const rows = params.map((p) => {
     const result = opts.results[p.key] ?? '';
     return `<tr>
-      <td>${p.sno}</td>
-      <td>${escapeHtml(p.parameter)}</td>
+      <td class="sno">${p.sno}</td>
+      <td class="param">${escapeHtml(p.parameter)}</td>
       <td>${escapeHtml(p.standard)}</td>
       <td>${escapeHtml(result)}</td>
     </tr>`;
   }).join('');
 
+  const head = coaLetterheadForPlant(opts.plantLine);
   const html = `
-  <div class="sheet">
-    <div class="accent-bar" style="background:#DC2626;width:8px"></div>
-    <div class="hdr">
-      <div class="logo">
-        <img src="${logo}" alt="Suntek" onerror="this.style.display='none'" />
-        <div>
-          <div class="logo-name">SUNTEK CHLORIDES LTD.</div>
-          <div class="logo-sub">${escapeHtml(opts.plantLine || 'Near Grasim Industries Ltd. Garhwa Road Rehla, Distt. Palamu')}</div>
-        </div>
+  <div class="sheet coa">
+    <div class="coa-bar"></div>
+    <div class="coa-head">
+      <img class="coa-logo" src="${logo}" alt="Suntek Group" onerror="this.style.display='none'" />
+      <div class="coa-co">
+        <div class="co-name">${escapeHtml(head.company)}</div>
+        ${head.lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
       </div>
     </div>
     <div class="coa-title">CERTIFICATE OF ANALYSIS</div>
     <div class="coa-product">
       <span>PRODUCT NAME: ${escapeHtml(product)}</span>
-      <span>BATCH NO — ${escapeHtml(opts.batchNo)}</span>
+      <span>BATCH NO- ${escapeHtml(opts.batchNo)}</span>
     </div>
-    <table>
+    <table class="coa-table">
       <thead>
         <tr>
           <th>S.NO.</th><th>PARAMETERS</th><th>STANDARD</th><th>RESULT</th>
@@ -203,22 +205,58 @@ export function printCoa(opts: {
       </thead>
       <tbody>${rows}</tbody>
     </table>
-    <p class="blurb">Above certificate of analysis issued by department of QA &amp; QC.</p>
-    <div class="sign">
-      <div>
-        <div>Date — ${escapeHtml(dateStr)}</div>
-        <div style="margin-top:28px">Incharge</div>
-      </div>
-      <div style="text-align:right">
-        <div>Signature (Quality Control)</div>
-        <div style="margin-top:28px">Department — QA&amp;QC</div>
-      </div>
+    <p class="coa-note">Above certificate of analysis issued by department of QA &amp; QC.</p>
+    <div class="coa-sign">
+      <div>Date- ${escapeHtml(dateStr)}</div>
+      <div>Signature (Quality Control Incharge)</div>
     </div>
-    <div class="foot" style="margin-top:24px">
-      Registered &amp; Head Office: 502, Aggarwal Prestige Mall, near M2K, Rani Bagh, Pitampura, Delhi-110034.
-      Ph: 1800-1200-09181 · contact@thesuntek.com · www.thesuntek.com
-    </div>
+    <div class="coa-stamp-gap"></div>
+    <hr class="coa-rule" />
   </div>`;
 
-  openPrintWindow(`COA ${opts.batchNo}`, html);
+  openPrintWindow(`COA ${opts.batchNo}`, html, COA_PRINT_CSS);
 }
+
+function formatCoaDate(raw?: string): string {
+  if (raw && /^\d{2}\/\d{2}\/\d{4}$/.test(raw.trim())) return raw.trim();
+  const dt = raw ? new Date(raw) : new Date();
+  if (Number.isNaN(dt.getTime())) {
+    const now = new Date();
+    return `${pad2(now.getDate())}/${pad2(now.getMonth() + 1)}/${now.getFullYear()}`;
+  }
+  return `${pad2(dt.getDate())}/${pad2(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+const COA_PRINT_CSS = `
+  .sheet.coa { max-width: 740px; min-height: 980px; padding: 8px 28px 8px 4px;
+    font-family: Arial, Helvetica, sans-serif; color: #111; }
+  .coa-bar { position: absolute; top: 0; right: 0; width: 16px; bottom: 0; background: #b5b5b5; }
+  .coa-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .coa-logo { width: 132px; height: auto; object-fit: contain; }
+  .coa-co { text-align: right; font-size: 12px; line-height: 1.35; font-weight: 600; }
+  .coa-co .co-name { font-size: 14px; font-weight: 800; letter-spacing: 0.01em; margin-bottom: 2px; }
+  .sheet.coa .coa-title { text-align: center; font-size: 16px; font-weight: 800; text-decoration: underline;
+    letter-spacing: 0.06em; margin: 36px 0 26px; }
+  .sheet.coa .coa-product { display: flex; justify-content: space-between; gap: 16px;
+    font-size: 12.5px; font-weight: 800; margin: 0 0 14px; }
+  table.coa-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0; }
+  table.coa-table th, table.coa-table td { background: #fff !important; color: #111 !important;
+    border: 1px solid #111 !important; padding: 7px 8px; text-align: center; font-weight: 600; outline: none; }
+  table.coa-table th { font-weight: 800; }
+  table.coa-table th:nth-child(2), table.coa-table td.param { text-align: left; }
+  table.coa-table td.sno, table.coa-table th:first-child { width: 52px; }
+  table.coa-table th:nth-child(3), table.coa-table th:nth-child(4),
+  table.coa-table td:nth-child(3), table.coa-table td:nth-child(4) { width: 110px; }
+  .coa-note { font-size: 12px; font-weight: 600; margin: 18px 0 0; color: #111; }
+  .coa-sign { display: flex; justify-content: space-between; align-items: flex-start;
+    margin-top: 36px; font-size: 12.5px; font-weight: 700; }
+  .coa-stamp-gap { height: 72px; }
+  .coa-rule { border: none; border-top: 1px solid #111; margin: 8px 0 0; }
+  @media print {
+    .sheet.coa { min-height: 250mm; }
+  }
+`;
