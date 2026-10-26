@@ -51,6 +51,12 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
       : showMat
   ), [showRaw, showSheet, showMat]);
   const [batchId, setBatchId] = useState('');
+  // Clock for the running-time pill (ticks each minute; render stays pure).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   const [batches, setBatches] = useState<BatchRow[]>([]);
   const [temp, setTemp]           = useState('');
   const [cpGravity, setCpGravity] = useState('');
@@ -428,7 +434,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   const startedLabel = startedAt
     ? startedAt.toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit', hour: 'numeric', minute: '2-digit' })
     : null;
-  const elapsedMin = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 60000)) : 0;
+  const elapsedMin = startedAt ? Math.max(0, Math.floor((now - startedAt.getTime()) / 60000)) : 0;
   const elapsedH = Math.floor(elapsedMin / 60);
   const elapsed = elapsedH >= 48
     ? `${Math.floor(elapsedH / 24)}d ${elapsedH % 24}h`

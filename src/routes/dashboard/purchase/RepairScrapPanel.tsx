@@ -19,7 +19,7 @@ import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { useToast } from '../../../components/ui/toast';
 import { RepairReturnModal } from './RepairReturnModal';
 import { ticketNoLabel, useTicketNos } from '../../../lib/ticketNo';
-import { statusText } from './maintenance/shared';
+import { statusText } from './maintenance/statusText';
 import { repairPending } from '../../../lib/store/repairReturn';
 import { cleanPartName } from '../../../lib/store/defectiveSplit';
 import type { Database } from '../../../lib/database.types';
