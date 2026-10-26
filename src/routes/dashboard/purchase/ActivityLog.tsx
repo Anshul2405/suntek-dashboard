@@ -36,6 +36,12 @@ type PlantRel = { plants?: { name: string | null } | null };
 type ActivityRow = Tables['activity_logs']['Row'] & PlantRel;
 type TicketRow = Tables['maintenance_tickets']['Row'] & PlantRel;
 type StoreReqRow = Tables['maintenance_store_requests']['Row'];
+/** Ticket fields the feed builds events from (deriveMaintenanceEvents, unit filter, ticket #) — not *. */
+const TICKET_FEED_SELECT = 'id, ticket_no, type, status, equipment, plant_id, unit_id, raised_by, assigned_to, created_at, closed_at, '
+  + 'defective_part_decision, defective_part_photo_url, defective_raise_photo_url, completion_photo_url, '
+  + 'revision_count, revision_reason, revision_requested_at, revision_requested_by, plants(name)';
+/** Store-request fields for the parts milestones. */
+const STORE_REQ_FEED_SELECT = 'id, ticket_id, part_name, supplier_name, busy_transaction_ref, created_at, handover_confirmed_at, handover_invoice_url, handover_photo_url';
 
 // One normalized row for the unified timeline — whether it came from the
 // activity_logs table (manual) or was derived from the maintenance workflow.
@@ -353,6 +359,8 @@ export function ActivityLog() {
   const [storeReqs, setStoreReqs] = useState<StoreReqRow[]>([]);
   const [dbPlants, setDbPlants] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  // False until tickets, parts milestones and incidents are all in — KPI totals wait for it.
+  const [complete, setComplete] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [showManualOnly, setShowManualOnly] = useState(searchParams.get('manual') === '1');
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
@@ -376,49 +384,59 @@ export function ActivityLog() {
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
 
   async function load() {
+    // Paint on the manual log + the first 1000 tickets; later ticket pages, the
+    // parts milestones (store requests) and incidents fill in after. KPI totals
+    // show … until everything is in (complete), so they never show a partial sum.
+    let logsIn = false;
+    let firstTicketsIn = false;
+    const paintIfReady = () => { if (logsIn && firstTicketsIn) setLoading(false); };
     try {
-      const { data: plantsData } = await fetchActivePlants<{ id: string; name: string }>('id, name');
-      if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
-
-      const [logsRes, ticketsRes] = await Promise.all([
-        withEmbedFallback(
-          scopeQuery(supabase.from('activity_logs').select('*, plants(name)')).order('date', { ascending: false }).returns<ActivityRow[]>(),
-          () => scopeQuery(supabase.from('activity_logs').select('*')).order('date', { ascending: false }).returns<ActivityRow[]>(),
-          'ActivityLog.logs',
-        ),
+      const db = supabase as unknown as { from: (table: string) => any };
+      const incidentsP = Promise.resolve(scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)')).order('occurred_at', { ascending: false }))
+        .then(({ data }: { data: typeof incidents | null }) => setIncidents(data || []), () => setIncidents([]));
+      const logsP = withEmbedFallback(
+        scopeQuery(supabase.from('activity_logs').select('*, plants(name)')).order('date', { ascending: false }).returns<ActivityRow[]>(),
+        () => scopeQuery(supabase.from('activity_logs').select('*')).order('date', { ascending: false }).returns<ActivityRow[]>(),
+        'ActivityLog.logs',
+      ).then(res => {
+        if (!res.error) { setLogs(res.data || []); logsIn = true; paintIfReady(); }
+        return res;
+      });
+      const [{ data: plantsData }, logsRes, ticketsRes] = await Promise.all([
+        fetchActivePlants<{ id: string; name: string }>('id, name'),
+        logsP,
         // PAGED: >1,000 tickets; an unpaged select silently stopped at 1000.
         withEmbedFallback(
           fetchAllRows<TicketRow>((from, to) =>
-            scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>()),
+            scopeQuery(supabase.from('maintenance_tickets').select(TICKET_FEED_SELECT), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>(),
+            { onPartial: rows => { setTickets(rows); firstTicketsIn = true; paintIfReady(); } }),
           () => fetchAllRows<TicketRow>((from, to) =>
             scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>()),
           'ActivityLog.tickets',
         ),
       ]);
+      if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
       if (logsRes.error) throw logsRes.error;
-      setLogs(logsRes.data || []);
 
       const tks = ticketsRes.data || [];
       setTickets(tks);
+      setLoading(false);
       const ids = tks.map(x => x.id);
       if (ids.length) {
         const { data: srData } = await fetchByIds<StoreReqRow>(ids, chunk =>
-          supabase.from('maintenance_store_requests').select('*').in('ticket_id', chunk).returns<StoreReqRow[]>());
+          supabase.from('maintenance_store_requests').select(STORE_REQ_FEED_SELECT).in('ticket_id', chunk).returns<StoreReqRow[]>());
         setStoreReqs(srData || []);
       } else {
         setStoreReqs([]);
       }
-      try {
-        const db = supabase as unknown as { from: (table: string) => any };
-        const { data: incidentRows } = await scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)')).order('occurred_at', { ascending: false });
-        setIncidents(incidentRows || []);
-      } catch { setIncidents([]); }
+      await incidentsP;
       setLoadError(false);
     } catch (err) {
       console.error('[ActivityLog] load failed', err);
       setLoadError(true);
     } finally {
       setLoading(false);
+      setComplete(true);
     }
   }
 
@@ -620,8 +638,8 @@ export function ActivityLog() {
           <KpiInfoButton info={{ title: 'All activity events', what: 'Every activity across all plants — manual log entries PLUS milestones auto-fed from the maintenance workflow (raised, procured, handed over, completed, defective decided). The single overall record.', source: 'Derived', note: 'Manual activity_logs + maintenance_tickets / maintenance_store_requests milestones.' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi('all')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiTotal')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : rows.length}</div>
-          <div className="text-[11px] text-slate-500 mt-1">{loading ? '\u00a0' : t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{complete ? rows.length : '…'}</div>
+          <div className="text-[11px] text-slate-500 mt-1">{complete ? t('activity.kpiFromMaintenance', { count: fromMaintenance }) : '\u00a0'}</div>
           </button>
         </div>
         <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
@@ -642,7 +660,7 @@ export function ActivityLog() {
           <KpiInfoButton info={{ title: 'Photo proof coverage', what: 'Percentage of activity events that carry photo proof — manual uploads plus the completion / handover / defective-part photos captured through the maintenance workflow.', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'photo' ? 'all' : 'photo')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPhotoProof')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : `${withPhoto}%`}</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{complete ? `${withPhoto}%` : '…'}</div>
           </button>
         </div>
       </div>
