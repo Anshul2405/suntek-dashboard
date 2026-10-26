@@ -24,8 +24,8 @@ import { withEmbedFallback } from '../../../lib/scopedList';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
-import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
-import { Building2, Factory, Layers, MapPin } from 'lucide-react';
+import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
+import { Building2, Factory, Layers, MapPin, Plus } from 'lucide-react';
 import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
@@ -602,11 +602,6 @@ export function ActivityLog() {
   return (
     <>
       <ActivityRoleAccessCard />
-      <div className="flex justify-end mb-3">
-        <button className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm" onClick={() => setOpen(true)}>
-          + {t('activity.logActivityBtn')}
-        </button>
-      </div>
       {/* KPI row */}
       <div className="grid grid-cols-12 gap-5 mb-5">
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
@@ -648,7 +643,11 @@ export function ActivityLog() {
             <div className="text-base font-bold font-heading">{t('activity.logBookTitle')}</div>
             <div className="text-xs text-slate-500">{t('activity.logBookSubtitle')}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Create action lives in the list header, like Store Req / FAR / Night duty. */}
+            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
+              {t('activity.logActivityBtn')}
+            </ButtonV2>
             <button
               className="pill px-3 py-2 text-xs font-semibold btn-ghost"
               style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#475569' }}

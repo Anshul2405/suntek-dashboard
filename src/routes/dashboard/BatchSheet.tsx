@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { CircleHelp, FileSpreadsheet, FileText } from 'lucide-react';
+import { CircleHelp, FileSpreadsheet, FileText, Plus } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
 import { formatDateTime } from '../../lib/utils/formatting';
@@ -379,9 +379,9 @@ export function BatchSheet() {
             <Link
               data-tour="create-sheet-btn"
               to="/dashboard/batch-entry?tab=create-sheet"
-              className="btn-accent rounded-[10px] px-4 py-2 font-semibold text-sm no-underline inline-block text-center"
+              className="btn-accent rounded-lg px-4 py-2 font-semibold text-[13px] no-underline inline-flex items-center gap-1.5"
             >
-              + {t('nav.createBatchSheet', 'Create Batch Sheet')}
+              <Plus size={14} aria-hidden /> {t('nav.createBatchSheet', 'Create Batch Sheet')}
             </Link>
             )}
           </div>
@@ -450,9 +450,9 @@ export function BatchSheet() {
                       {canCreateSheet && (
                       <Link
                         to="/dashboard/batch-entry?tab=create-sheet"
-                        className="btn-accent inline-block mt-4 rounded-[10px] px-4 py-2 font-semibold text-sm no-underline"
+                        className="btn-accent inline-flex items-center gap-1.5 mt-4 rounded-lg px-4 py-2 font-semibold text-[13px] no-underline"
                       >
-                        + {t('nav.createBatchSheet', 'Create Batch Sheet')}
+                        <Plus size={14} aria-hidden /> {t('nav.createBatchSheet', 'Create Batch Sheet')}
                       </Link>
                       )}
                     </div>
