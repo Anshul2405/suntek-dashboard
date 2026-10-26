@@ -141,7 +141,7 @@ export function AuditLog() {
           </div>
         ) : filteredLogs.length === 0 ? (
           <div className="text-center py-12 text-slate-400 font-semibold text-sm border-2 border-dashed border-slate-200 rounded-[10px]">
-            {t('audit.noLogsFound', { query: searchQuery })}
+            {logs.length === 0 ? t('audit.noLogsYet', 'No audit logs yet.') : t('audit.noLogsFound', { query: searchQuery })}
           </div>
         ) : (
           <>

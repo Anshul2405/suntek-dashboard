@@ -1516,6 +1516,7 @@ const en = {
     "searchPlaceholder": "Search by batch # or IP...",
     "synchronizing": "Synchronizing audit data...",
     "noLogsFound": "No audit logs found matching \"{{query}}\"",
+    "noLogsYet": "No audit logs yet.",
     "batchPrefix": "Batch #",
     "startedBatch": "Started Batch",
     "loggedReading": "Logged Reading",
