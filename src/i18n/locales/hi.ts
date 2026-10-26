@@ -226,6 +226,7 @@ const hi: Translations = {
     daysAgo: '{{count}}d अगो',
   },
   common: {
+    dateRange: "डेट (फ्रॉम – टु)",
     feedback: "फ़ीडबैक",
     saving: "सेविंग…",
     loading: "लोडिंग…",

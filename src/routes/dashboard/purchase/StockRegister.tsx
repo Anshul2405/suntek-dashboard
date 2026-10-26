@@ -769,7 +769,7 @@ export function StockRegister() {
           <div className="text-base font-bold font-heading">{t('storereq.stockHeading', 'Stock register')}</div>
           <div className="text-xs text-slate-500">
             {t('storereq.stockSubtitle', 'Software register — Excel / raw upload does not write to Busy. OP − Issue (+ restock / repair / manual) = CL.')}
-            {latestUpload ? ` · ${t('storereq.stockLatestMonth', { defaultValue: 'Latest month: {{month}}', month: latestUpload.slice(0, 7) })}` : ''}
+            {latestUpload ? ` · ${t('storereq.stockLatestMonth', { defaultValue: 'Latest month: {{month}}', month: labelForPeriod(latestUpload.slice(0, 7)) })}` : ''}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
