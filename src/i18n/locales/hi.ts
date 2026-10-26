@@ -2403,6 +2403,7 @@ const hi: Translations = {
     "legendOutOfZone": "आउट ऑफ ज़ोन",
     "onDutyCurrentShift": "ऑन ड्यूटी · करंट शिफ्ट",
     "dutyListSubtitle": "लेटेस्ट चेक-इन्स ऑटोमैटिकली अपीयर ऐट द टॉप। क्लिक एनी टु लोकेट देम।",
+    "noCheckinsYet": "नो चेक-इन्स यट।",
     "ipTooltip": "IP: {{ip}}. क्लिक टु मैनेज असाइनमेंट।",
     "mapped": "मैप्ड",
     "unmappedIp": "अनमैप्ड IP",
