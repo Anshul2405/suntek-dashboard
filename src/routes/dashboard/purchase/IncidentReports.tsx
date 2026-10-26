@@ -8,7 +8,8 @@ import { useDirectory } from '../../../lib/mentions';
 import { useNotifications } from '../../../contexts/NotificationsContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
-import { Building2, Plus } from 'lucide-react';
+import { Activity, Building2, Plus } from 'lucide-react';
+import { useUrlFilters } from '../../../lib/urlFilters';
 import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill } from '../../../components/v2';
 
 
@@ -105,10 +106,9 @@ export function IncidentReports({
   const { scopeQuery, isGlobal, ready: scopeReady } = usePlantScope();
   const { addNotification } = useNotifications();
   const [rows, setRows] = useState<IncidentRow[]>([]);
-  const [q, setQ] = useState('');
-  const [plantFilter, setPlantFilter] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  // Filters in the URL (q, plant, status, from, to) so back= / refresh keep them.
+  const filters = useUrlFilters(['q', 'plant', 'status', 'from', 'to'] as const);
+  const { q, plant: plantFilter, status: statusFilter, from: fromDate, to: toDate } = filters.values;
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(blank);
   const [tagIds, setTagIds] = useState<string[]>([]);
@@ -365,6 +365,8 @@ export function IncidentReports({
   const range = normalizeDayRange(fromDate, toDate);
   const shown = useMemo(() => rows.filter((r) => {
     if (plantFilter && r.plant_id !== plantFilter) return false;
+    if (statusFilter === 'open' && r.claimed_by) return false;
+    if (statusFilter === 'taken' && !r.claimed_by) return false;
     const day = istDayKey(r.occurred_at);
     if (range.from && day && day < range.from) return false;
     if (range.to && day && day > range.to) return false;
@@ -372,7 +374,7 @@ export function IncidentReports({
     const tags = (r.tagged_people || []).map(nameOf).join(' ');
     return [r.what_text, r.who_text, r.where_text, r.how_text, r.solution_text, displayLocationName(r.plants?.name), r.plants?.name, r.reported_by, r.claimed_by, nameOf(r.claimed_by), tags]
       .some((v) => (v || '').toLowerCase().includes(needle));
-  }), [rows, plantFilter, range.from, range.to, needle, people]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [rows, plantFilter, statusFilter, range.from, range.to, needle, people]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const field = (label: string, key: keyof typeof blank, area = false) => (
     <label style={{ display: 'block', marginBottom: 10 }}>
@@ -405,17 +407,29 @@ export function IncidentReports({
     <FilterBar
       className="mb-4"
       search={q}
-      onSearch={setQ}
+      onSearch={(v) => filters.set({ q: v })}
       searchPlaceholder={t('incidents.search')}
-      onReset={() => { setQ(''); setPlantFilter(''); setFromDate(''); setToDate(''); }}
+      onReset={filters.reset}
     >
+      {plants.length > 1 && (
+        <FilterSelect
+          icon={<Building2 />}
+          value={plantFilter || 'all'}
+          onChange={(v) => filters.set({ plant: v === 'all' ? '' : v })}
+          options={[{ value: 'all', label: t('common.allPlants') }, ...plants.map((p) => ({ value: p.id, label: displayLocationName(p.name) }))]}
+        />
+      )}
       <FilterSelect
-        icon={<Building2 />}
-        value={plantFilter || 'all'}
-        onChange={(v) => setPlantFilter(v === 'all' ? '' : v)}
-        options={[{ value: 'all', label: t('common.allPlants') }, ...plants.map((p) => ({ value: p.id, label: displayLocationName(p.name) }))]}
+        icon={<Activity />}
+        value={statusFilter || 'all'}
+        onChange={(v) => filters.set({ status: v === 'all' ? '' : v })}
+        options={[
+          { value: 'all', label: t('common.allStatus') },
+          { value: 'open', label: t('incidents.open') },
+          { value: 'taken', label: t('incidents.statusTaken', 'Taken') },
+        ]}
       />
-      <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => { setFromDate(from); setToDate(to); }} />
+      <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => filters.set({ from, to })} />
     </FilterBar>
     <SectionCard
       title={t('incidents.title')}
@@ -445,7 +459,7 @@ export function IncidentReports({
           </thead>
           <tbody>
             {loading && !missing && <tr><td colSpan={6} className="text-center text-slate-400 py-6">…</td></tr>}
-            {!loading && shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">{rows.length ? t('incidents.noneMatch') : t('incidents.none')}</td></tr>}
+            {!loading && shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">{rows.length ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('incidents.none')}</td></tr>}
             {shown.map((r) => (
               <tr key={r.id} onClick={() => { setSelected(r); setEditing(false); }} style={{ cursor: 'pointer' }}>
                 <td className="whitespace-nowrap">{formatDateTime(r.occurred_at)}</td>
