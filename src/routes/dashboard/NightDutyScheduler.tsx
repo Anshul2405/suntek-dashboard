@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { useToast } from '../../components/ui/toast';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../lib/access/pickerPlants';
 import { StatCard, SectionCard, ButtonV2, FilterBar, FilterSelect, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { exportToCsv } from '../../lib/utils/exportCsv';
@@ -64,7 +65,9 @@ export function NightDutyScheduler() {
     t('nightBoard.weekdaySat', 'Sat'),
   ];
   const { activeProfile, roles } = useRoleContext();
-  const { plantIds, isGlobal, plants } = usePlantScope();
+  const { plantIds, isGlobal, plants, allowedPlants, ready: scopeReady } = usePlantScope();
+  // Pickers offer only the plants this user may see; `plants` stays for labels.
+  const pickerPlants = useMemo(() => plantsForPicker(allowedPlants, scopeReady), [allowedPlants, scopeReady]);
 
   const [myAccountId, setMyAccountId] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, number>>({});
@@ -398,7 +401,7 @@ export function NightDutyScheduler() {
           style={{ width: '100%', padding: '8px 11px', border: '1px solid #E2E8F0', borderRadius: 10, fontSize: 12.5, fontFamily: 'inherit', background: '#fff', cursor: 'pointer' }}
         >
           <option value="auto">{t('nightBoard.autoOwnPlant', "Auto — each person's own plant")}</option>
-          {plants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {pickerPlants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <div className="text-[10.5px] text-slate-400 mt-1">{t('nightBoard.dutyPlantHint', 'Pick a specific plant to schedule someone at a plant other than their own — e.g. a second duty the same night at another plant.')}</div>
       </div>
@@ -502,7 +505,7 @@ export function NightDutyScheduler() {
           onReset={resetSchedFilters}
         >
           <FilterSelect icon={<Building2 />} value={schedPlant} onChange={setSchedPlant}
-            options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plants.map(p => ({ value: p.name, label: p.name }))]} />
+            options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...pickerPlants.map(p => ({ value: p.name, label: p.name }))]} />
           <div className="flex items-center gap-1.5">
             <input type="date" value={schedFrom} onChange={e => setSchedFrom(e.target.value)}
               className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />

@@ -28,6 +28,7 @@ import { useSearchParams } from 'react-router-dom';
 import { History, Trash2, AlertTriangle, FileSpreadsheet, ShieldAlert, Download } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { plantsForPicker } from '../../lib/access/pickerPlants';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { profileHasCapability } from '../../lib/profiles';
 import { useStepUp } from '../../lib/useStepUp';
@@ -82,7 +83,9 @@ const RANGES = [
 export function UploadHistory() {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const { plants, stores, storeQuery, ready } = usePlantScope();
+  const { plants, allowedPlants, stores, storeQuery, ready } = usePlantScope();
+  // The factory filter lists only factories this user may see; `plants` stays for labels.
+  const pickerPlants = useMemo(() => plantsForPicker(allowedPlants, ready), [allowedPlants, ready]);
   const toast = useToast();
   const { stepUp, modal: stepUpModal } = useStepUp();
 
@@ -342,7 +345,7 @@ export function UploadHistory() {
             <FilterSelect
               label={t('uploads.filterPlant', 'Factory')} value={plantFilter} onChange={setPlantFilter}
               options={[{ value: 'all', label: t('common.allPlants', 'All plants') },
-                        ...plants.map(p => ({ value: p.id, label: p.name }))]}
+                        ...pickerPlants.map(p => ({ value: p.id, label: p.name }))]}
             />
             {/* Only meaningful for stock uploads — FAR and PM are factory-owned
                 and carry no store — so it appears once a store is in play. */}

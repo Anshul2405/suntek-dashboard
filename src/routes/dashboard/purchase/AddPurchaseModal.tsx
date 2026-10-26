@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 // Shared humanizer — a user should never be shown a raw error object.
 import { humanizeError as errMsg } from '../../../lib/errors';
-import { fetchActivePlants } from '../../../lib/plants';
 import { callRpc } from '../../../lib/db';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
@@ -95,7 +94,6 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
     if (!open) return;
     let alive = true;
     (async () => {
-      const { data: pl } = await fetchActivePlants<Plant>('id, name');
       const base = plantsForPicker(allowedPlants as Plant[], scopeReady);
       // store_id comes along so the item list can be narrowed to the register
       // the selected factory actually draws from — at Rehla that is the one
