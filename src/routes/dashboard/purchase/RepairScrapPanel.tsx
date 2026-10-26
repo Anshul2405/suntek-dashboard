@@ -428,7 +428,7 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
                             </div>
                           ))}
                           <div style={{ color: '#64748B' }}>
-                            “{r.comment}”{r.condition_note ? ` · ${r.condition_note}` : ''}{r.repair_cost != null ? ` · ${t('repairReturn.cost', 'Repair cost ₹ (optional)').split(' ')[0]} ₹${Number(r.repair_cost).toLocaleString('en-IN')}` : ''}
+                            “{r.comment}”{r.condition_note ? ` · ${r.condition_note}` : ''}{r.repair_cost != null ? ` · ${t('repairReturn.costShort', 'Repair cost')} ₹${Number(r.repair_cost).toLocaleString('en-IN')}` : ''}
                           </div>
                           {r.status === 'reversed' && (
                             <div style={{ color: '#DC2626', fontSize: 11.5 }}>
