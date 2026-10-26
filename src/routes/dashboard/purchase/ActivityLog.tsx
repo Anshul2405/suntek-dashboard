@@ -29,6 +29,7 @@ import { Building2, Factory, Layers, MapPin, Plus } from 'lucide-react';
 import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
+import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
 
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
@@ -385,9 +386,12 @@ export function ActivityLog() {
           () => scopeQuery(supabase.from('activity_logs').select('*')).order('date', { ascending: false }).returns<ActivityRow[]>(),
           'ActivityLog.logs',
         ),
+        // PAGED: >1,000 tickets; an unpaged select silently stopped at 1000.
         withEmbedFallback(
-          scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>(),
-          () => scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>(),
+          fetchAllRows<TicketRow>((from, to) =>
+            scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>()),
+          () => fetchAllRows<TicketRow>((from, to) =>
+            scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>()),
           'ActivityLog.tickets',
         ),
       ]);
@@ -398,7 +402,8 @@ export function ActivityLog() {
       setTickets(tks);
       const ids = tks.map(x => x.id);
       if (ids.length) {
-        const { data: srData } = await supabase.from('maintenance_store_requests').select('*').in('ticket_id', ids).returns<StoreReqRow[]>();
+        const { data: srData } = await fetchByIds<StoreReqRow>(ids, chunk =>
+          supabase.from('maintenance_store_requests').select('*').in('ticket_id', chunk).returns<StoreReqRow[]>());
         setStoreReqs(srData || []);
       } else {
         setStoreReqs([]);

@@ -14,6 +14,7 @@ import { parseMaintenanceFile, type PMTemplate } from '../../../lib/pm/parseMain
 import { matchAsset, type AssetLite } from '../../../lib/far/assets';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import { FREQ_LABEL, calculateNextDue } from './maintenance/shared';
+import { fetchAllRows } from '../../../lib/fetchAll';
 
 type Plant = { id: string; name: string };
 
@@ -56,7 +57,9 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
     (async () => {
       const { data: pl } = await fetchActivePlants<Plant>('id, name');
       const base = plantsForPicker(allowedPlants as Plant[], scopeReady);
-      const { data: fa } = await supabase.from('fixed_assets').select('id, name, identification_mark, plant_id').returns<(AssetLite & { plant_id: string | null })[]>();
+      // PAGED: >1,000 assets — unpaged, marks past the first 1000 never matched.
+      const { data: fa } = await fetchAllRows<AssetLite & { plant_id: string | null }>((from, to) =>
+        supabase.from('fixed_assets').select('id, name, identification_mark, plant_id').order('id').range(from, to).returns<(AssetLite & { plant_id: string | null })[]>());
       const { data: sc } = await supabase.from('maintenance_schedules').select('equipment_mark, frequency, plant_id').returns<{ equipment_mark: string | null; frequency: string; plant_id: string | null }[]>();
       // Technicians (for the default assignee) with their plant.
       const { data: tech } = await supabase.from('user_accounts')

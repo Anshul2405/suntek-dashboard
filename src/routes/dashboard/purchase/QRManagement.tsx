@@ -11,6 +11,7 @@ import { ErrorState } from '../../../components/ui/states';
 import { FilterBar, FilterSelect, ButtonV2, StatusPill, TablePaginationV2 } from '../../../components/v2';
 import { normMark } from '../../../lib/far/assets';
 import type { Database } from '../../../lib/database.types';
+import { fetchAllRows } from '../../../lib/fetchAll';
 
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 type SortKey = 'name' | 'mark' | 'plant' | 'status' | 'generated';
@@ -44,9 +45,12 @@ export function QRManagement() {
     let cancelled = false;
     (async () => {
       setLoading(true); setError(false);
+      // PAGED: >1,000 assets; an unpaged select silently stopped at 1000.
       const { data, error } = await withEmbedFallback(
-        scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('name').returns<AssetRow[]>(),
-        () => scopeQuery(supabase.from('fixed_assets').select('*')).order('name').returns<AssetRow[]>(),
+        fetchAllRows<AssetRow>((from, to) =>
+          scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('name').order('id').range(from, to).returns<AssetRow[]>()),
+        () => fetchAllRows<AssetRow>((from, to) =>
+          scopeQuery(supabase.from('fixed_assets').select('*')).order('name').order('id').range(from, to).returns<AssetRow[]>()),
         'QR.assets',
       );
       if (cancelled) return;
