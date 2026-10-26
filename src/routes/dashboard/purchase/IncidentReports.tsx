@@ -10,7 +10,8 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { Activity, Building2, Plus } from 'lucide-react';
 import { useUrlFilters } from '../../../lib/urlFilters';
-import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill } from '../../../components/v2';
+import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill, TablePaginationV2 } from '../../../components/v2';
+import { usePagination } from '../../../components/ui/usePagination';
 
 
 function TagPeople({
@@ -375,6 +376,10 @@ export function IncidentReports({
     return [r.what_text, r.who_text, r.where_text, r.how_text, r.solution_text, displayLocationName(r.plants?.name), r.plants?.name, r.reported_by, r.claimed_by, nameOf(r.claimed_by), tags]
       .some((v) => (v || '').toLowerCase().includes(needle));
   }), [rows, plantFilter, statusFilter, range.from, range.to, needle, people]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Paged like the other registers; a filter change goes back to page 1.
+  const { pageRows: shownPage, controls: incidentPager } = usePagination(shown, {
+    resetKey: `${q}|${plantFilter}|${statusFilter}|${fromDate}|${toDate}`,
+  });
 
   const field = (label: string, key: keyof typeof blank, area = false) => (
     <label style={{ display: 'block', marginBottom: 10 }}>
@@ -460,7 +465,7 @@ export function IncidentReports({
           <tbody>
             {loading && !missing && <tr><td colSpan={6} className="text-center text-slate-400 py-6">…</td></tr>}
             {!loading && shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">{rows.length ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('incidents.none')}</td></tr>}
-            {shown.map((r) => (
+            {shownPage.map((r) => (
               <tr key={r.id} onClick={() => { setSelected(r); setEditing(false); }} style={{ cursor: 'pointer' }}>
                 <td className="whitespace-nowrap">{formatDateTime(r.occurred_at)}</td>
                 <td>{displayLocationName(r.plants?.name) || t('incidents.noPlant')}</td>
@@ -473,6 +478,9 @@ export function IncidentReports({
           </tbody>
         </table>
       </div>
+      {!loading && shown.length > 0 && (
+        <TablePaginationV2 controls={incidentPager} label={t('incidents.nounIncidents', 'incidents')} />
+      )}
       {open && (
         <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
           <label style={{ display: 'block', marginBottom: 10 }}>
