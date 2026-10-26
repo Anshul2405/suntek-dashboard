@@ -478,7 +478,8 @@ export function NightManagerBoard() {
           <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
             {sortedDuty.map((d, i) => {
               const dotColor = PIN_COLOR[d.status];
-              const isSelected = selectedCheckIn?.name === d.name;
+              // By check-in id — matching on name highlighted every check-in by the same person.
+              const isSelected = selectedCheckIn != null && (selectedCheckIn.id ?? selectedCheckIn.name) === (d.id ?? d.name);
               
               return (
                 <div

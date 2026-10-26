@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { CircleHelp, FileSpreadsheet, FileText } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
+import { formatDateTime } from '../../lib/utils/formatting';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
@@ -502,7 +503,7 @@ export function BatchSheet() {
                     <td className="text-slate-500 text-xs">
                       <div>{row.created_by_name ?? '—'}</div>
                       <div className="text-[10px] text-slate-400">
-                        {row.created_at ? new Date(row.created_at).toLocaleString() : ''}
+                        {row.created_at ? formatDateTime(row.created_at) : ''}
                       </div>
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -584,12 +585,12 @@ export function BatchSheet() {
                   {detailRow.created_by_name ?? '—'}
                   {detailRow.created_at && (
                     <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
-                      {new Date(detailRow.created_at).toLocaleString()}
+                      {formatDateTime(detailRow.created_at)}
                     </div>
                   )}
                 </dd>
               </div>
-              {(detailRow.colour_note || (detailRow.sheet_photo_urls?.length ?? 0) > 0) && (
+              {(detailRow.colour_note || (detailRow.sheet_photo_urls?.length ?? 0) > 0 || (detailRow.bucket_photo_urls?.length ?? 0) > 0 || (detailRow.heat_sample_photo_urls?.length ?? 0) > 0) && (
                 <div style={{ gridColumn: '1 / -1' }}>
                   <dt style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94A3B8', marginBottom: 6 }}>{t('batchProd.detailPhotos', 'Photos')}</dt>
                   <dd style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
