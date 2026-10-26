@@ -4,7 +4,7 @@ import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { safeBack, withBack } from '../../../lib/backLink';
-import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap } from 'lucide-react';
+import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap, Building2, Activity } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
 import { insertRows, updateRows } from '../../../lib/db';
@@ -18,7 +18,7 @@ import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageL
 import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
+import { useTextFilter } from '../../../components/ui/TableSearch';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { useRoleContext } from '../../../contexts/RoleContext';
@@ -28,7 +28,8 @@ import { StockRegister } from './StockRegister';
 import { STORE_REQ_WAITING, isWaitingReq, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../../lib/store/requisitionQueue';
 import { useMyIdentity } from '../../../lib/useMyIdentity';
 import { reqNoLabel, useTicketNos } from '../../../lib/ticketNo';
-import { DateRangeFilter } from '../../../components/v2';
+import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
+import { useUrlFilters } from '../../../lib/urlFilters';
 import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
@@ -110,12 +111,17 @@ export function StoreRequisitions() {
   const [loadError, setLoadError] = useState(false);
   // Search and My/All live in the URL (?q=&view=mine) so they survive Back,
   // opening a linked ticket, or a refresh. Owner/admin stay on All.
-  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  // Filters live in the URL (q, plant, status, urgency, from, to) so back= and a
+  // refresh restore them. queue=pending (Overview / To-Do links) reads as Status = Pending.
+  const filters = useUrlFilters(['q', 'plant', 'status', 'urgency', 'from', 'to', 'queue'] as const);
+  const search = filters.values.q;
+  const statusFilter = filters.values.status || (filters.values.queue === 'pending' ? 'pending' : '');
+  const setStatusFilter = (status: string) => filters.set({ status, queue: '' });
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>(() => (searchParams.get('view') === 'mine' ? 'mine' : 'all'));
   useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
   useEffect(() => {
-    patchUrlParams(setSearchParams, { q: search.trim(), view: approvalView === 'mine' ? 'mine' : '' });
-  }, [search, approvalView, setSearchParams]);
+    patchUrlParams(setSearchParams, { view: approvalView === 'mine' ? 'mine' : '' });
+  }, [approvalView, setSearchParams]);
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   // Row click → requisition detail panel (rows with a linked ticket jump straight to it).
   const [detailReq, setDetailReq] = useState<ReqRow | null>(null);
@@ -135,20 +141,25 @@ export function StoreRequisitions() {
   const backTo = safeBack(searchParams.get('back'));
   const detailFromLink = useRef(false);
 
-  const queuePending = searchParams.get('queue') === 'pending';
-  const listed = useMemo(() => {
-    const from = searchParams.get('fromDate') || '';
-    const to = searchParams.get('toDate') || '';
-    return items.filter(r => {
-      if (queuePending && !isWaitingReq(r.status)) return false;
-      if (approvalView === 'mine' && !isMyApproval(r, { ids: me.ids, canDecide: canDecideReq, waitingIsMine })) return false;
-      return inIstDayRange(r.created_at, from, to);
-    });
-  }, [items, queuePending, searchParams, approvalView, me.ids, canDecideReq, waitingIsMine]);
+  const { plant: plantFilter, urgency: urgencyFilter, from: fromDate, to: toDate } = filters.values;
+  const isUrgentReq = (r: ReqRow) => ['high', 'plant_stopper'].includes(r.urgency ?? '');
+  // Same predicates as the KPI tiles above, so "See pending" / "See urgent" list exactly what they count.
+  const matchesStatus = (r: ReqRow) =>
+    !statusFilter
+    || (statusFilter === 'pending' ? isWaitingReq(r.status)
+      : statusFilter === 'ready' ? ['approved', 'dispatched'].includes(r.status)
+      : r.status === statusFilter);
+  const listed = useMemo(() => items.filter(r => {
+    if (!matchesStatus(r)) return false;
+    if (plantFilter && r.plant_id !== plantFilter) return false;
+    if (urgencyFilter === 'urgent' && !isUrgentReq(r)) return false;
+    if (urgencyFilter === 'normal' && isUrgentReq(r)) return false;
+    if (approvalView === 'mine' && !isMyApproval(r, { ids: me.ids, canDecide: canDecideReq, waitingIsMine })) return false;
+    return inIstDayRange(r.created_at, fromDate, toDate);
+  }), [items, statusFilter, plantFilter, urgencyFilter, fromDate, toDate, approvalView, me.ids, canDecideReq, waitingIsMine]); // eslint-disable-line react-hooks/exhaustive-deps
   // Fetches ticket_no for linked tickets so the list shows STK0042, not a UUID fragment.
   const ticketNoForId = useTicketNos(items.map(r => r.ticket_id));
-  // 'urgent' is searchable so the Urgent KPI's "See urgent" (search = Urgent) finds high / plant-stopper rows.
-  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '', ['high', 'plant_stopper'].includes(r.urgency ?? '') ? 'urgent' : '']);
+  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
     ticket: r => r.ticket_id ?? null,
@@ -157,7 +168,7 @@ export function StoreRequisitions() {
     qty: r => r.qty,
     stage: r => r.status,
   });
-  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${search}|${approvalView}|${queuePending}|${reqSort.sort.key}|${reqSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${approvalView}|${reqSort.sort.key}|${reqSort.sort.dir}` });
 
   async function load() {
     try {
@@ -354,22 +365,22 @@ export function StoreRequisitions() {
         <StatCard className="col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
           label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length)}
           caption={t('storereq.stat_total_sub', 'Open requests')}
-          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          onView={() => { filters.reset(); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount)}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
-          onView={() => { setSearch(''); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => { filters.only({ status: 'pending' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount)}
           caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
-          onView={() => document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' })}
+          onView={() => { filters.only({ status: 'ready' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
           label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount)}
           caption={t('storereq.stat_urgent_sub', 'High priority requests')}
-          onView={() => { setSearch('Urgent'); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => { filters.only({ urgency: 'urgent' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
           viewLabel={t('storereq.viewUrgent', 'See urgent')} />
       </div>
 
@@ -395,8 +406,33 @@ export function StoreRequisitions() {
           <div className="px-5 pb-5"><SkeletonRows rows={6} /></div>
         ) : (
         <>
+          <FilterBar
+            className="mx-5 mb-3 !shadow-none"
+            search={search} onSearch={(q) => filters.set({ q })}
+            searchPlaceholder={t('storereq.search_ph', 'Search item, plant, ticket…')}
+            onReset={filters.reset}
+          >
+            {plantOptions.length > 1 && (
+              <FilterSelect icon={<Building2 />} value={plantFilter || 'all'} onChange={(v) => filters.set({ plant: v === 'all' ? '' : v })}
+                options={[{ value: 'all', label: t('common.allPlants') }, ...plantOptions.map(p => ({ value: p.id, label: displayLocationName(p.name) }))]} />
+            )}
+            <FilterSelect icon={<Activity />} value={statusFilter || 'all'} onChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
+              options={[
+                { value: 'all', label: t('common.allStatus') },
+                { value: 'pending', label: t('storereq.stat_pending', 'Pending Approval') },
+                { value: 'ready', label: t('storereq.stat_ready', 'Ready to Fulfil') },
+                { value: 'received', label: t('storereq.decision_received', 'Received') },
+                { value: 'rejected', label: t('storereq.decision_rejected', 'Rejected') },
+              ]} />
+            <FilterSelect icon={<Zap />} value={urgencyFilter || 'all'} onChange={(v) => filters.set({ urgency: v === 'all' ? '' : v })}
+              options={[
+                { value: 'all', label: t('storereq.allPriorities', 'All priorities') },
+                { value: 'urgent', label: t('storereq.opt_urgent') },
+                { value: 'normal', label: t('storereq.opt_normal') },
+              ]} />
+            <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => filters.set({ from, to })} />
+          </FilterBar>
           <div className="px-5 pb-4 flex flex-wrap items-center gap-2">
-            <div className="flex-1 min-w-[180px]"><TableSearch value={search} onChange={setSearch} placeholder={t('storereq.search_ph', 'Search item, plant, ticket…')} /></div>
             {!isAdmin ? (
             <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold">
               <button type="button" onClick={() => setApprovalView('mine')} style={{ padding: '7px 10px', background: approvalView === 'mine' ? '#0F172A' : '#fff', color: approvalView === 'mine' ? '#fff' : '#475569', border: 'none' }}>{t('storereq.myApprovals', 'My approvals')}</button>
@@ -405,7 +441,9 @@ export function StoreRequisitions() {
             ) : null}
           </div>
           {filtered.length === 0 ? (
-            <div className="px-5 pb-5"><EmptyState title={t('storereq.open_req_empty')} message={search ? t('common.noMatches', 'No rows match your search.') : undefined} /></div>
+            <div className="px-5 pb-5">{items.length > 0
+              ? <EmptyState title={t('common.noRowsMatchFilters', 'No rows match these filters')} />
+              : <EmptyState title={t('storereq.open_req_empty')} />}</div>
           ) : (
             <div className="overflow-x-auto scroll-x">
               <table className="dt2">
