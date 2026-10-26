@@ -784,7 +784,9 @@ export function Maintenance() {
       setSchedules(schedulesData || []);
       const noteIds = (ticketsData || []).map(x => x.id);
       if (noteIds.length) {
-        const { data: noteRows } = await supabase.from('entity_notes').select('entity_id').eq('entity_type', 'maintenance_ticket').in('entity_id', noteIds.slice(0, 800)).returns<{ entity_id: string }[]>();
+        // Chunked: 800 ids in one URL (~30 kB) was rejected with HTTP 400, so no ticket ever showed its Notes badge.
+        const { data: noteRows } = await fetchByIds<{ entity_id: string }>(noteIds, c =>
+          supabase.from('entity_notes').select('entity_id').eq('entity_type', 'maintenance_ticket').in('entity_id', c).returns<{ entity_id: string }[]>());
         setTicketsWithNotes(new Set((noteRows || []).map(n => n.entity_id)));
       } else {
         setTicketsWithNotes(new Set());
