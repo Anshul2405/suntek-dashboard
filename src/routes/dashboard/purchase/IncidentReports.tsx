@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 import { formatDateTime, istDayKey, normalizeDayRange } from '../../../lib/utils/formatting';
@@ -88,6 +88,7 @@ export function IncidentReports({
   reporterRole,
   focusId,
   onCloseFocused,
+  isAdmin = false,
 }: {
   plants: { id: string; name: string }[];
   reporter: string;
@@ -95,6 +96,8 @@ export function IncidentReports({
   focusId?: string | null;
   /** Closing the incident that was opened by deep link (e.g. back to Activity Log). */
   onCloseFocused?: () => void;
+  /** Admin may edit any incident; everyone else only the ones they reported. */
+  isAdmin?: boolean;
 }) {
   const { t } = useTranslation();
   const people = useDirectory();
@@ -120,6 +123,16 @@ export function IncidentReports({
   const [missing, setMissing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<IncidentRow | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState(blank);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const detailRef = useRef<HTMLDivElement>(null);
+  // The detail renders under the list — bring it into view when one is opened
+  // (deep link from the Activity Log, or a row tap on a phone).
+  const selectedId = selected?.id ?? null;
+  useEffect(() => {
+    if (selectedId) detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [selectedId]);
   const defaultPlant = plants.length === 1 ? plants[0].id : '';
 
   const nameOf = (id: string | null | undefined) => people.find(p => p.id === id)?.name || id || '';
@@ -295,6 +308,49 @@ export function IncidentReports({
     setRows(prev => prev.map(r => r.id === row.id ? next : r));
   }
 
+  const canEdit = (r: IncidentRow) => isAdmin || (!!r.reported_by && r.reported_by === reporter);
+
+  /** datetime-local wants local "YYYY-MM-DDTHH:mm". */
+  const toLocalInput = (iso: string | null | undefined) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+
+  function startEdit(r: IncidentRow) {
+    setEditForm({
+      plant: r.plant_id || '',
+      when: toLocalInput(r.occurred_at),
+      where: r.where_text || '',
+      what: r.what_text || '',
+      who: r.who_text || '',
+      how: r.how_text || '',
+      solution: r.solution_text || '',
+    });
+    setEditing(true);
+  }
+
+  async function saveEdit(row: IncidentRow) {
+    if (!canEdit(row) || !editForm.what.trim()) return;
+    setSavingEdit(true);
+    setErr(null);
+    const patch = {
+      occurred_at: editForm.when ? new Date(editForm.when).toISOString() : row.occurred_at,
+      where_text: editForm.where.trim() || null,
+      what_text: editForm.what.trim(),
+      who_text: editForm.who.trim() || null,
+      how_text: editForm.how.trim() || null,
+      solution_text: editForm.solution.trim() || null,
+    };
+    const { error } = await incidents().update(patch).eq('id', row.id);
+    setSavingEdit(false);
+    if (error) { setErr(t('incidents.editFailed', 'Could not save the changes.')); return; }
+    const next = { ...row, ...patch };
+    setSelected(next);
+    setRows(prev => prev.map(r => (r.id === row.id ? next : r)));
+    setEditing(false);
+  }
+
   async function assignPlant(row: IncidentRow, plantId: string) {
     if (!plantId) return;
     const { error } = await incidents().update({ plant_id: plantId }).eq('id', row.id);
@@ -327,6 +383,19 @@ export function IncidentReports({
         <input type="datetime-local" value={form.when} onChange={(e) => setForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
       ) : (
         <input value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} style={inputStyle} />
+      )}
+    </label>
+  );
+
+  const editField = (label: string, key: keyof typeof blank, area = false) => (
+    <label style={{ display: 'block', marginBottom: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#64748B', marginBottom: 4 }}>{label}</div>
+      {area ? (
+        <textarea value={editForm[key]} onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))} rows={3} style={inputStyle} />
+      ) : key === 'when' ? (
+        <input type="datetime-local" value={editForm.when} onChange={(e) => setEditForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
+      ) : (
+        <input value={editForm[key]} onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))} style={inputStyle} />
       )}
     </label>
   );
@@ -378,7 +447,7 @@ export function IncidentReports({
             {loading && !missing && <tr><td colSpan={6} className="text-center text-slate-400 py-6">…</td></tr>}
             {!loading && shown.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">{rows.length ? t('incidents.noneMatch') : t('incidents.none')}</td></tr>}
             {shown.map((r) => (
-              <tr key={r.id} onClick={() => setSelected(r)} style={{ cursor: 'pointer' }}>
+              <tr key={r.id} onClick={() => { setSelected(r); setEditing(false); }} style={{ cursor: 'pointer' }}>
                 <td className="whitespace-nowrap">{formatDateTime(r.occurred_at)}</td>
                 <td>{displayLocationName(r.plants?.name) || t('incidents.noPlant')}</td>
                 <td>{r.what_text}</td>
@@ -424,11 +493,30 @@ export function IncidentReports({
         </div>
       )}
       {selected && (
-        <div style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14 }}>
+        <div ref={detailRef} style={{ marginTop: 16, border: '1px solid #E2E8F0', borderRadius: 12, padding: 14, scrollMarginTop: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ fontWeight: 800 }}>{selected.what_text}</div>
-            <ButtonV2 variant="ghost" size="sm" onClick={() => { const wasFocus = selected.id === focusId; setSelected(null); if (wasFocus) onCloseFocused?.(); }}>{t('incidents.close')}</ButtonV2>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              {canEdit(selected) && !editing && (
+                <ButtonV2 variant="outline" size="sm" onClick={() => startEdit(selected)}>{t('incidents.edit', 'Edit')}</ButtonV2>
+              )}
+              <ButtonV2 variant="ghost" size="sm" onClick={() => { const wasFocus = selected.id === focusId; setSelected(null); setEditing(false); if (wasFocus) onCloseFocused?.(); }}>{t('incidents.close')}</ButtonV2>
+            </div>
           </div>
+          {editing && (
+            <div style={{ marginTop: 12, borderTop: '1px solid #F1F5F9', paddingTop: 12 }}>
+              {editField(t('incidents.when'), 'when')}
+              {editField(t('incidents.who'), 'who')}
+              {editField(`${t('incidents.what')} *`, 'what', true)}
+              {editField(t('incidents.where'), 'where')}
+              {editField(t('incidents.how'), 'how', true)}
+              {editField(t('incidents.solution'), 'solution', true)}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <ButtonV2 variant="primary" onClick={() => void saveEdit(selected)} disabled={savingEdit || !editForm.what.trim()}>{savingEdit ? t('incidents.saving') : t('incidents.saveChanges', 'Save changes')}</ButtonV2>
+                <ButtonV2 variant="outline" onClick={() => setEditing(false)}>{t('incidents.cancel')}</ButtonV2>
+              </div>
+            </div>
+          )}
           <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
             {formatDateTime(selected.occurred_at)}
             {' · '}{displayLocationName(selected.plants?.name) || t('incidents.noPlant')}
