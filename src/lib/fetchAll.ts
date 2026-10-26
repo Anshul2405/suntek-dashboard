@@ -33,6 +33,11 @@ const PARALLEL = 3;
 
 export async function fetchAllRows<T>(
   page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message?: string } | null }>,
+  opts: {
+    /** Called with the rows so far whenever more pages are still coming — lets a
+     *  screen paint the first 1000 rows instead of waiting for the whole table. */
+    onPartial?: (rowsSoFar: T[]) => void;
+  } = {},
 ): Promise<{ data: T[]; error: { message?: string } | null; truncated: boolean }> {
   const out: T[] = [];
   // Page 0 alone (most tables fit in one page); once a page comes back full, the
@@ -51,6 +56,7 @@ export async function fetchAllRows<T>(
       if (rows.length < PAGE) return { data: out, error: null, truncated: false };
     }
     i += n;
+    opts.onPartial?.(out.slice());
   }
   // Hit the page ceiling: >50,000 rows. Return what we have and say so, rather
   // than pretending the set is complete — the whole point of this module.
