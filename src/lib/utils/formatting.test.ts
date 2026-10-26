@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDate, formatDateTime, istDayKey, inIstDayRange, normalizeDayRange, istRangeToIso } from './formatting';
+import { formatDate, formatDateTime, formatTime, istDayKey, inIstDayRange, normalizeDayRange, istRangeToIso } from './formatting';
 
 describe('IST date formatting', () => {
   it('formats as dd/mm/yyyy', () => {
@@ -17,6 +17,10 @@ describe('IST date formatting', () => {
     expect(formatDateTime('2026-10-22T09:35:00Z')).toBe('22/10/2026, 3:05 pm');
     expect(formatDateTime('2026-10-21T18:35:00Z')).toBe('22/10/2026, 12:05 am');
     expect(formatDateTime('2026-10-22T06:30:00Z')).toBe('22/10/2026, 12:00 pm');
+  });
+  it('formats a bare time the same way', () => {
+    expect(formatTime('2026-10-22T09:35:00Z')).toBe('3:05 pm');
+    expect(formatTime(undefined)).toBe('—');
   });
   it('degrades to a dash', () => {
     expect(formatDate(null)).toBe('—');

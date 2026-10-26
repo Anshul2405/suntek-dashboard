@@ -5,6 +5,7 @@ import { updateRows } from '../lib/db';
 import { useRoleContext } from '../contexts/RoleContext';
 import { useToast } from './ui/toast';
 import { assetQrUrl, downloadDataUrl, printQrLabel, makeQrToken, safeFileName } from '../lib/far/qr';
+import { formatDate } from '../lib/utils/formatting';
 
 export interface QrAsset {
   id: string;
@@ -106,7 +107,7 @@ export function AssetQRCard({ asset, onUpdated, compact = false }: {
       </div>
       {asset.qr_generated_at && (
         <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 8 }}>
-          {t('far.qrGeneratedOn', { defaultValue: 'Generated {{date}}', date: new Date(asset.qr_generated_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) })}
+          {t('far.qrGeneratedOn', { defaultValue: 'Generated {{date}}', date: formatDate(asset.qr_generated_at) })}
           {asset.qr_generated_by ? t('far.qrGeneratedByName', { defaultValue: ' · by {{name}}', name: asset.qr_generated_by }) : ''}
         </div>
       )}

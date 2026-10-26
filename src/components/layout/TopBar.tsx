@@ -15,6 +15,7 @@ import type { AppNotification } from '../../contexts/NotificationsContext';
 import { IconBell, IconChecklist, IconMenu, IconSearch, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
 import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
 import { useBusyHeartbeat } from '../../hooks/useBusyData';
+import { formatDateTime } from '../../lib/utils/formatting';
 
 type NType = 'critical' | 'urgent' | 'warning' | 'info';
 
@@ -87,7 +88,7 @@ function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
     ? t('topbar.busySyncTitle', {
         defaultValue: 'Last push from the Busy PC {{computer}} at {{time}}. Read only.',
         computer: beat.computer ?? '',
-        time: new Date(beat.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }),
+        time: formatDateTime(beat.at),
       })
     : label;
   return (
