@@ -49,14 +49,11 @@ const FACTORY_ITEMS: NavItem[] = [
 ];
 
 /**
- * Operations dropdown children. Purchase reuses the Purchase Orders page for now
- * and is expected to grow its own sub-modules later. CP and Stock is the CPM Stock
- * board (display rename only — same /dashboard/stock route).
+ * Operations dropdown children. Purchase is the Busy invoice workbook (?ctx=ops).
+ * Factory → Purchase Orders is the oil/spare PO register on the same path without ctx.
+ * CP and Stock is the CPM Stock board (display rename only — same /dashboard/stock route).
  */
 const OPERATIONS_ITEMS: NavItem[] = [
-  // Purchase reuses the same page as Factory's "Purchase Order". They share a
-  // route, so we tag this one with ?ctx=ops (`nav`) — the highlight logic reads
-  // that marker to light up ONLY the entry the user actually opened, not both.
   { key: 'nav.purchase',        path: '/dashboard/purchase/purchase', nav: '/dashboard/purchase/purchase?ctx=ops' },
   { key: 'nav.sales',           path: '/dashboard/sales'             },
   { key: 'nav.customerHistory', path: '/dashboard/customers'         },

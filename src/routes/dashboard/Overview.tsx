@@ -45,7 +45,7 @@ const ALERT_ROUTE: Record<string, string> = {
 const MOVE_ROUTE: Record<string, string> = {
   batch:    '/dashboard/batches',
   sales:    '/dashboard/sales',
-  purchase: '/dashboard/purchase/purchase',
+  purchase: '/dashboard/purchase/purchase?ctx=ops',
   maint:    '/dashboard/purchase/maint',
   stock:    '/dashboard/stock',
 };

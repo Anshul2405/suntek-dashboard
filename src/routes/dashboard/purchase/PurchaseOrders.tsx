@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { formatDate } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Download, ShoppingCart, Package, Truck, Hourglass } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Plus, Download, ShoppingCart, Package, Truck, Hourglass, IndianRupee, ReceiptText } from 'lucide-react';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
 import { supabase } from '../../../lib/supabase';
 import { insertRows } from '../../../lib/db';
@@ -22,8 +22,36 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2, InfoBanner } from '../../../components/v2';
 import { AddPurchaseModal } from './AddPurchaseModal';
 import { BusyPurchasesCard } from '../../../components/BusyPurchasesCard';
+import { fmtINR, useOverviewKPIs } from '../../../hooks/useBusyData';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
+
+/** Operations → Purchase: Busy invoices only (read-only). Factory → Purchase Orders is a different screen. */
+function BusyPurchaseOpsPage() {
+  const { t } = useTranslation();
+  const { data: overview } = useOverviewKPIs();
+  return (
+    <>
+      <div className="grid grid-cols-12 gap-4 mb-4">
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<IndianRupee />} tone="blue"
+          label={t('overview.purchasePaidMtd', 'Purchase paid · MTD')}
+          value={overview ? fmtINR(overview.purchaseMTD) : '…'}
+          caption={t('overview.busyReadOnly', 'From the last Busy read. Never written back.')} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ReceiptText />} tone="purple"
+          label={t('overview.busyInvoicesFy', 'Purchase invoices · FY')}
+          value={overview ? String(overview.purchaseInvoiceCount) : '…'}
+          caption={overview?.fyPurchase != null ? fmtINR(overview.fyPurchase) : undefined} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
+          label={t('overview.busyPendingBills', 'Pending bills')}
+          value={overview ? fmtINR(overview.pendingBills) : '…'} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Package />} tone="green"
+          label={t('overview.busyFyPurchase', 'FY purchase')}
+          value={overview ? fmtINR(overview.fyPurchase) : '…'} />
+      </div>
+      <BusyPurchasesCard />
+    </>
+  );
+}
 
 type OrderRow = Database['public']['Tables']['oil_contracts']['Row'];
 type MaintStoreReq = Database['public']['Tables']['maintenance_store_requests']['Row'];
@@ -66,6 +94,12 @@ const PORTS = ['Kandla', 'Mundra'];
 const UNITS  = ['nos', 'Ft', 'kg', 'MT', 'L', 'sets', 'boxes'];
 
 export function PurchaseOrders() {
+  const [searchParams] = useSearchParams();
+  if (searchParams.get('ctx') === 'ops') return <BusyPurchaseOpsPage />;
+  return <PurchaseOrderRegister />;
+}
+
+function PurchaseOrderRegister() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
@@ -257,8 +291,6 @@ export function PurchaseOrders() {
             value={orders.reduce((s, r) => s + (r.pending_qty || 0), 0).toFixed(0)} />
         </div>
       </div>
-
-      <BusyPurchasesCard />
 
       {/* Search / filters */}
       <FilterBar
