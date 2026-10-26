@@ -98,19 +98,19 @@ export function PredictiveQCBoard() {
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
           <KpiInfoButton info={{ title: 'Live Predictive QC', what: 'Every running batch projected to where it will land — its live gravity curve against the proven golden-batch trajectory for that grade, hours before closure.', source: 'Derived', note: 'Golden curve per grade; projection = drift vs golden carried to the endpoint. Detector 4.1 raises flags into the Anomaly Center.' }} />
           <StatCard className="h-full" icon={<Gauge />} tone="blue"
-            label={t('predictiveQc.runningBatches')} value={projections.length} />
+            label={t('predictiveQc.runningBatches')} value={isLoading ? '…' : projections.length} />
         </div>
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
           valueTone={counts.green > 0 ? 'green' : 'default'}
-          label={t('predictiveQc.status_green')} value={counts.green}
+          label={t('predictiveQc.status_green')} value={isLoading ? '…' : counts.green}
           caption={t('predictiveQc.onTrackCount', { count: counts.green })} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertCircle />} tone="amber"
           valueTone={counts.amber > 0 ? 'amber' : 'default'}
-          label={t('predictiveQc.status_amber')} value={counts.amber}
+          label={t('predictiveQc.status_amber')} value={isLoading ? '…' : counts.amber}
           caption={t('predictiveQc.driftingCount', { count: counts.amber })} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red"
           valueTone={counts.red > 0 ? 'red' : 'default'}
-          label={t('predictiveQc.status_red')} value={counts.red}
+          label={t('predictiveQc.status_red')} value={isLoading ? '…' : counts.red}
           caption={t('predictiveQc.atRiskCount', { count: counts.red })} />
       </div>
 

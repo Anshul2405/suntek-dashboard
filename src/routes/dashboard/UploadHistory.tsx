@@ -303,15 +303,15 @@ export function UploadHistory() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<FileSpreadsheet />} label={t('uploads.kpiFiles', 'Uploaded files')}
-            value={totals.live} caption={t('uploads.kpiFilesCap', 'live batches across your factories')} />
+            value={loading ? '…' : totals.live} caption={t('uploads.kpiFilesCap', 'live batches across your factories')} />
         </div>
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<History />} label={t('uploads.kpiRows', 'Imported records')}
-            value={totals.rows} caption={t('uploads.kpiRowsCap', 'rows traceable to a file')} />
+            value={loading ? '…' : totals.rows} caption={t('uploads.kpiRowsCap', 'rows traceable to a file')} />
         </div>
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<Trash2 />} label={t('uploads.kpiDeleted', 'Deletions logged')}
-            value={totals.deleted} caption={t('uploads.kpiDeletedCap', 'permanent audit trail')} />
+            value={loading ? '…' : totals.deleted} caption={t('uploads.kpiDeletedCap', 'permanent audit trail')} />
         </div>
       </div>
 
