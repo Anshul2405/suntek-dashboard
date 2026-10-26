@@ -3598,6 +3598,7 @@ const en = {
     saveChanges: "Save changes",
     editFailed: "Could not save the changes.",
     statusTaken: "Taken",
+    nounIncidents: "incidents",
   },
   recon: {
     netHelp: "Net units = added − consumed. Positive means this factory has put more into the shared store than it has taken out; negative means it has drawn on stock someone else paid for.",
