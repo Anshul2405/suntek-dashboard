@@ -13,6 +13,7 @@ import { withEmbedFallback } from '../../lib/scopedList';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2 } from '../../components/v2';
 import type { Database } from '../../lib/database.types';
+import { formatDate } from '../../lib/utils/formatting';
 
 type StockRow = Database['public']['Tables']['stock_levels']['Row'] & { plants?: { name: string | null } | null };
 type TankRow = Database['public']['Tables']['tanks']['Row'];
@@ -294,12 +295,12 @@ export function CPMStock() {
             </thead>
             <tbody>
               {storeSort.sorted.map(i => (
-                <tr key={i.id} style={{ cursor: 'pointer' }}>
+                <tr key={i.id}>
                   <td className="font-semibold">{i.product}</td>
                   <td>{i.plants?.name || '—'}</td>
                   <td className="num">{i.density || '—'}</td>
                   <td className="num font-bold">{i.quantity}</td>
-                  <td className="text-slate-500 text-xs">{i.date}</td>
+                  <td className="text-slate-500 text-xs">{formatDate(i.date)}</td>
                 </tr>
               ))}
               {filteredItems.length === 0 && (

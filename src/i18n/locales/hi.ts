@@ -584,6 +584,12 @@ const hi: Translations = {
       'New Batch से रन शुरू → Log Reading हर घंटे दर्ज → Close पर yield QC → Create Batch Sheet में घनत्व और फ़ोटो, नंबर P12-13 → रजिस्टर में रिकॉर्ड → अकाउंटेंट स्टॉक, फिर डिस्पैच। Upload OCR कागज़ से रीडिंग भरने का शॉर्टकट है।\n\nप्लांट से पूछने वाली बातें: शीट कौन बनाएगा, रन कौन बंद करेगा, और हर बैच की शीट बनेगी या सिर्फ़ स्टॉक जाने वालों की।\n\nHow this works से कभी भी दोबारा चलाएँ।',
   },
   batchProd: {
+    thBatchNo: "बैच नंबर",
+    thPlant: "प्लांट",
+    thReactor: "रिएक्टर",
+    thDensity: "डेंसिटी",
+    thGrade: "ग्रेड",
+    thCreated: "क्रिएटेड",
     noReactors: "नो रिएक्टर्स आर सेट अप फॉर दिस प्लांट यट — आस्क एन एडमिन टु ऐड देम।",
     photoHeat: "हीट सैंपल",
     photoBucket: "बकेट",
