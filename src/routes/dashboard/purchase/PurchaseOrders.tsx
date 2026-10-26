@@ -352,7 +352,7 @@ function PurchaseOrderRegister() {
               </thead>
               <tbody>
                 {ordersPg.pageRows.map(r => (
-                  <tr key={r.id} style={{ cursor: 'pointer' }}>
+                  <tr key={r.id}>
                     <td className="font-semibold">{r.oil_type || '—'}</td>
                     <td className="text-slate-500">{r.paraffin_type || '—'}</td>
                     <td>{r.company || '—'}</td>

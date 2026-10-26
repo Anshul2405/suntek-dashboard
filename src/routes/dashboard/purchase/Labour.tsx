@@ -146,7 +146,7 @@ export function Labour() {
                   const tBg    = vPct > 0 ? '#FEF3C7' : vPct < 0 ? '#DCFCE7' : '#F1F5F9';
                   const tLbl   = vPct > 0 ? t('labour.varianceOver', { pct: vPct.toFixed(1) }) : vPct < 0 ? t('labour.varianceUnder', { pct: Math.abs(vPct).toFixed(1) }) : t('labour.onTarget');
                   return (
-                    <tr key={c.id} style={{ cursor: 'pointer' }}>
+                    <tr key={c.id}>
                       <td className="font-semibold">{c.plants?.name || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(c.date)}</td>
                       <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
