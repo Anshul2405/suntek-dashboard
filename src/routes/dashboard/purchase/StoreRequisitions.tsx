@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { patchUrlParams } from '../../../lib/urlParams';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
@@ -127,6 +127,17 @@ export function StoreRequisitions() {
     else setDetailReq(r);
   }
 
+  // Deep link from Overview's Pending approvals (?req=<id>): open that request once loaded.
+  const reqParam = searchParams.get('req');
+  const openedReqParam = useRef<string | null>(null);
+  useEffect(() => {
+    if (!reqParam || openedReqParam.current === reqParam) return;
+    const r = items.find(x => x.id === reqParam);
+    if (!r) return;
+    openedReqParam.current = reqParam;
+    openRow(r);
+  }, [reqParam, items]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const queuePending = searchParams.get('queue') === 'pending';
   const listed = useMemo(() => {
     const from = searchParams.get('fromDate') || '';
@@ -139,7 +150,8 @@ export function StoreRequisitions() {
   }, [items, queuePending, searchParams, approvalView, me.ids, canDecideReq, waitingIsMine]);
   // Fetches ticket_no for linked tickets so the list shows STK0042, not a UUID fragment.
   const ticketNoForId = useTicketNos(items.map(r => r.ticket_id));
-  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
+  // 'urgent' is searchable so the Urgent KPI's "See urgent" (search = Urgent) finds high / plant-stopper rows.
+  const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '', ['high', 'plant_stopper'].includes(r.urgency ?? '') ? 'urgent' : '']);
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
     ticket: r => r.ticket_id ?? null,

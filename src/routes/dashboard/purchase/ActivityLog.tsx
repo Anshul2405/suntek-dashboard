@@ -650,8 +650,8 @@ export function ActivityLog() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              className={`pill px-3 py-2 text-xs font-semibold ${showManualOnly ? 'btn-ghost' : 'btn-ghost'}`}
-              style={{ border: '1px solid #E2E8F0', background: showManualOnly ? '#fff' : '#0F172A', color: showManualOnly ? '#475569' : '#fff' }}
+              className="pill px-3 py-2 text-xs font-semibold btn-ghost"
+              style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#475569' }}
               onClick={() => setShowManualOnly(v => !v)}
               title={t('activity.toggleFeedTitle')}
             >
