@@ -818,7 +818,7 @@ export function FAR() {
       >
 
         {/* Financial-year tabs */}
-        {fyList.length === 0
+        {loading ? null : fyList.length === 0
           ? <span className="text-xs text-slate-400 block mb-4">{t('far.noMaintRecorded')}</span>
           : <SegmentTabs className="mb-4" items={fyList.map(fy => ({ key: fy, label: fy }))} value={activeFY ?? fyList[0]} onChange={setSelectedFY} />}
 
@@ -879,7 +879,7 @@ export function FAR() {
         <KpiInfoButton info={{ title: 'Fixed Asset Register (FAR)', what: 'Complete list of all capitalized fixed assets across 4 plants. Each asset must be individually named on the FAR to be covered by the marine/fire insurance policy. Photo proof required for audit. New assets added via the "+ Add asset" slide panel.', source: 'Form entry', formLabel: '+ Add asset form', formPath: '/dashboard/purchase/far', note: 'Data from FAR_DATA mock (mockData.ts). Future: Supabase fixed_assets table.' }} />
       <SectionCard
         title={t('far.fixedAssetRegister')}
-        subtitle={t('far.equipMasterSubtitle', { defaultValue: 'Equipment master for Preventive Maintenance — grouped by type · {{types}} types · {{assets}} assets', types: equipGroups.length, assets: assets.length })}
+        subtitle={t('far.equipMasterSubtitle', { defaultValue: 'Equipment master for Preventive Maintenance — grouped by type · {{types}} types · {{assets}} assets', types: loading ? '…' : equipGroups.length, assets: loading ? '…' : assets.length })}
         actions={
           <>
             <ButtonV2 variant="outline" icon={<Upload />} onClick={() => { setImportOpen(o => !o); if (importStage === 'done') resetImport(); }}>

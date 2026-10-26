@@ -4,6 +4,7 @@ import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CircleHelp, FileSpreadsheet, FileText } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
+import { SkeletonRows } from '../../components/ui/states';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
@@ -112,6 +113,8 @@ export function BatchSheet() {
     || activeProfile.baseRoleId === 'factory_operator';
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
+  // False until the first load returns — the empty state must not flash meanwhile.
+  const [sheetsLoaded, setSheetsLoaded] = useState(false);
   const [tourOffer, setTourOffer] = useState(false);
   const [coaTarget, setCoaTarget] = useState<CoaSheetTarget | null>(null);
   const [detailRow, setDetailRow] = useState<ProductionSheetRow | null>(null);
@@ -189,6 +192,7 @@ export function BatchSheet() {
           .filter((r) => inScope(r.plant_id))
           .map((r) => ({ ...r, source: 'native' as const })),
       );
+      setSheetsLoaded(true);
       return;
     }
 
@@ -218,6 +222,7 @@ export function BatchSheet() {
     if (legacy.error) {
       console.warn('[BatchSheet] legacy sheets:', legacy.error.message);
       setProdSheets([]);
+      setSheetsLoaded(true);
       return;
     }
     setProdSheets(
@@ -226,6 +231,7 @@ export function BatchSheet() {
         .filter((row) => inScope(row.plant_id))
         .map(mapLegacyActiveBatch),
     );
+    setSheetsLoaded(true);
   }, [scopeQuery, inScope]);
 
   useEffect(() => {
@@ -427,7 +433,10 @@ export function BatchSheet() {
               </tr>
             </thead>
             <tbody>
-              {prodSheets.length === 0 && (
+              {!sheetsLoaded && (
+                <tr><td colSpan={8}><SkeletonRows rows={4} /></td></tr>
+              )}
+              {sheetsLoaded && prodSheets.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-12 px-4">
                     <div className="mx-auto max-w-sm">

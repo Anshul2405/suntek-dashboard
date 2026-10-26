@@ -43,6 +43,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [saving, setSaving] = useState(false);
+  // Fields are filled from the DB after open; editing before that got overwritten.
+  const [loaded, setLoaded] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushPerm, setPushPerm] = useState<ReturnType<typeof getPushPermission>>('default');
@@ -50,11 +52,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    setLoaded(false);
     setPushOn(isPushEnabledLocally());
     setPushPerm(getPushPermission());
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (cancelled || !user) return;
+      if (cancelled) return;
+      if (!user) { setLoaded(true); return; }
       setAuthUserId(user.id);
       setEmail(user.email ?? null);
 
@@ -74,6 +78,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       setPhotoUrl(photo); setOrigPhoto(photo);
       setUserAccountId(acct?.id ?? null);
       setPassword(''); setConfirm('');
+      setLoaded(true);
     })();
     return () => { cancelled = true; };
   }, [open, authProfile?.name, authProfile?.photoUrl]);
@@ -265,7 +270,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           </div>
 
           <Field label={t('topbar.settingsDisplayName', 'Display name')}>
-            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} placeholder={t('topbar.settingsNamePlaceholder', 'Your name')} />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} disabled={!loaded} style={inputStyle} placeholder={loaded ? t('topbar.settingsNamePlaceholder', 'Your name') : '…'} />
           </Field>
 
           <Field label={t('topbar.settingsPreferredLanguage', 'Preferred language')}>
@@ -319,7 +324,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
         <div style={{ padding: '14px 22px', borderTop: '1px solid #F1F5F9', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', color: '#475569' }}>{t('common.cancel', 'Cancel')}</button>
-          <button onClick={handleSave} disabled={saving || uploadingPhoto} style={{ padding: '9px 20px', borderRadius: 12, border: 'none', background: saving ? '#94A3B8' : '#0F172A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: saving ? 'default' : 'pointer' }}>
+          <button onClick={handleSave} disabled={!loaded || saving || uploadingPhoto} style={{ padding: '9px 20px', borderRadius: 12, border: 'none', background: !loaded || saving ? '#94A3B8' : '#0F172A', color: '#fff', fontWeight: 700, fontSize: 13, cursor: !loaded || saving ? 'default' : 'pointer' }}>
             {saving ? t('common.saving', 'Saving…') : t('topbar.settingsSaveChanges', 'Save changes')}
           </button>
         </div>

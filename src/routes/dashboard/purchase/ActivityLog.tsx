@@ -614,7 +614,7 @@ export function ActivityLog() {
           <button type="button" className="text-left w-full" onClick={() => setKpi('all')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiTotal')}</div>
           <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : rows.length}</div>
-          <div className="text-[11px] text-slate-500 mt-1">{t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
+          <div className="text-[11px] text-slate-500 mt-1">{loading ? '\u00a0' : t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
           </button>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
