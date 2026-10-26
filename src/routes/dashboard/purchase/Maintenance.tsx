@@ -13,7 +13,7 @@ import { resizeImageToDataUrl, extractSupplierBill, type SupplierBillLine } from
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
-import { fetchAllRows } from '../../../lib/fetchAll';
+import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
 import { isAdminProfile, canSeeScheduleSetup, type RoleRow } from '../../../lib/profiles';
 import { issueLineValue, storeIssueNeedsPhoto } from '../../../lib/store/issuePhoto';
 import { fetchPurchaseFacts, type PurchaseFact } from '../../../lib/store/purchaseFacts';
@@ -1746,9 +1746,10 @@ export function Maintenance() {
       // Enrich each ticket with its full trail: store-request lifecycle,
       // watchers (who's tagged/following), and the notes/@-mention thread.
       const [srRes, wRes, nRes] = await Promise.all([
-        supabase.from('maintenance_store_requests').select('*').in('ticket_id', ids).returns<StoreReqRow[]>(),
-        supabase.from('entity_watchers').select('entity_id, profile_name, kind').eq('entity_type', 'maintenance_ticket').in('entity_id', ids).returns<{ entity_id: string; profile_name: string; kind: string }[]>(),
-        supabase.from('entity_notes').select('*').eq('entity_type', 'maintenance_ticket').in('entity_id', ids).order('created_at', { ascending: true }).returns<EntityNoteRow[]>(),
+        // Chunked: a report over the whole register is thousands of ids — too long for one URL.
+        fetchByIds<StoreReqRow>(ids, c => supabase.from('maintenance_store_requests').select('*').in('ticket_id', c).returns<StoreReqRow[]>()),
+        fetchByIds<{ entity_id: string; profile_name: string; kind: string }>(ids, c => supabase.from('entity_watchers').select('entity_id, profile_name, kind').eq('entity_type', 'maintenance_ticket').in('entity_id', c).returns<{ entity_id: string; profile_name: string; kind: string }[]>()),
+        fetchByIds<EntityNoteRow>(ids, c => supabase.from('entity_notes').select('*').eq('entity_type', 'maintenance_ticket').in('entity_id', c).order('created_at', { ascending: true }).returns<EntityNoteRow[]>()),
       ]);
 
       const srBy = new Map<string, StoreReqRow>();
@@ -3458,8 +3459,9 @@ export function Maintenance() {
       const showAction = canMarkDaily || canMarkPeriodicComplete || isUnitHead || isAdmin;
       return (
         <tr key={s.id}>
-          <td className="font-semibold">{stripPlaceholderParen(s.title)}</td>
-          <td>
+          {/* Long text wraps so Status / Action stay on screen at 1366 (dt2 cells are nowrap). */}
+          <td className="font-semibold !whitespace-normal min-w-[180px]">{stripPlaceholderParen(s.title)}</td>
+          <td className="!whitespace-normal min-w-[140px]">
             <div>{stripPlaceholderParen(s.equipment)}</div>
             {job ? <div className="text-[11px] font-mono text-slate-400">{job}</div> : null}
           </td>
@@ -3795,9 +3797,9 @@ export function Maintenance() {
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} aria-selected={selectedTicket?.id === tk.id} style={{ cursor: 'pointer', ...(selectedTicket?.id === tk.id ? { background: '#FFF7ED', boxShadow: 'inset 3px 0 0 #EA580C' } : null) }}>
                       <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}{ticketsWithNotes.has(tk.id) ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>Notes</span> : null}</td>
-                      <td className="font-semibold">{tk.equipment}</td>
+                      <td className="font-semibold !whitespace-normal min-w-[140px]">{tk.equipment}</td>
                       <td>{displayLocationName(tk.plants?.name) || '—'}</td>
-                      <td className="text-slate-500 text-xs">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
+                      <td className="text-slate-500 text-xs !whitespace-normal min-w-[200px] max-w-[360px]">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
                       <td>{statusBadge(tk.status, t)}</td>
                       <td className="text-slate-500 text-xs">{tk.raised_by || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(tk.created_at)}</td>
@@ -3883,8 +3885,8 @@ export function Maintenance() {
                   const paused = !s.is_active;
                   return (
                     <tr key={s.id} style={paused ? { opacity: 0.6 } : undefined}>
-                      <td className="font-semibold">{s.title}</td>
-                      <td>{s.equipment}</td>
+                      <td className="font-semibold !whitespace-normal min-w-[180px]">{s.title}</td>
+                      <td className="!whitespace-normal min-w-[140px]">{s.equipment}</td>
                       <td>{displayLocationName(s.plants?.name) || '—'}</td>
                       <td>{t('maint.freq_' + s.frequency, FREQ_LABEL[s.frequency] || s.frequency)}</td>
                       <td>{s.assigned_to || <span className="text-slate-400">{t('maint.unassigned')}</span>}</td>
