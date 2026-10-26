@@ -37,7 +37,8 @@ export function TablePaginationV2({
           : t('common.showingRange', { from, to, total, noun: label })}
       </div>
 
-      <div className="flex items-center gap-1.5">
+      {/* Wraps on a phone: with "… 82" and the page-size select the row is wider than 390px. */}
+      <div className="flex items-center flex-wrap gap-1.5">
         <button
           type="button"
           onClick={prev}
