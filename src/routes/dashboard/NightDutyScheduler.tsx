@@ -481,7 +481,7 @@ export function NightDutyScheduler() {
             {t('common.export', 'Export')}
           </ButtonV2>
           {!schedulerOpen && (
-            <ButtonV2 variant="primary" icon={<Plus />} onClick={() => setSchedulerOpen(true)}>
+            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setSchedulerOpen(true)}>
               {t('nightBoard.assignNightDuty', 'Assign Night Duty')}
             </ButtonV2>
           )}

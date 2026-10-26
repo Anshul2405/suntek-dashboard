@@ -366,7 +366,7 @@ export function StoreRequisitions() {
         title={t('storereq.open_req_title')}
         subtitle={t('storereq.open_req_subtitle')}
         actions={
-          <ButtonV2 variant="primary" icon={<Plus />} onClick={() => { setForm(f => ({ ...f, plant: f.plant || (plantOptions.length === 1 ? plantOptions[0].id : '') })); setOpen(true); }}>
+          <ButtonV2 variant="accent" icon={<Plus />} onClick={() => { setForm(f => ({ ...f, plant: f.plant || (plantOptions.length === 1 ? plantOptions[0].id : '') })); setOpen(true); }}>
             {t('storereq.raise_request_btn')}
           </ButtonV2>
         }

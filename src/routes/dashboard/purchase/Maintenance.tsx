@@ -3773,7 +3773,7 @@ export function Maintenance() {
                     {t('maint.createReport')}
                   </ButtonV2>
                 )}
-                <ButtonV2 variant="primary" icon={<Plus />} onClick={() => setShowRaisePanel(true)}>
+                <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setShowRaisePanel(true)}>
                   {t('maint.raiseTicket')}
                 </ButtonV2>
               </>
