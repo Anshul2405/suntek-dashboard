@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { CircleHelp, FileSpreadsheet, FileText, Plus } from 'lucide-react';
+import { FileSpreadsheet, FileText, Plus } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
 import { formatDateTime } from '../../lib/utils/formatting';
@@ -18,8 +18,6 @@ import type { CoaResultMap } from '../../lib/batch/printDocs';
 import type { TdsFamily } from '../../lib/batch/tdsCatalog';
 import { CoaEntryPanel, type CoaSheetTarget } from '../../components/batch/CoaEntryPanel';
 import { TableSearch, useTextFilter } from '../../components/ui/TableSearch';
-import { markTourSeen, tourWasSeen } from '../../components/tour/GuidedTour';
-import { launchBatchFlowTour, BATCH_FLOW_TOUR_ID } from '../../components/tour/BatchFlowTourHost';
 
 interface ProductionSheetRow {
   id: string;
@@ -121,7 +119,6 @@ export function BatchSheet() {
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
   // False until the first load returns — the empty state must not flash meanwhile.
   const [sheetsLoaded, setSheetsLoaded] = useState(false);
-  const [tourOffer, setTourOffer] = useState(false);
   const [coaTarget, setCoaTarget] = useState<CoaSheetTarget | null>(null);
   const [detailRow, setDetailRow] = useState<ProductionSheetRow | null>(null);
   const [plantFilter, setPlantFilter] = useState('');
@@ -165,17 +162,6 @@ export function BatchSheet() {
     r.density != null ? String(r.density) : '',
     r.oil_ratio != null ? String(r.oil_ratio) : '',
   ]);
-
-  useEffect(() => {
-    if (tourWasSeen(BATCH_FLOW_TOUR_ID)) return;
-    const tmr = window.setTimeout(() => setTourOffer(true), 600);
-    return () => window.clearTimeout(tmr);
-  }, []);
-
-  function openTour() {
-    setTourOffer(false);
-    launchBatchFlowTour();
-  }
 
   const loadProductionSheets = useCallback(async () => {
     // Page through every in-scope sheet. A hard .limit(100) under a global Admin
@@ -331,39 +317,7 @@ export function BatchSheet() {
 
   return (
     <>
-      {tourOffer && (
-        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-bold text-amber-950">
-              {t('batchSheetTour.offerTitle', 'New here? Take the full batch walkthrough')}
-            </div>
-            <p className="text-xs text-amber-900/80 mt-0.5">
-              {t('batchSheetTour.offerBody', 'Follows one batch end to end: New Batch, hourly readings, close, batch sheet with density and photos, then stock and dispatch.')}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                markTourSeen(BATCH_FLOW_TOUR_ID);
-                setTourOffer(false);
-              }}
-              className="text-xs font-semibold text-amber-900/70 hover:text-amber-950 px-2 py-1.5"
-            >
-              {t('batchSheetTour.dismissOffer', 'Not now')}
-            </button>
-            <button
-              type="button"
-              onClick={openTour}
-              className="text-xs font-bold px-3 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700"
-            >
-              {t('batchSheetTour.startOffer', 'Start walkthrough')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="card2 p-6 mb-5" data-tour="prod-register">
+      <div className="card2 p-6 mb-5">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div>
             <div className="text-base font-bold font-heading">{t('batchProd.registerTitle', 'Batch sheet record')}</div>
@@ -372,14 +326,6 @@ export function BatchSheet() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={openTour}
-              className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50"
-            >
-              <CircleHelp size={14} strokeWidth={2.25} />
-              {t('batchSheetTour.howThisWorks', 'How this works')}
-            </button>
             {canCreateSheet && (
             <Link
               data-tour="create-sheet-btn"
