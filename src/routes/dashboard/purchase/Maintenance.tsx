@@ -677,7 +677,6 @@ export function Maintenance() {
   const [showRaisePanel, setShowRaisePanel] = useState(false);
   const [showSchedulePanel, setShowSchedulePanel] = useState(false);
   const [showPMImport, setShowPMImport] = useState(false);
-  const [schedPlantFilter, setSchedPlantFilter] = useState<string[]>([]); // empty = all plants
   // When set, the schedule panel is in "revise" mode editing this row; null = creating new.
   const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null);
   const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
@@ -1209,7 +1208,6 @@ export function Maintenance() {
     const withData = new Set(schedules.map(s => s.plant_id).filter(Boolean) as string[]);
     return plantOptions.map(p => ({ id: p.id, name: p.name, hasData: withData.has(p.id) }));
   }, [plantOptions, schedules]);
-  const shownSchedules = schedPlantFilter.length ? schedules.filter(s => s.plant_id && schedPlantFilter.includes(s.plant_id)) : schedules;
   const emergencyTickets = tickets.filter(t => t.type === 'emergency');
 
   // ── v2 filter bar (client-side; resets when switching tabs) ───────────────
@@ -1218,14 +1216,27 @@ export function Maintenance() {
   const [fltQ, setFltQ] = useState(() => searchParams.get('q') || '');
   const [fltPlant, setFltPlant] = useState(() => searchParams.get('plant') || 'all');
   const [fltStatus, setFltStatus] = useState(() => searchParams.get('status') || 'all');
+  // Periodic: which due window the sections show (KPI "See …" links set it).
+  const [fltDue, setFltDue] = useState(() => searchParams.get('due') || 'all');
   useEffect(() => {
     patchUrlParams(setSearchParams, {
       q: fltQ.trim(),
       plant: fltPlant === 'all' ? '' : fltPlant,
       status: fltStatus === 'all' ? '' : fltStatus,
+      due: fltDue === 'all' ? '' : fltDue,
     });
-  }, [fltQ, fltPlant, fltStatus, setSearchParams]);
-  const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); };
+    // Only when OUR filters change. setSearchParams is a new function on every URL
+    // change, so listing it re-ran this and wrote Maintenance's (empty) q/plant/status
+    // over the Incidents tab's own URL filters — they never applied.
+  }, [fltQ, fltPlant, fltStatus, fltDue]); // eslint-disable-line react-hooks/exhaustive-deps
+  const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); setFltDue('all'); };
+
+  // Schedule Setup uses the same URL filters as the other tabs (q / plant / status).
+  const shownSchedules = schedules.filter(s =>
+    (fltPlant === 'all' || s.plant_id === fltPlant)
+    && (fltStatus === 'all' || (fltStatus === 'active' ? s.is_active : !s.is_active))
+    && (!fltQ.trim() || [s.title, s.equipment, s.equipment_mark, s.assigned_to, s.plants?.name, displayLocationName(s.plants?.name)]
+      .some(x => (x || '').toLowerCase().includes(fltQ.trim().toLowerCase()))));
 
   /** Derived schedule state — same classification the periodic rows render. */
   const schedStatusOf = (s: ScheduleRow): string => {
@@ -1256,7 +1267,30 @@ export function Maintenance() {
   const overdueSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d < 0; });
   const dueWeekSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d >= 0 && d <= 7; });
   const weeklyListSchedules = fltPeriodic.filter(s => s.frequency === 'weekly' && (() => { const d = daysFromNow(s.next_due_at); return d !== null && d >= 0 && d <= 7; })());
-  const upcomingSchedules = fltPeriodic.filter(s => { const d = daysFromNow(s.next_due_at); return d !== null && d > 7 && d <= 30; });
+  // 1–30 days; weekly checks due within 7 days are already in the Weekly list.
+  // (Was 8–30: a monthly task due in 3 days showed in no section at all.)
+  const upcomingSchedules = fltPeriodic.filter(s => {
+    const d = daysFromNow(s.next_due_at);
+    return d !== null && d >= 1 && d <= 30 && !(s.frequency === 'weekly' && d <= 7);
+  });
+  /** Due-window filter for the periodic SECTIONS — KPI counts above ignore it. */
+  const inDue = (s: ScheduleRow) => {
+    if (fltDue === 'all') return true;
+    const d = daysFromNow(s.next_due_at);
+    if (d === null) return false;
+    if (fltDue === 'today') return d === 0;
+    if (fltDue === 'week') return d >= 0 && d <= 7;
+    if (fltDue === 'overdue') return d < 0;
+    if (fltDue === 'upcoming') return d >= 1 && d <= 30;
+    return true;
+  };
+  const dueFilterOptions = [
+    { value: 'all', label: t('maint.dueAll', 'All due dates') },
+    { value: 'today', label: t('maint.dueToday') },
+    { value: 'week', label: t('maint.dueThisWeek') },
+    { value: 'overdue', label: t('maint.overdue') },
+    { value: 'upcoming', label: t('maint.dueNext30', 'Next 30 days') },
+  ];
   const dueScopeLabel = (() => {
     if (fltPlant !== 'all') return displayLocationName(dbPlants.find(p => p.id === fltPlant)?.name) || t('common.allPlants');
     const names = [...new Set(fltPeriodic.map(s => displayLocationName(s.plants?.name)).filter(Boolean))];
@@ -1292,6 +1326,14 @@ export function Maintenance() {
         { value: 'due-soon', label: t('maint.schedStatusDueSoon') },
         { value: 'on-track', label: t('maint.schedStatusOnTrack') },
         { value: 'ticket', label: t('maint.schedStatusTicketOpen') },
+        // schedStatusOf also returns 'verify'; without this option those rows could not be filtered.
+        { value: 'verify', label: t('maint.awaitingVerification', 'Awaiting verification') },
+      ]
+    : tab === 'schedule'
+    ? [
+        { value: 'all', label: t('common.allStatus') },
+        { value: 'active', label: t('maint.active') },
+        { value: 'inactive', label: t('maint.paused') },
       ]
     : [
         { value: 'all', label: t('common.allStatus') },
@@ -1308,10 +1350,10 @@ export function Maintenance() {
     lastDone: (s: ScheduleRow) => (s.last_completed_at ? new Date(s.last_completed_at) : null),
     due: (s: ScheduleRow) => (s.next_due_at ? new Date(s.next_due_at) : null),
   };
-  const dueTodaySort = useSortable(dueTodaySchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const overdueSort = useSortable(overdueSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const weeklyListSort = useSortable(weeklyListSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
-  const upcomingSort = useSortable(upcomingSchedules, periodicSortKeys, { key: 'due', dir: 'asc' });
+  const dueTodaySort = useSortable(dueTodaySchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
+  const overdueSort = useSortable(overdueSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
+  const weeklyListSort = useSortable(weeklyListSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
+  const upcomingSort = useSortable(upcomingSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
   const emergencySort = useSortable(fltEmergency, {
     ticket: t => t.id,
     equipment: t => t.equipment,
@@ -1332,13 +1374,13 @@ export function Maintenance() {
   }, { key: 'due', dir: 'asc' });
 
   // Pagination for the three long maintenance tables (default 10/page).
-  const fltKey = `${fltQ}|${fltPlant}|${fltStatus}`;
+  const fltKey = `${fltQ}|${fltPlant}|${fltStatus}|${fltDue}`;
   const dueTodayPg = usePagination(dueTodaySort.sorted, { resetKey: `${fltKey}|today|${dueTodaySort.sort.key}|${dueTodaySort.sort.dir}` });
   const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}` });
   const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}` });
   const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
   const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
-  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${schedPlantFilter.join(',')}|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
+  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${fltKey}|schedule|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
@@ -3620,9 +3662,9 @@ export function Maintenance() {
           // a closed ticket) would re-apply the stale tab from the deep link.
           // Filters reset when the user switches tab (not when a deep link or
           // Back restores the tab, which must keep ?q=&plant=&status=).
-          if (k !== tab) { setFltQ(''); setFltPlant('all'); setFltStatus('all'); }
+          if (k !== tab) { setFltQ(''); setFltPlant('all'); setFltStatus('all'); setFltDue('all'); }
           setTab(k);
-          patchUrlParams(setSearchParams, { tab: k, q: '', plant: '', status: '', incident: '' });
+          patchUrlParams(setSearchParams, { tab: k, q: '', plant: '', status: '', due: '', from: '', to: '', incident: '' });
         }}
       />
 
@@ -3655,17 +3697,17 @@ export function Maintenance() {
             <StatCard className="col-span-6 lg:col-span-3" icon={<Calendar />} tone="amber"
               label={t('maint.dueToday')} value={dueToday}
               caption={dueToday === 0 ? `${t('maint.noDueToday')} · ${dueScopeLabel}` : dueItemPreview(dueTodaySchedules)}
-              onView={() => { setPeriodicFocus('today'); dueTodayRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+              onView={() => { setFltDue('today'); setPeriodicFocus('today'); dueTodayRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewDueToday', 'See today’s list')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CalendarDays />} tone="amber"
               label={t('maint.dueThisWeek')} value={dueWeek}
               caption={dueWeek === 0 ? `${t('maint.noDueWeek')} · ${dueScopeLabel}` : dueItemPreview(dueWeekSchedules)}
-              onView={() => { setPeriodicFocus('week'); weeklyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+              onView={() => { setFltDue('week'); setPeriodicFocus('week'); dueTodayRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewDueWeek', 'See this week')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={overdue > 0 ? 'red' : 'default'}
               label={t('maint.overdue')} value={overdue}
               caption={overdue > 0 ? dueItemPreview(overdueSchedules) : `${t('maint.noOverdueSchedules', 'No overdue schedules')} · ${dueScopeLabel}`}
-              onView={() => { setPeriodicFocus('overdue'); overdueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+              onView={() => { setFltDue('overdue'); setPeriodicFocus('overdue'); overdueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewOverdue', 'See overdue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.completedMtd')} value={ticketsPartial ? '…' : closedPeriodicMTD}
@@ -3679,6 +3721,7 @@ export function Maintenance() {
           >
             <FilterSelect icon={<Building2 />} value={fltPlant} onChange={setFltPlant} options={plantFilterOptions} />
             <FilterSelect icon={<Activity />} value={fltStatus} onChange={setFltStatus} options={statusFilterOptions} />
+            <FilterSelect icon={<CalendarDays />} value={fltDue} onChange={setFltDue} options={dueFilterOptions} />
           </FilterBar>
 
           <div ref={dueTodayRef}>
@@ -3766,7 +3809,7 @@ export function Maintenance() {
           <SectionCard
             flush
             title={t('maint.upcomingListTitle', 'Upcoming')}
-            subtitle={t('maint.upcomingListSub', 'Date sheet — due in 8–30 days. Missed items move to Overdue.')}
+            subtitle={t('maint.upcomingListSub', 'Date sheet — due in the next 30 days (weekly checks are in the Weekly list). Missed items move to Overdue.')}
           >
             <div className="overflow-x-auto scroll-x">
               <table className="dt2">
@@ -3857,7 +3900,7 @@ export function Maintenance() {
                 </thead>
                 <tbody>
                   {emergencySort.sorted.length === 0 && (
-                    <tr><td colSpan={isAdmin ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noEmergencyTickets')}</td></tr>
+                    <tr><td colSpan={isAdmin ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{loading ? '…' : emergencyTickets.length ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('maint.noEmergencyTickets')}</td></tr>
                   )}
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} aria-selected={selectedTicket?.id === tk.id} style={{ cursor: 'pointer', ...(selectedTicket?.id === tk.id ? { background: '#FFF7ED', boxShadow: 'inset 3px 0 0 #EA580C' } : null) }}>
@@ -3915,23 +3958,20 @@ export function Maintenance() {
               )}
             </div>
           )}
-          {schedulePlants.length > 1 && (
-            <div className="flex gap-2 mb-3 flex-wrap px-5">
-              <button onClick={() => setSchedPlantFilter([])} className={`chip${schedPlantFilter.length === 0 ? ' active' : ''}`}>{t('common.allPlants')}</button>
-              {schedulePlants.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setSchedPlantFilter(f => f.includes(p.id) ? f.filter(x => x !== p.id) : [...f, p.id])}
-                  className={`chip${schedPlantFilter.includes(p.id) ? ' active' : ''}`}
-                  style={p.hasData ? undefined : { opacity: 0.55 }}
-                  title={p.hasData ? undefined : t('maint.noScheduleImport', 'no PM workbook imported yet')}
-                >
-                  {p.name}{p.hasData ? '' : ' ·'}
-                </button>
-              ))}
-              {schedPlantFilter.length > 1 && <span style={{ fontSize: 11, color: '#94A3B8', alignSelf: 'center' }}>{t('maint.combined', 'combined')}</span>}
-            </div>
-          )}
+          <FilterBar
+            className="mb-3 mx-5 !shadow-none"
+            search={fltQ} onSearch={setFltQ} searchPlaceholder={t('maint.filterSearchPlaceholder')}
+            onReset={resetFilters}
+          >
+            {schedulePlants.length > 1 && (
+              <FilterSelect icon={<Building2 />} value={fltPlant} onChange={setFltPlant}
+                options={[{ value: 'all', label: t('common.allPlants') }, ...schedulePlants.map(p => ({
+                  value: p.id,
+                  label: `${displayLocationName(p.name)}${p.hasData ? '' : ` · ${t('maint.noScheduleImport', 'no PM workbook imported yet')}`}`,
+                }))]} />
+            )}
+            <FilterSelect icon={<Activity />} value={fltStatus} onChange={setFltStatus} options={statusFilterOptions} />
+          </FilterBar>
           <div className="overflow-x-auto scroll-x">
             <table className="dt2">
               <thead>
@@ -3943,7 +3983,7 @@ export function Maintenance() {
               </thead>
               <tbody>
                 {shownSchedules.length === 0 && (
-                  <tr><td colSpan={(isAdmin || isUnitHead) ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{t('maint.noSchedulesDefined')}</td></tr>
+                  <tr><td colSpan={(isAdmin || isUnitHead) ? 8 : 7} className="text-center text-slate-400 py-6 text-sm">{loading ? '…' : schedules.length ? t('common.noRowsMatchFilters', 'No rows match these filters') : t('maint.noSchedulesDefined')}</td></tr>
                 )}
                 {schedulePg.pageRows.map(s => {
                   const due = dueDateLabel(daysFromNow(s.next_due_at), t);
