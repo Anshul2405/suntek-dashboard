@@ -9,6 +9,7 @@ import { formatDateTime } from '../../lib/utils/formatting';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
+import { canViewPhoto, useOpsSettings } from '../../lib/opsControls';
 import { fetchAllRows } from '../../lib/fetchAll';
 import { parseTypedOilRatio } from '../../components/ProductionBatchSheetForm';
 import { isProductionSheetBatchNo, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
@@ -101,6 +102,10 @@ export function BatchSheet() {
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeProfile } = useRoleContext();
+  const ops = useOpsSettings();
+  const seeSheetPhoto = canViewPhoto(ops, activeProfile, 'sheet');
+  const seeBucketPhoto = canViewPhoto(ops, activeProfile, 'bucket');
+  const seeHeatPhoto = canViewPhoto(ops, activeProfile, 'heat');
   const { scopeQuery, allowedPlants, isGlobal, ready: scopeReady, inScope } = usePlantScope();
   const role = activeProfile.id;
   const canCreateSheet = canViewBatchFacet(activeProfile, 'sheet');
@@ -472,9 +477,9 @@ export function BatchSheet() {
                 </tr>
               )}
               {filteredSheets.map(row => {
-                const sheetUrls = row.sheet_photo_urls ?? [];
-                const bucketUrls = row.bucket_photo_urls ?? [];
-                const heatUrls = row.heat_sample_photo_urls ?? [];
+                const sheetUrls = seeSheetPhoto ? (row.sheet_photo_urls ?? []) : [];
+                const bucketUrls = seeBucketPhoto ? (row.bucket_photo_urls ?? []) : [];
+                const heatUrls = seeHeatPhoto ? (row.heat_sample_photo_urls ?? []) : [];
                 const photoCount = sheetUrls.length + bucketUrls.length + heatUrls.length;
                 const isHighlight = !!highlightBatchNo && row.batch_no === highlightBatchNo;
                 const rowDomId = `prod-sheet-${row.batch_no.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -590,21 +595,21 @@ export function BatchSheet() {
                   )}
                 </dd>
               </div>
-              {(detailRow.colour_note || (detailRow.sheet_photo_urls?.length ?? 0) > 0 || (detailRow.bucket_photo_urls?.length ?? 0) > 0 || (detailRow.heat_sample_photo_urls?.length ?? 0) > 0) && (
+              {(detailRow.colour_note || (seeSheetPhoto && (detailRow.sheet_photo_urls?.length ?? 0) > 0) || (seeBucketPhoto && (detailRow.bucket_photo_urls?.length ?? 0) > 0) || (seeHeatPhoto && (detailRow.heat_sample_photo_urls?.length ?? 0) > 0)) && (
                 <div style={{ gridColumn: '1 / -1' }}>
                   <dt style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94A3B8', marginBottom: 6 }}>{t('batchProd.detailPhotos', 'Photos')}</dt>
                   <dd style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {detailRow.sheet_photo_urls?.[0] && (
+                    {seeSheetPhoto && detailRow.sheet_photo_urls?.[0] && (
                       <a href={detailRow.sheet_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoSheet', 'Sheet')} ×{detailRow.sheet_photo_urls.length}
                       </a>
                     )}
-                    {detailRow.bucket_photo_urls?.[0] && (
+                    {seeBucketPhoto && detailRow.bucket_photo_urls?.[0] && (
                       <a href={detailRow.bucket_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoBucket', 'Bucket')} ×{detailRow.bucket_photo_urls.length}
                       </a>
                     )}
-                    {detailRow.heat_sample_photo_urls?.[0] && (
+                    {seeHeatPhoto && detailRow.heat_sample_photo_urls?.[0] && (
                       <a href={detailRow.heat_sample_photo_urls[0]} target="_blank" rel="noreferrer" className="text-xs font-bold text-[var(--accent-deep)]">
                         {t('batchProd.photoHeat', 'Heat sample')} ×{detailRow.heat_sample_photo_urls.length}
                       </a>

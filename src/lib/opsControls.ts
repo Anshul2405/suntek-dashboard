@@ -35,6 +35,8 @@ export interface OpsSettings {
   backupLastAt: string | null;
   modules: Record<ModuleKey, ModuleGrant>;
   photos: Record<PhotoKey, string[]>;
+  /** People (profile id or name) who must not see that photo kind. Admin still sees all. */
+  photosHiddenFrom: Record<PhotoKey, string[]>;
   valueCategories: ValueCategorySettings;
 }
 
@@ -56,6 +58,7 @@ export const DEFAULT_OPS: OpsSettings = {
     store_req: EMPTY_GRANT(),
   },
   photos: { heat: [], sheet: [], bucket: [] },
+  photosHiddenFrom: { heat: [], sheet: ['Ravi Shankar'], bucket: [] },
   valueCategories: DEFAULT_VALUE_CATEGORIES,
 };
 
@@ -108,7 +111,23 @@ export function canDeleteModule(settings: OpsSettings, profile: MockProfile, mod
   return !!mine && granted.includes(mine);
 }
 
+function normToken(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** True if this person is on the hide list for that picture kind (name or profile id). */
+export function photoHiddenFrom(settings: OpsSettings, profile: MockProfile, kind: PhotoKey): boolean {
+  const tokens = (settings.photosHiddenFrom?.[kind] || []).map(normToken).filter(Boolean);
+  if (!tokens.length) return false;
+  if (tokens.includes(normToken(profile.id))) return true;
+  const name = normToken(profile.name || '');
+  if (!name) return false;
+  return tokens.some((t) => name === t || name.startsWith(`${t} `) || name.startsWith(`${t}(`));
+}
+
 export function canViewPhoto(settings: OpsSettings, profile: MockProfile, kind: PhotoKey): boolean {
+  if (isAdminProfile(profile)) return true;
+  if (photoHiddenFrom(settings, profile, kind)) return false;
   if (!settings.photosEnforced) return true;
   return roleAllowed(settings.photos[kind], profile);
 }
@@ -152,6 +171,13 @@ function mergeSettings(raw: Partial<OpsSettings> & { mobilePreview?: unknown }):
     ...rest,
     modules,
     photos: { ...DEFAULT_OPS.photos, ...(raw.photos || {}) },
+    photosHiddenFrom: {
+      heat: raw.photosHiddenFrom?.heat || [],
+      sheet: raw.photosHiddenFrom?.sheet !== undefined
+        ? raw.photosHiddenFrom.sheet
+        : DEFAULT_OPS.photosHiddenFrom.sheet,
+      bucket: raw.photosHiddenFrom?.bucket || [],
+    },
     valueCategories: {
       enabledPlantIds: raw.valueCategories?.enabledPlantIds || [],
       bands: raw.valueCategories?.bands?.length ? raw.valueCategories.bands : DEFAULT_VALUE_CATEGORIES.bands,
