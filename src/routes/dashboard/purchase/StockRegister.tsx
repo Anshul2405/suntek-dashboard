@@ -20,7 +20,7 @@ import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
 import { registerIdOf } from '../../../lib/store/registers';
-import { assignSequentialJobNos, jobNoStock, persistMissingJobNos, ticketShort } from '../../../lib/jobNo';
+import { assignSequentialJobNos, jobNoStock, ticketShort } from '../../../lib/jobNo';
 import { useTicketNos } from '../../../lib/ticketNo';
 import { fetchAllRows } from '../../../lib/fetchAll';
 import { createImportBatch, setImportBatchRowCount, buildItemOwnerMap, resolveItemOwner } from '../../../lib/imports/batches';
@@ -239,9 +239,7 @@ export function StockRegister() {
       if (siRes.error) throw siRes.error;
       const loaded = siRes.data || [];
       setItems(loaded);
-      persistMissingJobNos('store_items', loaded, 'STK').then(map => {
-        setItems(prev => prev.map(it => ({ ...it, job_no: map.get(it.id) ?? it.job_no })));
-      }).catch(() => { /* column may not exist until 0019 is applied */ });
+      // In-memory STK codes only. Opening the register must not UPDATE job_no.
       // PAGED: ~1,791 snapshot rows already, and PostgREST caps a response at
       // 1000 silently. A truncated read here does not error — it just makes the
       // reconciler compare months it only partially loaded, which is the worst

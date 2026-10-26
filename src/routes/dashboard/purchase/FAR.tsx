@@ -25,7 +25,7 @@ import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { withEmbedFallback } from '../../../lib/scopedList';
 import { groupAssetsByType, expandFarUnits, normMark, matchAsset } from '../../../lib/far/assets';
-import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo, persistMissingJobNos } from '../../../lib/jobNo';
+import { assignSequentialJobNos, allocateNextJobNos, jobNoFar, nextJobNo } from '../../../lib/jobNo';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { statusText } from './maintenance/statusText';
 import { normalizeAssetDate } from '../../../lib/far/dates';
@@ -363,9 +363,9 @@ export function FAR() {
       const loaded = data || [];
       setAssets(loaded);
       setLoadError(false);
-      persistMissingJobNos('fixed_assets', loaded, 'FAR').then(map => {
-        setAssets(prev => prev.map(a => ({ ...a, job_no: map.get(a.id) ?? a.job_no })));
-      }).catch(() => { /* column may not exist until 0019 is applied */ });
+      // Display codes come from assignSequentialJobNos / jobNoFar. Do not write
+      // job_no just because the register opened — that used to RPC next_job_no
+      // for every asset missing a code.
 
       // Maintenance/repair cost register — emergency tickets + their part costs.
       const { data: tickets } = await supabase.from('maintenance_tickets')
