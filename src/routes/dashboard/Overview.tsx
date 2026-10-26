@@ -432,6 +432,14 @@ export function Overview() {
             }
           />
         </div>
+        {/* Empty queue: a plain message, not a row inside the wide table — on a
+            phone the table scrolls sideways and clipped the sentence. */}
+        {pendingStoreReq != null && shownPending.length === 0 ? (
+          <div className="ops-empty">
+            <strong>{t('overview.noPendingApprovals', 'Nothing awaiting approval')}</strong>
+            <span>{t('overview.noPendingApprovalsHint', 'When a store indent is raised from maintenance, it will queue here for review.')}</span>
+          </div>
+        ) : (
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
             <thead>
@@ -448,16 +456,6 @@ export function Overview() {
             <tbody>
               {pendingStoreReq == null && (
                 <tr><td colSpan={7} className="text-center text-slate-400 py-6">…</td></tr>
-              )}
-              {pendingStoreReq != null && shownPending.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="!p-0">
-                    <div className="ops-empty">
-                      <strong>{t('overview.noPendingApprovals', 'Nothing awaiting approval')}</strong>
-                      <span>{t('overview.noPendingApprovalsHint', 'When a store indent is raised from maintenance, it will queue here for review.')}</span>
-                    </div>
-                  </td>
-                </tr>
               )}
               {shownPending.map(r => (
                 <tr key={r.id} onClick={() => navigate(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`)} style={{ cursor: 'pointer' }}>
@@ -488,6 +486,7 @@ export function Overview() {
             </tbody>
           </table>
         </div>
+        )}
         {shownPending.length > 0 && (
           <div className="px-5 py-3 text-[12px] text-slate-400 border-t border-slate-100">
             {t('overview.showingOfTotal', { n: shownPending.length, total: pendingStoreReq ?? shownPending.length, defaultValue: 'Showing {{n}} of {{total}}' })}
@@ -729,6 +728,7 @@ export function Overview() {
           locations={locations}
           matrix={matrix}
           tanks={scopedTanks}
+          loaded={alertsLoaded}
           onOpenStock={() => navigate('/dashboard/stock')}
         />
       )}
