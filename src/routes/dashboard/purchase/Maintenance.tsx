@@ -280,6 +280,27 @@ const NOTE_COLUMNS: CsvColumn[] = [
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
 type TicketRow = Tables['maintenance_tickets']['Row'] & PlantRel;
+/** Ticket list select: every live column except the two heavy ones the list
+ *  never shows — checklist (~30% of the payload; fetched per ticket when the
+ *  completion / verify modal opens) and pm_ocr_raw (never read). Not *. */
+const TICKET_LIST_SELECT = [
+  'id', 'ticket_no', 'type', 'status', 'title', 'equipment', 'plant_id', 'unit', 'unit_id', 'schedule_id', 'description',
+  'raised_by', 'raised_role', 'assigned_to', 'due_date', 'closed_at', 'closed_by', 'created_at', 'material_kind',
+  'completion_photo_url', 'completion_photo_urls', 'defective_part_photo_url', 'defective_part_photo_urls',
+  'defective_raise_photo_url', 'defective_raise_photo_urls', 'defective_part_decision', 'defective_decided_by',
+  'repair_qty', 'repair_returned_qty', 'far_asset_id', 'requires_approval', 'assessed_by', 'verified_by',
+  'submitted_at', 'submitted_by',
+  'pm_items_count', 'pm_bill_total', 'pm_bill_url', 'pm_billed_by', 'pm_billed_at',
+  'pm_ocr_total', 'pm_ocr_items', 'pm_ocr_status', 'pm_mismatch',
+  'revision_reason', 'revision_requested_by', 'revision_requested_at', 'revision_count', 'revision_prev_status',
+].join(', ') + ', plants(name)';
+
+/** A list row carries no checklist (see TICKET_LIST_SELECT): read it for one ticket. */
+async function fetchTicketChecklist(id: string): Promise<TicketRow['checklist']> {
+  const { data } = await supabase.from('maintenance_tickets').select('checklist').eq('id', id)
+    .maybeSingle().returns<{ checklist: TicketRow['checklist'] }>();
+  return data?.checklist ?? null;
+}
 type ScheduleRow = Tables['maintenance_schedules']['Row'] & PlantRel;
 type StoreReqRow = Tables['maintenance_store_requests']['Row'];
 type NotificationInsert = Tables['notifications']['Insert'];
@@ -638,6 +659,8 @@ export function Maintenance() {
   const overdueRef = useRef<HTMLDivElement>(null);
   const upcomingRef = useRef<HTMLDivElement>(null);
   const [selectedTicket, setSelectedTicket] = useState<TicketRow | null>(null);
+  // True from first paint until every ticket page is in — ticket-count KPIs show … meanwhile.
+  const [ticketsPartial, setTicketsPartial] = useState(true);
   const [ticketStepNotifs, setTicketStepNotifs] = useState<{ title: string; actor_name: string | null; created_at: string }[]>([]);
   // Evidence photos opened from the ticket panel's thumbnail strip.
   const [ticketLightbox, setTicketLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
@@ -755,25 +778,39 @@ export function Maintenance() {
   const loadData = useCallback(async () => {
     let ticketsData: TicketRow[] | null = null;
     let schedulesData: ScheduleRow[] | null = null;
+    // First paint needs the schedules (Periodic tab) and the FIRST ticket page;
+    // the rest of the tickets, the Notes badges and the due-periodic generation
+    // all follow without holding the screen on skeletons.
+    let firstTicketsIn = false;
+    let schedulesIn = false;
+    const paintIfReady = () => { if (firstTicketsIn && schedulesIn) setLoading(false); };
     try {
+      const schedulesP = withEmbedFallback(
+        // PAGED: ~800 schedules today; an unpaged select stops at 1000 silently.
+        fetchAllRows<ScheduleRow>((from, to) =>
+          scopeQuery(supabase.from('maintenance_schedules').select('*, plants(name)')).order('next_due_at', { ascending: true }).order('id').range(from, to).returns<ScheduleRow[]>()),
+        () => fetchAllRows<ScheduleRow>((from, to) =>
+          scopeQuery(supabase.from('maintenance_schedules').select('*')).order('next_due_at', { ascending: true }).order('id').range(from, to).returns<ScheduleRow[]>()),
+        'Maintenance.schedules',
+      ).then(res => {
+        if (!res.error) { setSchedules(res.data || []); schedulesIn = true; paintIfReady(); }
+        return res;
+      });
       const [tRes, sRes, pRes] = await Promise.all([
         withEmbedFallback(
           // PAGED: this factory already holds ~1,300 tickets and PostgREST caps a
           // response at 1000 SILENTLY — which is why the OVERDUE card could never
           // read above 1000 and the oldest tickets were invisible entirely.
           fetchAllRows<TicketRow>((from, to) =>
-            scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' })
-              .order('created_at', { ascending: false }).range(from, to).returns<TicketRow[]>()),
+            scopeQuery(supabase.from('maintenance_tickets').select(TICKET_LIST_SELECT), { unitCol: 'unit_id' })
+              .order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>(),
+            { onPartial: rows => { setTickets(rows); setTicketsPartial(true); firstTicketsIn = true; paintIfReady(); } }),
           () => fetchAllRows<TicketRow>((from, to) =>
             scopeQuery(supabase.from('maintenance_tickets').select('*'), { unitCol: 'unit_id' })
-              .order('created_at', { ascending: false }).range(from, to).returns<TicketRow[]>()),
+              .order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>()),
           'Maintenance.tickets',
         ),
-        withEmbedFallback(
-          scopeQuery(supabase.from('maintenance_schedules').select('*, plants(name)')).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
-          () => scopeQuery(supabase.from('maintenance_schedules').select('*')).order('next_due_at', { ascending: true }).returns<ScheduleRow[]>(),
-          'Maintenance.schedules',
-        ),
+        schedulesP,
         fetchActivePlants<{ id: string; name: string }>('id, name'),
       ]);
       if (tRes.error) throw tRes.error;
@@ -781,16 +818,8 @@ export function Maintenance() {
       ticketsData = tRes.data;
       schedulesData = sRes.data;
       setTickets(ticketsData || []);
+      setTicketsPartial(false);
       setSchedules(schedulesData || []);
-      const noteIds = (ticketsData || []).map(x => x.id);
-      if (noteIds.length) {
-        // Chunked: 800 ids in one URL (~30 kB) was rejected with HTTP 400, so no ticket ever showed its Notes badge.
-        const { data: noteRows } = await fetchByIds<{ entity_id: string }>(noteIds, c =>
-          supabase.from('entity_notes').select('entity_id').eq('entity_type', 'maintenance_ticket').in('entity_id', c).returns<{ entity_id: string }[]>());
-        setTicketsWithNotes(new Set((noteRows || []).map(n => n.entity_id)));
-      } else {
-        setTicketsWithNotes(new Set());
-      }
       if (pRes.data?.length) setDbPlants(pRes.data);
       setLoadError(false);
     } catch (err) {
@@ -798,6 +827,16 @@ export function Maintenance() {
       setLoadError(true);
     } finally {
       setLoading(false);
+    }
+
+    // Notes badges after first paint — chunked (800 ids in one URL was HTTP 400).
+    const noteIds = (ticketsData || []).map(x => x.id);
+    if (noteIds.length) {
+      void fetchByIds<{ entity_id: string }>(noteIds, c =>
+        supabase.from('entity_notes').select('entity_id').eq('entity_type', 'maintenance_ticket').in('entity_id', c).returns<{ entity_id: string }[]>())
+        .then(({ data: noteRows }) => setTicketsWithNotes(new Set((noteRows || []).map(n => n.entity_id))));
+    } else {
+      setTicketsWithNotes(new Set());
     }
 
     // Materialise due periodic tickets — batched, so importing hundreds of schedules
@@ -858,9 +897,12 @@ export function Maintenance() {
             actor_name: 'System', actor_role: 'system', read_by: [],
             plant_id: null, unit_id: null,
           });
-          // Reflect the new tickets without a full reload loop.
-          const { data: refreshed } = await scopeQuery(supabase.from('maintenance_tickets').select('*, plants(name)'), { unitCol: 'unit_id' }).order('created_at', { ascending: false }).returns<TicketRow[]>();
-          if (refreshed) setTickets(refreshed);
+          // Reflect the new tickets without a full reload loop — PAGED, like the
+          // first load (an unpaged select here capped the list back at 1000).
+          const { data: refreshed, error: refreshErr } = await fetchAllRows<TicketRow>((from, to) =>
+            scopeQuery(supabase.from('maintenance_tickets').select(TICKET_LIST_SELECT), { unitCol: 'unit_id' })
+              .order('created_at', { ascending: false }).order('id').range(from, to).returns<TicketRow[]>());
+          if (!refreshErr) setTickets(refreshed);
         }
       } catch (e) { console.error('[Maintenance] periodic generation failed', e); }
       finally { locked.forEach(id => materialising.delete(id)); }
@@ -1078,20 +1120,39 @@ export function Maintenance() {
   useEffect(() => {
     if (!completingSchedule) { setCompletionNotes(''); return; }
     const lt = tickets.find(t => t.schedule_id === completingSchedule.id && t.status !== 'closed');
-    const raw = (lt?.checklist as { component: string; activity: string; done?: boolean }[] | null) || completingSchedule.checklist || [];
-    const replacement = pickReplacementChecklist(
-      { equipment: completingSchedule.equipment, plant_id: completingSchedule.plant_id, checklist: raw },
-      schedules.map(s => ({
-        equipment: s.equipment,
-        plant_id: s.plant_id,
-        frequency: s.frequency,
-        checklist: s.checklist,
-      })),
-    );
-    const base = replacement || raw;
-    setCompletionChecklist(base.map(c => ({ component: c.component, activity: c.activity, done: !!(c as { done?: boolean }).done })));
-    setCompletionNotes(lt?.description || '');
+    let alive = true;
+    const seed = (ltChecklist: TicketRow['checklist'] | undefined) => {
+      if (!alive) return;
+      const raw = (ltChecklist as { component: string; activity: string; done?: boolean }[] | null | undefined) || completingSchedule.checklist || [];
+      const replacement = pickReplacementChecklist(
+        { equipment: completingSchedule.equipment, plant_id: completingSchedule.plant_id, checklist: raw },
+        schedules.map(s => ({
+          equipment: s.equipment,
+          plant_id: s.plant_id,
+          frequency: s.frequency,
+          checklist: s.checklist,
+        })),
+      );
+      const base = replacement || raw;
+      setCompletionChecklist(base.map(c => ({ component: c.component, activity: c.activity, done: !!(c as { done?: boolean }).done })));
+      setCompletionNotes(lt?.description || '');
+    };
+    // List rows don't carry the checklist — read the open ticket's (keeps prior ticks).
+    if (lt && lt.checklist === undefined) void fetchTicketChecklist(lt.id).then(seed);
+    else seed(lt?.checklist);
+    return () => { alive = false; };
   }, [completingSchedule]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Verify modal shows the ticket's ticked checklist — list rows don't carry it.
+  useEffect(() => {
+    const v = verifyingTicket;
+    if (!v || v.checklist !== undefined) return;
+    let alive = true;
+    void fetchTicketChecklist(v.id).then(checklist => {
+      if (alive) setVerifyingTicket(cur => (cur && cur.id === v.id ? { ...cur, checklist } : cur));
+    });
+    return () => { alive = false; };
+  }, [verifyingTicket]);
 
   // Restrict the factory picker to the user's allowed factories (all if global)
   // so a scoped user can't raise a ticket for another factory.
@@ -3608,7 +3669,7 @@ export function Maintenance() {
               onView={() => { setPeriodicFocus('overdue'); overdueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
               viewLabel={t('maint.viewOverdue', 'See overdue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
-              label={t('maint.completedMtd')} value={closedPeriodicMTD}
+              label={t('maint.completedMtd')} value={ticketsPartial ? '…' : closedPeriodicMTD}
               caption={t('maint.completedThisMonth')} />
           </div>
 
@@ -3736,20 +3797,20 @@ export function Maintenance() {
         <>
           <div className="grid grid-cols-12 gap-4 mb-4">
             <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
-              label={t('maint.openTickets')} value={loading ? '…' : openEmergency}
+              label={t('maint.openTickets')} value={ticketsPartial ? '…' : openEmergency}
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
               onView={() => setFltStatus('grp:open')}
               viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
-              label={t('maint.pendingStoreApproval')} value={loading ? '…' : pendingStore}
+              label={t('maint.pendingStoreApproval')} value={ticketsPartial ? '…' : pendingStore}
               onView={() => setFltStatus('grp:store')}
               viewLabel={t('maint.viewPendingStore', 'See store queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
-              label={t('maint.purchaseHandover')} value={loading ? '…' : pendingPurchase}
+              label={t('maint.purchaseHandover')} value={ticketsPartial ? '…' : pendingPurchase}
               onView={() => setFltStatus('grp:purchase')}
               viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
-              label={t('maint.closedMtd')} value={loading ? '…' : closedMTD}
+              label={t('maint.closedMtd')} value={ticketsPartial ? '…' : closedMTD}
               caption={t('maint.completedThisMonth')}
               onView={() => setFltStatus('grp:closed_mtd')}
               viewLabel={t('maint.viewClosed', 'See closed')} />
