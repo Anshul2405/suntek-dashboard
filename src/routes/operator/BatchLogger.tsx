@@ -13,6 +13,8 @@ import { useOcrJobs } from '../../contexts/OcrJobsContext';
 import { BatchSheetReview } from '../../components/BatchSheetReview';
 import { ProductionBatchSheetForm } from '../../components/ProductionBatchSheetForm';
 import type { ExtractedBatchSheet } from '../../lib/nvidiaOcr';
+import { usePagination } from '../../components/ui/usePagination';
+import { TablePaginationV2 } from '../../components/v2';
 // Sales/Purchase OCR upload moved to the Sales & Purchase pages (admin/unit-head/
 // accountant only). The Technical Team's batch logger no longer carries them.
 
@@ -428,6 +430,8 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   }
 
   const visibleReadings = readings;
+  // Hourly readings pile up over a long run — page them; a new batch starts on page 1.
+  const { pageRows: readingsPage, controls: readingsPager } = usePagination(visibleReadings, { resetKey: batchId });
 
   // Started / elapsed come from the selected batch — never a placeholder.
   const startedAt = selectedBatch?.started_at ? new Date(selectedBatch.started_at) : null;
@@ -796,7 +800,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
                 </tr>
               </thead>
               <tbody className="text-sm font-medium">
-                {visibleReadings.map((r, i) => (
+                {readingsPage.map((r, i) => (
                   <tr
                     key={r.id}
                     className="border-b transition-colors"
@@ -821,6 +825,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
               </tbody>
             </table>
           </div>
+          {visibleReadings.length > 0 && <TablePaginationV2 controls={readingsPager} label={t('batchEntry.nounReadings', 'readings')} />}
 
           <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center shrink-0">
             <div className="text-xs text-slate-500 font-medium">

@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, AlertCircle, Eye, CheckCircle2, Building2, Layers } from 'lucide-react';
-import { StatCard, SectionCard, FilterBar, FilterSelect, SegmentTabs, ButtonV2, StatusPill, type PillTone } from '../../components/v2';
+import { StatCard, SectionCard, FilterBar, FilterSelect, SegmentTabs, ButtonV2, StatusPill, TablePaginationV2, type PillTone } from '../../components/v2';
+import { usePagination } from '../../components/ui/usePagination';
 import { useTable } from '../../hooks/useTable';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
@@ -89,6 +90,8 @@ export function AnomalyOperationsCenter() {
         return (b.created_at || '').localeCompare(a.created_at || '');
       });
   }, [rows, statusFilter, plantFilter, sourceFilter]);
+  // Paged cards; page 1 again when a filter changes.
+  const { pageRows: visiblePage, controls: findingPager } = usePagination(visible, { resetKey: `${statusFilter}|${plantFilter}|${sourceFilter}` });
 
   async function setStatus(id: string, status: Status, resolution_reason?: string) {
     try {
@@ -182,71 +185,76 @@ export function AnomalyOperationsCenter() {
         ) : isError ? (
           <ErrorState title={t('anomalyCenter.error_load')} onRetry={() => refetch()} />
         ) : visible.length === 0 ? (
-          <EmptyState title={t('anomalyCenter.empty_title')} message={t('anomalyCenter.empty_message')} />
+          rows.length > 0
+            ? <EmptyState title={t('common.noRowsMatchFilters', 'No rows match these filters')} />
+            : <EmptyState title={t('anomalyCenter.empty_title')} message={t('anomalyCenter.empty_message')} />
         ) : (
-          <div className="space-y-3">
-            {visible.map(f => {
-              const cfg = SEV_CFG[f.severity];
-              const val = fmtValue(f.value_at_stake, f.value_unit);
-              const isOpen = f.status === 'open' || f.status === 'acknowledged';
-              return (
-                <div key={f.id} className="rounded-xl border border-slate-200 p-4" style={{ borderLeft: `3px solid ${cfg.color}` }}>
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                        <StatusPill tone={cfg.pill} label={t(`anomalyCenter.sev_${f.severity}`)} />
-                        <span className="text-xs text-slate-500">{t(`anomalyCenter.source_${f.source_app}`, { defaultValue: SOURCE_LABEL[f.source_app] || f.source_app })}</span>
-                        {f.plant && <span className="text-xs text-slate-400">· {f.plant}</span>}
-                        {f.entity_label && <span className="text-xs text-slate-400">· {f.entity_label}</span>}
-                        {f.status === 'acknowledged' && <StatusPill tone="purple" label={t('anomalyCenter.status_acknowledged')} />}
-                        {f.status === 'resolved' && <StatusPill tone="green" label={t('anomalyCenter.status_resolved')} />}
-                        {f.status === 'dismissed' && <StatusPill tone="slate" label={t('anomalyCenter.status_dismissed')} />}
-                      </div>
-                      <div className="text-sm font-semibold font-heading text-slate-800">{f.title}</div>
-                      {f.evidence && <div className="text-xs text-slate-500 mt-1">{f.evidence}</div>}
-                      {f.recommended_action && (
-                        <div className="text-xs mt-2 px-3 py-2 rounded-[10px] bg-slate-50 border border-slate-100">
-                          <span className="font-semibold text-slate-600">{t('anomalyCenter.recommended_label')} </span>
-                          <span className="text-slate-600">{f.recommended_action}</span>
+          <>
+            <div className="space-y-3">
+              {visiblePage.map(f => {
+                const cfg = SEV_CFG[f.severity];
+                const val = fmtValue(f.value_at_stake, f.value_unit);
+                const isOpen = f.status === 'open' || f.status === 'acknowledged';
+                return (
+                  <div key={f.id} className="rounded-xl border border-slate-200 p-4" style={{ borderLeft: `3px solid ${cfg.color}` }}>
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                          <StatusPill tone={cfg.pill} label={t(`anomalyCenter.sev_${f.severity}`)} />
+                          <span className="text-xs text-slate-500">{t(`anomalyCenter.source_${f.source_app}`, { defaultValue: SOURCE_LABEL[f.source_app] || f.source_app })}</span>
+                          {f.plant && <span className="text-xs text-slate-400">· {f.plant}</span>}
+                          {f.entity_label && <span className="text-xs text-slate-400">· {f.entity_label}</span>}
+                          {f.status === 'acknowledged' && <StatusPill tone="purple" label={t('anomalyCenter.status_acknowledged')} />}
+                          {f.status === 'resolved' && <StatusPill tone="green" label={t('anomalyCenter.status_resolved')} />}
+                          {f.status === 'dismissed' && <StatusPill tone="slate" label={t('anomalyCenter.status_dismissed')} />}
                         </div>
-                      )}
-                      {f.resolution_reason && (
-                        <div className="text-[11px] text-slate-400 mt-2">{t('anomalyCenter.reason_label')} <MentionText text={f.resolution_reason} /></div>
-                      )}
-                    </div>
-                    <div className="text-right shrink-0">
-                      {val && <div className="text-sm font-bold font-heading num text-slate-700">{val}</div>}
-                      {f.confidence != null && <div className="text-[11px] text-slate-400">{t('anomalyCenter.confidence', { pct: Math.round(f.confidence * 100) })}</div>}
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-2 mt-3 flex-wrap">
-                    {f.route && (
-                      <ButtonV2 size="sm" variant="outline" onClick={() => navigate(f.route!)}>{t('anomalyCenter.open_source')}</ButtonV2>
-                    )}
-                    <NotesButton entityType="anomaly" entityId={f.id} entityLabel={f.title} route="/anomaly-center" />
-                    {isOpen && (
-                      <>
-                        {f.status !== 'acknowledged' && (
-                          <ButtonV2 size="sm" variant="outline" onClick={() => setStatus(f.id, 'acknowledged')}>{t('anomalyCenter.acknowledge')}</ButtonV2>
+                        <div className="text-sm font-semibold font-heading text-slate-800">{f.title}</div>
+                        {f.evidence && <div className="text-xs text-slate-500 mt-1">{f.evidence}</div>}
+                        {f.recommended_action && (
+                          <div className="text-xs mt-2 px-3 py-2 rounded-[10px] bg-slate-50 border border-slate-100">
+                            <span className="font-semibold text-slate-600">{t('anomalyCenter.recommended_label')} </span>
+                            <span className="text-slate-600">{f.recommended_action}</span>
+                          </div>
                         )}
-                        <ButtonV2 size="sm" variant="outline" icon={<CheckCircle2 />}
-                          className="text-green-700 hover:bg-green-50 hover:border-green-200"
-                          onClick={() => { setReasonFor({ id: f.id, action: 'resolved' }); setReasonText(''); }}>
-                          {t('anomalyCenter.resolve')}
-                        </ButtonV2>
-                        <ButtonV2 size="sm" variant="ghost"
-                          onClick={() => { setReasonFor({ id: f.id, action: 'dismissed' }); setReasonText(''); }}>
-                          {t('anomalyCenter.dismiss')}
-                        </ButtonV2>
-                      </>
-                    )}
+                        {f.resolution_reason && (
+                          <div className="text-[11px] text-slate-400 mt-2">{t('anomalyCenter.reason_label')} <MentionText text={f.resolution_reason} /></div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        {val && <div className="text-sm font-bold font-heading num text-slate-700">{val}</div>}
+                        {f.confidence != null && <div className="text-[11px] text-slate-400">{t('anomalyCenter.confidence', { pct: Math.round(f.confidence * 100) })}</div>}
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      {f.route && (
+                        <ButtonV2 size="sm" variant="outline" onClick={() => navigate(f.route!)}>{t('anomalyCenter.open_source')}</ButtonV2>
+                      )}
+                      <NotesButton entityType="anomaly" entityId={f.id} entityLabel={f.title} route="/anomaly-center" />
+                      {isOpen && (
+                        <>
+                          {f.status !== 'acknowledged' && (
+                            <ButtonV2 size="sm" variant="outline" onClick={() => setStatus(f.id, 'acknowledged')}>{t('anomalyCenter.acknowledge')}</ButtonV2>
+                          )}
+                          <ButtonV2 size="sm" variant="outline" icon={<CheckCircle2 />}
+                            className="text-green-700 hover:bg-green-50 hover:border-green-200"
+                            onClick={() => { setReasonFor({ id: f.id, action: 'resolved' }); setReasonText(''); }}>
+                            {t('anomalyCenter.resolve')}
+                          </ButtonV2>
+                          <ButtonV2 size="sm" variant="ghost"
+                            onClick={() => { setReasonFor({ id: f.id, action: 'dismissed' }); setReasonText(''); }}>
+                            {t('anomalyCenter.dismiss')}
+                          </ButtonV2>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+            <TablePaginationV2 controls={findingPager} label={t('anomalyCenter.nounFindings', 'findings')} />
+          </>
         )}
       </SectionCard>
 

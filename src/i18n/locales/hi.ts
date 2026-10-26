@@ -1457,6 +1457,7 @@ const hi: Translations = {
     "dataDependencyTitle": "डेटा डिपेंडेंसी",
   },
   "anomalyCenter": {
+    "nounFindings": "फाइंडिंग्स",
     feed_subtitle: "फ्लैग्स रेज़्ड बाय द एनोमली एप्लिकेशन्स, रैंक्ड बाय सेविरिटी",
     feed_title: "एनोमली फीड",
     "sev_critical": "क्रिटिकल",
@@ -1505,6 +1506,7 @@ const hi: Translations = {
     "notif_title": "{{name}} {{action}} अ फ्लैग",
   },
   "audit": {
+    "nounEntries": "एंट्रीज़",
     "syncLogs": "सिंक लॉग्स",
     "totalActivities": "टोटल एक्टिविटीज़",
     "totalActivitiesSub": "ऑल बैचेज़ एंड सेशन्स",
@@ -1532,6 +1534,7 @@ const hi: Translations = {
     "verifiedChecksum": "वेरिफाइड चेकसम",
   },
   "batchEntry": {
+    "nounReadings": "रीडिंग्स",
     "noActiveBatch": "नो एक्टिव बैच सिलेक्टेड",
     "saveReadingFailed": "फेल्ड टु सेव रीडिंग: {{error}}",
     "batchCreationFailed": "बैच क्रिएशन फेल्ड: {{error}}। प्लीज़ चेक योर कनेक्शन एंड ट्राय अगेन।",
