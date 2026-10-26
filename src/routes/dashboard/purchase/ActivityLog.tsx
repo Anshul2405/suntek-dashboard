@@ -739,7 +739,9 @@ export function ActivityLog() {
         ) : loading ? (
           <SkeletonRows rows={6} />
         ) : filtered.length === 0 ? (
-          <EmptyState title={t('activity.emptyState')} message={search || plantFilter || srcFilter || stateFilter || unitFilter || fromDate || toDate || kpi !== 'all' ? t('activity.noMatches', 'No rows match your filters.') : undefined} />
+          <EmptyState title={search || plantFilter || srcFilter || stateFilter || unitFilter || fromDate || toDate || kpi !== 'all'
+            ? t('common.noRowsMatchFilters', 'No rows match these filters')
+            : t('activity.emptyState')} />
         ) : (
         <div className="overflow-x-auto scroll-x">
           <table className="dt2">
