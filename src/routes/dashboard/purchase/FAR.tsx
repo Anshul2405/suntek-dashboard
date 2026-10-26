@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { formatDateTime } from '../../../lib/utils/formatting';
 import { displayLocationName } from '../../../lib/plantLabels';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
@@ -31,7 +31,7 @@ import { statusText } from './maintenance/statusText';
 import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import type { Database } from '../../../lib/database.types';
-import { fetchAllRows } from '../../../lib/fetchAll';
+import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
 
 // ── FAR bulk-import (CSV / Excel → verify → register) ─────────────────────────
 interface FarImportRow {
@@ -94,6 +94,8 @@ const IMPORT_CSV_COLUMNS: CsvColumn[] = [
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 type MaintTicketRow = Database['public']['Tables']['maintenance_tickets']['Row'] & { plants?: { name: string | null } | null };
 type MaintStoreReqRow = Database['public']['Tables']['maintenance_store_requests']['Row'];
+type MaintTicketLite = { ticket_no?: string | null } & Pick<MaintTicketRow, 'id' | 'equipment' | 'status' | 'created_at' | 'closed_at' | 'pm_bill_total' | 'pm_bill_url' | 'far_asset_id' | 'plants'>;
+type MaintStoreReqLite = Pick<MaintStoreReqRow, 'ticket_id' | 'part_name' | 'quantity' | 'store_decision' | 'purchase_required' | 'total_price' | 'busy_transaction_ref'>;
 
 /** A single repair/maintenance done — the unit of the annual FAR cost register. */
 interface MaintEntry {
@@ -277,6 +279,9 @@ export function FAR() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  /** Return path for anything opened from FAR: Maintenance navigates here when its panel closes. */
+  const backHere = () => `back=${encodeURIComponent(location.pathname + location.search)}`;
   const statusLabel = (status: string) => statusText(status, t);
   const { activeProfile } = useRoleContext();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
@@ -322,6 +327,7 @@ export function FAR() {
   const [loadError, setLoadError] = useState(false);
   // Maintenance/repair cost register (annual, for insurance)
   const [maintEntries, setMaintEntries] = useState<MaintEntry[]>([]);
+  const [maintLoading, setMaintLoading] = useState(true);
   const [selectedFY, setSelectedFY] = useState<string | null>(null);
   const farMaintRef = useRef<HTMLDivElement>(null);
   const farRegisterRef = useRef<HTMLDivElement>(null);
@@ -345,40 +351,58 @@ export function FAR() {
     account: 'Plant & Machinery', plant: '',
   });
 
+  // Register columns the screen reads — not *; the QR audit / import-batch
+  // fields stay off the wire. The fallback (no plants embed) keeps * as before.
+  const ASSET_COLS = 'id, plant_id, name, identification_mark, job_no, make, serial_no, quantity, model, capacity, origin, year, value, invoice_no, purchase_date, account_head, photo_url, qr_token, created_at';
+
   async function load() {
     try {
-      const { data: plantsData } = await fetchActivePlants<{ id: string; name: string }>('id, name');
+      // The register paints as soon as its first page is in (all 1158+ rows still
+      // arrive); repair costs load afterwards in loadMaintCosts() and never hold
+      // the register back.
+      const [{ data: plantsData }, { data, error }] = await Promise.all([
+        fetchActivePlants<{ id: string; name: string }>('id, name'),
+        withEmbedFallback(
+          fetchAllRows<AssetRow>((from, to) =>
+            scopeQuery(supabase.from('fixed_assets').select(`${ASSET_COLS}, plants(name)`)).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>(),
+            { onPartial: rows => { setAssets(rows); setLoading(false); } }),
+          () => fetchAllRows<AssetRow>((from, to) =>
+            scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
+          'FAR.assets',
+        ),
+      ]);
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
-
-      // PAGED: the register is past 1,000 assets and PostgREST caps a response
-      // at 1000 silently — the KPI read exactly "1000" and the rest were missing.
-      const { data, error } = await withEmbedFallback(
-        fetchAllRows<AssetRow>((from, to) =>
-          scopeQuery(supabase.from('fixed_assets').select('*, plants(name)')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
-        () => fetchAllRows<AssetRow>((from, to) =>
-          scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
-        'FAR.assets',
-      );
       if (error) throw error;
-      const loaded = data || [];
-      setAssets(loaded);
+      setAssets(data || []);
       setLoadError(false);
       // Display codes come from assignSequentialJobNos / jobNoFar. Do not write
       // job_no just because the register opened — that used to RPC next_job_no
       // for every asset missing a code.
+    } catch (err) {
+      console.error('[FAR] load failed', err);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+    void loadMaintCosts();
+  }
 
-      // Maintenance/repair cost register — emergency tickets + their part costs.
+  /** Maintenance/repair cost register — emergency tickets + their part costs.
+   *  Background: the KPI "Repair flagged" and the FY table show … until it lands. */
+  async function loadMaintCosts() {
+    try {
       const { data: tickets } = await supabase.from('maintenance_tickets')
-        .select('*, plants(name)').eq('type', 'emergency')
-        .order('created_at', { ascending: false }).returns<MaintTicketRow[]>();
+        .select('id, ticket_no, equipment, status, created_at, closed_at, pm_bill_total, pm_bill_url, far_asset_id, plants(name)')
+        .eq('type', 'emergency')
+        .order('created_at', { ascending: false }).returns<MaintTicketLite[]>();
       const ids = (tickets || []).map((tk) => tk.id);
-      let srs: MaintStoreReqRow[] = [];
-      if (ids.length) {
-        const { data: srData } = await supabase.from('maintenance_store_requests')
-          .select('*').in('ticket_id', ids).returns<MaintStoreReqRow[]>();
-        srs = srData || [];
-      }
-      const srByTicket = new Map<string, MaintStoreReqRow[]>();
+      // Chunked: one GET with every emergency ticket id grows with the register.
+      const { data: srs } = ids.length
+        ? await fetchByIds<MaintStoreReqLite>(ids, c => supabase.from('maintenance_store_requests')
+          .select('ticket_id, part_name, quantity, store_decision, purchase_required, total_price, busy_transaction_ref')
+          .in('ticket_id', c).returns<MaintStoreReqLite[]>())
+        : { data: [] as MaintStoreReqLite[] };
+      const srByTicket = new Map<string, MaintStoreReqLite[]>();
       srs.forEach((s) => { if (!s.ticket_id) return; const arr = srByTicket.get(s.ticket_id); if (arr) arr.push(s); else srByTicket.set(s.ticket_id, [s]); });
       const entries: MaintEntry[] = (tickets || []).map((tk) => {
         const rows = srByTicket.get(tk.id) ?? [];
@@ -408,10 +432,9 @@ export function FAR() {
       });
       setMaintEntries(entries);
     } catch (err) {
-      console.error('[FAR] load failed', err);
-      setLoadError(true);
+      console.error('[FAR] repair costs failed', err);
     } finally {
-      setLoading(false);
+      setMaintLoading(false);
     }
   }
 
@@ -499,7 +522,7 @@ export function FAR() {
 
   function raiseTicketForAsset(asset: AssetRow) {
     const mark = asset.identification_mark ? ` (${asset.identification_mark})` : '';
-    navigate(`/dashboard/purchase/maint?raise=1&far=${asset.id}&equip=${encodeURIComponent(`${asset.name}${mark}`)}&plant=${asset.plant_id || ''}`);
+    navigate(`/dashboard/purchase/maint?raise=1&far=${asset.id}&equip=${encodeURIComponent(`${asset.name}${mark}`)}&plant=${asset.plant_id || ''}&${backHere()}`);
   }
 
   // Equipment List — a derived, grouped view of the FAR (the PM master).
@@ -796,7 +819,7 @@ export function FAR() {
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Assets Flagged for Repair', what: 'Count of fixed assets that have been flagged as requiring repair or maintenance and are awaiting resolution. High count = production downtime risk.', source: 'Derived', note: 'Open (not yet closed) emergency maintenance tickets from the maintenance workflow.' }} />
-          <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={loading ? '…' : farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
+          <StatCard className="h-full" icon={<Wrench />} tone="amber" valueTone="amber" label={t('far.repairFlagged')} value={maintLoading ? '…' : farRelatedEntries.filter(e => e.status !== 'closed').length} caption={<span className="text-amber-600">{t('far.awaitingClosure')}</span>}
             onView={() => farMaintRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             viewLabel={t('far.viewRepairs', 'View FAR repairs')} />
         </div>
@@ -823,7 +846,7 @@ export function FAR() {
       >
 
         {/* Financial-year tabs */}
-        {loading ? null : fyList.length === 0
+        {maintLoading ? null : fyList.length === 0
           ? <span className="text-xs text-slate-400 block mb-4">{t('far.noMaintRecorded')}</span>
           : <SegmentTabs className="mb-4" items={fyList.map(fy => ({ key: fy, label: fy }))} value={activeFY ?? fyList[0]} onChange={setSelectedFY} />}
 
@@ -1255,7 +1278,8 @@ export function FAR() {
                 onClick={() => { const a = assetMaint.asset; setAssetMaint(null); raiseTicketForAsset(a); }}
                 style={{ display: 'block', width: '100%', marginTop: 8, fontSize: 13, fontWeight: 700, color: '#fff', background: '#0A1628', border: 'none', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
               >{t('far.raiseTicket', 'Raise ticket')}</button>
-              <a href="/dashboard/purchase/maint" style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB' }}>{t('far.openInMaintenance')} →</a>
+              {/* Emergency list filtered to this asset — client-side nav, not a full reload. */}
+              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?tab=emergency&q=${encodeURIComponent(assetMaint.asset.identification_mark || assetMaint.asset.name)}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}
@@ -1289,7 +1313,7 @@ export function FAR() {
               {drillEntry.billUrl && (
                 <a href={drillEntry.billUrl} target="_blank" rel="noreferrer" style={{ display: 'block', textAlign: 'center', marginTop: 10, fontSize: 12, color: '#2563EB' }}>{t('far.viewSupplierBill', 'View supplier bill')} ↗</a>
               )}
-              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?ticket=${drillEntry.id}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
+              <button type="button" onClick={() => navigate(`/dashboard/purchase/maint?ticket=${drillEntry.id}&${backHere()}`)} style={{ display: 'block', width: '100%', textAlign: 'center', marginTop: 14, fontSize: 12, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>{t('far.openInMaintenance')} →</button>
             </div>
           );
         })()}
