@@ -209,7 +209,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <div style={{ padding: '18px 22px', borderBottom: '1px solid #F1F5F9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 17, fontWeight: 800, color: '#0F172A' }}>{t('topbar.settingsTitle', 'Settings')}</div>
-            <div style={{ fontSize: 12, color: '#94A3B8' }}>{email || t('topbar.settingsYourAccount', 'Your account')} · {authProfile?.roleLabel}</div>
+            <div style={{ fontSize: 12, color: '#94A3B8' }}>{email || t('topbar.settingsYourAccount', 'Your account')}{authProfile?.roleLabel ? ` · ${authProfile.roleLabel}` : ''}</div>
           </div>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: '50%', border: 'none', background: '#F1F5F9', cursor: 'pointer', color: '#64748B', fontSize: 16 }}>✕</button>
         </div>
