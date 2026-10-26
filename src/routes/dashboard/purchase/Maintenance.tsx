@@ -56,6 +56,7 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
+import { safeBack } from '../../../lib/backLink';
 
 type EntityNoteRow = Database['public']['Tables']['entity_notes']['Row'];
 
@@ -925,10 +926,7 @@ export function Maintenance() {
   const navigate = useNavigate();
   // Opened from another list (Activity Log) with ?back=<its full URL>: closing
   // the ticket / incident returns there with its filters, page and sort.
-  const backTo = (() => {
-    const b = searchParams.get('back') || '';
-    return b.startsWith('/dashboard/') && !b.startsWith('//') ? b : '';
-  })();
+  const backTo = safeBack(searchParams.get('back'));
   useEffect(() => {
     const rawTab = searchParams.get('tab');
     if (rawTab === 'schedule' && !showScheduleSetup) { setTab('periodic'); patchUrlParams(setSearchParams, { tab: 'periodic' }); }

@@ -3,6 +3,7 @@ import { patchUrlParams } from '../../../lib/urlParams';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { safeBack, withBack } from '../../../lib/backLink';
 import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
@@ -129,6 +130,10 @@ export function StoreRequisitions() {
 
   // Deep link from Overview's Pending approvals (?req=<id>): opened once, after the first load.
   const openedReqParam = useRef<string | null>(null);
+  // Opened from another screen (Overview / To-Do) with back=<its URL>: closing
+  // the request (or the ticket it links to) returns there.
+  const backTo = safeBack(searchParams.get('back'));
+  const detailFromLink = useRef(false);
 
   const queuePending = searchParams.get('queue') === 'pending';
   const listed = useMemo(() => {
@@ -169,7 +174,22 @@ export function StoreRequisitions() {
       setLoadError(false);
       const reqParam = searchParams.get('req');
       const linked = reqParam && openedReqParam.current !== reqParam ? (data || []).find(x => x.id === reqParam) : undefined;
-      if (linked) { openedReqParam.current = reqParam; openRow(linked); }
+      if (linked) {
+        openedReqParam.current = reqParam;
+        // Drop req= once used, so coming back here can't reopen it (and bounce
+        // through Maintenance again).
+        const next = new URLSearchParams(searchParams);
+        next.delete('req');
+        setSearchParams(next, { replace: true });
+        if (linked.ticket_id) {
+          // Ticket-linked: the ticket's close goes straight to the origin screen.
+          const origin = backTo || `${window.location.pathname}${next.toString() ? `?${next}` : ''}`;
+          navigate(withBack(`/dashboard/purchase/maint?ticket=${linked.ticket_id}`, origin));
+        } else {
+          detailFromLink.current = true;
+          setDetailReq(linked);
+        }
+      }
     } catch (err) {
       console.error('[StoreRequisitions] load failed', err);
       setLoadError(true);
@@ -508,7 +528,12 @@ export function StoreRequisitions() {
       {/* ── PANEL: Requisition detail (rows without a linked ticket) ─────── */}
       <SlidePanel
         open={!!detailReq}
-        onClose={() => setDetailReq(null)}
+        onClose={() => {
+          setDetailReq(null);
+          const goBack = detailFromLink.current && backTo;
+          detailFromLink.current = false;
+          if (goBack) navigate(backTo);
+        }}
         title={detailReq?.item || t('storereq.detail_title', 'Requisition')}
         subtitle={detailReq ? `#${reqNoLabel(detailReq)} · ${displayLocationName(detailReq.plants?.name) || '—'}` : ''}
       >
