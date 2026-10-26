@@ -35,6 +35,18 @@ describe('fetchAllRows', () => {
     expect(res.data).toHaveLength(1500);
   });
 
+  it('reports partial rows while more pages are coming, never after the end', async () => {
+    const { page } = table(2471);
+    const partials: number[] = [];
+    const res = await fetchAllRows<number>(page, { onPartial: rows => partials.push(rows.length) });
+    expect(partials).toEqual([1000]);
+    expect(res.data).toHaveLength(2471);
+    const small = table(40);
+    const none: number[] = [];
+    await fetchAllRows<number>(small.page, { onPartial: rows => none.push(rows.length) });
+    expect(none).toEqual([]);
+  });
+
   it('reports an error with the rows read so far', async () => {
     const page = (from: number) =>
       Promise.resolve(from === 0
