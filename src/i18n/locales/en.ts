@@ -1453,6 +1453,7 @@ const en = {
     "dataDependencyTitle": "Data dependency",
   },
   "anomalyCenter": {
+    "nounFindings": "findings",
     feed_subtitle: "Flags raised by the anomaly applications, ranked by severity",
     feed_title: "Anomaly feed",
     "sev_critical": "Critical",
@@ -1501,6 +1502,7 @@ const en = {
     "notif_title": "{{name}} {{action}} a flag",
   },
   "audit": {
+    "nounEntries": "entries",
     "syncLogs": "Sync Logs",
     "totalActivities": "Total activities",
     "totalActivitiesSub": "all batches and sessions",
@@ -1528,6 +1530,7 @@ const en = {
     "verifiedChecksum": "Verified Checksum",
   },
   "batchEntry": {
+    "nounReadings": "readings",
     "noActiveBatch": "No active batch selected",
     "saveReadingFailed": "Failed to save reading: {{error}}",
     "batchCreationFailed": "Batch creation failed: {{error}}. Please check your connection and try again.",

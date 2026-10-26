@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, Users, Globe, RefreshCw, ShieldCheck, Check, Plus, Pencil, Fingerprint } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { StatCard, SectionCard, FilterBar, ButtonV2, StatusPill } from '../../components/v2';
+import { StatCard, SectionCard, FilterBar, ButtonV2, StatusPill, TablePaginationV2 } from '../../components/v2';
+import { usePagination } from '../../components/ui/usePagination';
+import { fetchAllRows } from '../../lib/fetchAll';
 
 interface AuditLogEntry {
   id: string;
@@ -31,11 +33,14 @@ export function AuditLog() {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase
+      // PAGED read: an unpaged select stops at 1000 rows silently.
+      const { data, error } = await fetchAllRows<AuditLogEntry>((from, to) => supabase
         .from('batch_edit_logs')
         .select('*')
         .order('created_at', { ascending: false })
-        .returns<AuditLogEntry[]>();
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<AuditLogEntry[]>());
       if (!error && data) {
         setLogs(data);
       }
@@ -82,6 +87,9 @@ export function AuditLog() {
       log.action_type.toLowerCase().includes(term)
     );
   });
+
+  // Timeline is paged; a new search goes back to page 1.
+  const { pageRows: logPage, controls: logPager } = usePagination(filteredLogs, { resetKey: searchQuery });
 
   function formatTime(isoString: string) {
     try {
@@ -150,86 +158,89 @@ export function AuditLog() {
             {t('audit.noLogsFound', { query: searchQuery })}
           </div>
         ) : (
-          <div className="relative pl-6 border-l-2 border-slate-200 ml-3 space-y-5">
-            {filteredLogs.map((log) => {
-              const isCreate = log.action_type === 'create_batch';
-              return (
-                <div key={log.id || `${log.created_at}-${log.batch_no}`} className="relative group">
-                  {/* Timeline bullet dot */}
-                  <span
-                    className="absolute -left-[33px] top-1.5 w-4.5 h-4.5 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 transition-transform group-hover:scale-125"
-                    style={{ background: isCreate ? '#2563EB' : '#10B981' }}
-                  >
-                    {isCreate ? (
-                      <Plus size={9} strokeWidth={4} className="text-white" />
-                    ) : (
-                      <Pencil size={8} strokeWidth={3.5} className="text-white" />
-                    )}
-                  </span>
-
-                  {/* Log Content Card */}
-                  <div className="card2 p-4 hover:border-slate-300 transition-colors">
-                    <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-900">
-                          {t('audit.batchPrefix')}{log.batch_no}
-                        </span>
-                        {isCreate
-                          ? <StatusPill tone="blue" label={t('audit.startedBatch')} />
-                          : <StatusPill tone="green" label={t('audit.loggedReading')} />}
-                      </div>
-                      <div className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
-                        <span>{formatDate(log.created_at)}</span>
-                        <span>•</span>
-                        <span className="font-mono text-slate-500">{formatTime(log.created_at)}</span>
-                      </div>
-                    </div>
-
-                    <div className="text-sm font-medium text-slate-700 space-y-1.5">
+          <>
+            <div className="relative pl-6 border-l-2 border-slate-200 ml-3 space-y-5">
+              {logPage.map((log) => {
+                const isCreate = log.action_type === 'create_batch';
+                return (
+                  <div key={log.id || `${log.created_at}-${log.batch_no}`} className="relative group">
+                    {/* Timeline bullet dot */}
+                    <span
+                      className="absolute -left-[33px] top-1.5 w-4.5 h-4.5 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 transition-transform group-hover:scale-125"
+                      style={{ background: isCreate ? '#2563EB' : '#10B981' }}
+                    >
                       {isCreate ? (
-                        <div>
-                          {t('audit.operatorInitiatedPre')} <span className="font-bold text-slate-800">{log.details.recipe} {t('audit.density')}</span> {t('audit.targetLoadOf')} <span className="font-bold text-slate-800">{log.details.target_qty} kg</span>.
-                        </div>
+                        <Plus size={9} strokeWidth={4} className="text-white" />
                       ) : (
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[13px] bg-slate-50 p-2.5 rounded-[10px] border border-slate-100">
-                          {log.details.temp !== undefined && (
-                            <div>
-                              <span className="text-slate-400 text-xs font-semibold">{t('audit.temp')}</span>{' '}
-                              <span className="font-bold text-slate-800">{log.details.temp} °C</span>
-                            </div>
-                          )}
-                          {log.details.cp_gravity !== undefined && (
-                            <div>
-                              <span className="text-slate-400 text-xs font-semibold">{t('audit.gravity')}</span>{' '}
-                              <span className="font-bold text-slate-800">{log.details.cp_gravity}</span>
-                            </div>
-                          )}
-                          {log.details.cl2_pressure !== undefined && (
-                            <div>
-                              <span className="text-slate-400 text-xs font-semibold">{t('audit.cl2Press')}</span>{' '}
-                              <span className="font-bold text-slate-800">{log.details.cl2_pressure} kg</span>
-                            </div>
-                          )}
-                        </div>
+                        <Pencil size={8} strokeWidth={3.5} className="text-white" />
                       )}
+                    </span>
 
-                      {/* Security details footer */}
-                      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-100 flex-wrap gap-2">
-                        <div className="flex items-center gap-1">
-                          <Fingerprint size={12} strokeWidth={2.5} />
-                          <span>{t('audit.ipAddress')}</span>{' '}
-                          <span className="font-mono font-semibold text-slate-600 bg-slate-100 px-1 py-0.5 rounded border border-slate-200/50">
-                            {log.ip_address || t('audit.localSandbox')}
+                    {/* Log Content Card */}
+                    <div className="card2 p-4 hover:border-slate-300 transition-colors">
+                      <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-900">
+                            {t('audit.batchPrefix')}{log.batch_no}
                           </span>
+                          {isCreate
+                            ? <StatusPill tone="blue" label={t('audit.startedBatch')} />
+                            : <StatusPill tone="green" label={t('audit.loggedReading')} />}
                         </div>
-                        <StatusPill tone="green" icon={<Check strokeWidth={3} />} label={t('audit.verifiedChecksum')} className="uppercase text-[10px]" />
+                        <div className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+                          <span>{formatDate(log.created_at)}</span>
+                          <span>•</span>
+                          <span className="font-mono text-slate-500">{formatTime(log.created_at)}</span>
+                        </div>
+                      </div>
+
+                      <div className="text-sm font-medium text-slate-700 space-y-1.5">
+                        {isCreate ? (
+                          <div>
+                            {t('audit.operatorInitiatedPre')} <span className="font-bold text-slate-800">{log.details.recipe} {t('audit.density')}</span> {t('audit.targetLoadOf')} <span className="font-bold text-slate-800">{log.details.target_qty} kg</span>.
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[13px] bg-slate-50 p-2.5 rounded-[10px] border border-slate-100">
+                            {log.details.temp !== undefined && (
+                              <div>
+                                <span className="text-slate-400 text-xs font-semibold">{t('audit.temp')}</span>{' '}
+                                <span className="font-bold text-slate-800">{log.details.temp} °C</span>
+                              </div>
+                            )}
+                            {log.details.cp_gravity !== undefined && (
+                              <div>
+                                <span className="text-slate-400 text-xs font-semibold">{t('audit.gravity')}</span>{' '}
+                                <span className="font-bold text-slate-800">{log.details.cp_gravity}</span>
+                              </div>
+                            )}
+                            {log.details.cl2_pressure !== undefined && (
+                              <div>
+                                <span className="text-slate-400 text-xs font-semibold">{t('audit.cl2Press')}</span>{' '}
+                                <span className="font-bold text-slate-800">{log.details.cl2_pressure} kg</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Security details footer */}
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-100 flex-wrap gap-2">
+                          <div className="flex items-center gap-1">
+                            <Fingerprint size={12} strokeWidth={2.5} />
+                            <span>{t('audit.ipAddress')}</span>{' '}
+                            <span className="font-mono font-semibold text-slate-600 bg-slate-100 px-1 py-0.5 rounded border border-slate-200/50">
+                              {log.ip_address || t('audit.localSandbox')}
+                            </span>
+                          </div>
+                          <StatusPill tone="green" icon={<Check strokeWidth={3} />} label={t('audit.verifiedChecksum')} className="uppercase text-[10px]" />
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+            <TablePaginationV2 controls={logPager} label={t('audit.nounEntries', 'entries')} />
+          </>
         )}
       </SectionCard>
 
