@@ -217,8 +217,6 @@ export function StockRegister() {
 
   async function load() {
     try {
-      const { data: pl } = await fetchActivePlants<Plant>('id, name');
-      setPlants(pl || []);
       // STORE-scoped, not plant-scoped. Migration 60 stamps every Rehla row
       // with one anchor factory (SCPL – Rehla), so a plant filter showed the
       // shared register as empty to a keeper granted the store and the other
@@ -231,47 +229,52 @@ export function StockRegister() {
           .range(from, to)
           .returns<RegisterItem[]>()
           .then(({ data, error }) => ({ data, error }));
-      let siRes = await fetchAllRows<RegisterItem>(pageItems('*, plants(name)'));
-      if (siRes.error) {
-        console.error('[StockRegister.items] embed failed; retrying without plants(name):', siRes.error);
-        siRes = await fetchAllRows<RegisterItem>(pageItems('*'));
-      }
-      if (siRes.error) throw siRes.error;
-      const loaded = siRes.data || [];
-      setItems(loaded);
-      // In-memory STK codes only. Opening the register must not UPDATE job_no.
+      // The five reads are independent — they used to run one after another
+      // (items, then ~2k monthly snapshots, then anomalies, then ticket links),
+      // so the register waited for the sum of all of them.
+      const plantsP = fetchActivePlants<Plant>('id, name').then(({ data: pl }) => setPlants(pl || []));
+      const itemsP = (async () => {
+        let siRes = await fetchAllRows<RegisterItem>(pageItems('*, plants(name)'));
+        if (siRes.error) {
+          console.error('[StockRegister.items] embed failed; retrying without plants(name):', siRes.error);
+          siRes = await fetchAllRows<RegisterItem>(pageItems('*'));
+        }
+        if (siRes.error) throw siRes.error;
+        // In-memory STK codes only. Opening the register must not UPDATE job_no.
+        setItems(siRes.data || []);
+      })();
       // PAGED: ~1,791 snapshot rows already, and PostgREST caps a response at
       // 1000 silently. A truncated read here does not error — it just makes the
       // reconciler compare months it only partially loaded, which is the worst
       // possible failure for anomaly detection.
-      const { data: sm } = await fetchAllRows<StockMonthRow>((from, to) =>
+      const monthsP = fetchAllRows<StockMonthRow>((from, to) =>
         storeQuery(supabase.from('store_stock_months').select('*'))
           .order('period_month', { ascending: true }).order('id', { ascending: true })
-          .range(from, to).returns<StockMonthRow[]>());
-      setMonths(sm || []);
+          .range(from, to).returns<StockMonthRow[]>())
+        .then(({ data: sm }) => setMonths(sm || []));
       // Persisted anomaly review state (best-effort — table arrives with migration 54).
-      try {
-        const { data: ar, error: arErr } = await storeQuery(
-          supabase.from('store_stock_anomalies')
-            .select('id, plant_id, store_id, period_month, item_name, anomaly_type, status, action, corrected_value, resolution_comment, resolved_by_name, resolved_at, version'),
-        ).returns<AnomalyResolutionRow[]>();
-        setResolutions(arErr ? [] : (ar || []));
-      } catch { setResolutions([]); }
-      try {
-        const { data: sr } = await fetchAllRows<{ store_item_id: string | null; ticket_id: string | null }>((from, to) =>
-          supabase.from('maintenance_store_requests').select('store_item_id, ticket_id')
-            .not('store_item_id', 'is', null)
-            .not('ticket_id', 'is', null)
-            .range(from, to)
-            .returns<{ store_item_id: string | null; ticket_id: string | null }[]>());
-        const map: Record<string, string[]> = {};
-        for (const r of sr || []) {
-          if (!r.store_item_id || !r.ticket_id) continue;
-          const arr = map[r.store_item_id] || (map[r.store_item_id] = []);
-          if (!arr.includes(r.ticket_id)) arr.push(r.ticket_id);
-        }
-        setIssueTickets(map);
-      } catch { setIssueTickets({}); }
+      const anomaliesP = Promise.resolve(storeQuery(
+        supabase.from('store_stock_anomalies')
+          .select('id, plant_id, store_id, period_month, item_name, anomaly_type, status, action, corrected_value, resolution_comment, resolved_by_name, resolved_at, version'),
+      ).returns<AnomalyResolutionRow[]>())
+        .then(({ data: ar, error: arErr }) => setResolutions(arErr ? [] : (ar || [])), () => setResolutions([]));
+      const issueLinksP = fetchAllRows<{ store_item_id: string | null; ticket_id: string | null }>((from, to) =>
+        supabase.from('maintenance_store_requests').select('store_item_id, ticket_id')
+          .not('store_item_id', 'is', null)
+          .not('ticket_id', 'is', null)
+          .order('id', { ascending: true }) // stable paging: unordered pages can skip / repeat rows
+          .range(from, to)
+          .returns<{ store_item_id: string | null; ticket_id: string | null }[]>())
+        .then(({ data: sr }) => {
+          const map: Record<string, string[]> = {};
+          for (const r of sr || []) {
+            if (!r.store_item_id || !r.ticket_id) continue;
+            const arr = map[r.store_item_id] || (map[r.store_item_id] = []);
+            if (!arr.includes(r.ticket_id)) arr.push(r.ticket_id);
+          }
+          setIssueTickets(map);
+        }, () => setIssueTickets({}));
+      await Promise.all([plantsP, itemsP, monthsP, anomaliesP, issueLinksP]);
     } catch (e) {
       console.error('[StockRegister] load failed', e);
     } finally {
