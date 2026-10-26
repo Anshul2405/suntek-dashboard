@@ -1598,6 +1598,7 @@ const hi: Translations = {
     "batchesLink": "बैचेज़ →",
   },
   "blacklist": {
+    "nounEntries": "एंट्रीज़",
     "toastFailed": "फेल्ड: {{msg}}",
     "toastSeverityMonitor": "सेविरिटी सेट टु {{sev}} · मॉनिटर ओनली",
     "toastSeverityRestricted": "सेविरिटी सेट टु {{sev}} · एक्सेस रिस्ट्रिक्टेड",
@@ -1740,6 +1741,7 @@ const hi: Translations = {
     "colCostPerMT": "कॉस्ट / MT",
   },
   "cpmStock": {
+    "nounItems": "आइटम्स",
     "totalStockRecords": "टोटल स्टॉक रिकॉर्ड्स",
     "acrossAllPlants": "अक्रॉस ऑल प्लांट्स",
     "totalQuantity": "टोटल क्वांटिटी",
@@ -2191,6 +2193,7 @@ const hi: Translations = {
     "noAssetMaint": "इस एसेट के लिए अभी तक कोई मेंटेनेंस दर्ज नहीं है।",
   },
   "labour": {
+    "nounEntries": "एंट्रीज़",
     entityLabel: "लेबर रेट अपडेट",
     "kpiTotalCost": "टोटल लेबर कॉस्ट",
     "kpiRecords": "रिकॉर्ड्स",
@@ -2251,6 +2254,7 @@ const hi: Translations = {
     "roleAdmin": "एडमिन (Sagar)",
   },
   "marine": {
+    "nounEntries": "एंट्रीज़",
     entityLabel: "मरीन इंश्योरेंस टॉप-अप",
     topUpAmountPlaceholder: "e.g. 0.50",
     referencePlaceholder: "e.g. POL-2026-4421",

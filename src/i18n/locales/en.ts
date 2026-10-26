@@ -1594,6 +1594,7 @@ const en = {
     "batchesLink": "Batches →",
   },
   "blacklist": {
+    "nounEntries": "entries",
     "toastFailed": "Failed: {{msg}}",
     "toastSeverityMonitor": "Severity set to {{sev}} · monitor only",
     "toastSeverityRestricted": "Severity set to {{sev}} · access restricted",
@@ -1736,6 +1737,7 @@ const en = {
     "colCostPerMT": "Cost / MT",
   },
   "cpmStock": {
+    "nounItems": "items",
     "totalStockRecords": "Total stock records",
     "acrossAllPlants": "across all plants",
     "totalQuantity": "Total quantity",
@@ -2191,6 +2193,7 @@ const en = {
     "noAssetMaint": "No maintenance recorded for this asset yet.",
   },
   "labour": {
+    "nounEntries": "entries",
     entityLabel: "Labour rate update",
     "kpiTotalCost": "Total labour cost",
     "kpiRecords": "Records",
@@ -2251,6 +2254,7 @@ const en = {
     "roleAdmin": "Admin (Sagar)",
   },
   "marine": {
+    "nounEntries": "entries",
     entityLabel: "Marine insurance top-up",
     topUpAmountPlaceholder: "e.g. 0.50",
     referencePlaceholder: "e.g. POL-2026-4421",
