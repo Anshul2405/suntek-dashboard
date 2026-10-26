@@ -17,7 +17,7 @@
  * the notifications feed). To add a workflow, append one descriptor here.
  */
 import { supabase } from '../supabase';
-import { ticketNoLabel, ticketSearchTerms } from '../ticketNo';
+import { ticketNoLabel, ticketSearchTerms, reqNoLabel } from '../ticketNo';
 import { STATUS_CFG, daysFromNow, dueDateLabel, formatDate } from '../../routes/dashboard/purchase/maintenance/shared';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 
@@ -126,7 +126,7 @@ const TICKET_COLS = (trailingLabel: string): TodoColumn[] => [
   { key: 'status', labelKey: trailingLabel, align: 'right' },
 ];
 
-const TICKET_SELECT = 'id,title,equipment,status,type,due_date,created_at,description,assigned_to,raised_by,plant_id';
+const TICKET_SELECT = 'id,ticket_no,title,equipment,status,type,due_date,created_at,description,assigned_to,raised_by,plant_id';
 
 type TicketRow = {
   id: string; title: string | null; equipment: string | null; status: string;
@@ -236,7 +236,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
           title: r.item,
           sortDate: r.created_at ?? undefined,
           cells: {
-            ticket: 'Req',
+            ticket: reqNoLabel(r),
             asset: `${r.item}${r.qty ? ` · qty ${r.qty}` : ''}`,
             raised: dateCell(r.created_at),
             by: '—',

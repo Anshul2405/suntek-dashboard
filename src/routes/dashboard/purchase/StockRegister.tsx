@@ -21,6 +21,7 @@ import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit,
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
 import { registerIdOf } from '../../../lib/store/registers';
 import { assignSequentialJobNos, jobNoStock, persistMissingJobNos, ticketShort } from '../../../lib/jobNo';
+import { useTicketNos } from '../../../lib/ticketNo';
 import { fetchAllRows } from '../../../lib/fetchAll';
 import { createImportBatch, setImportBatchRowCount, buildItemOwnerMap, resolveItemOwner } from '../../../lib/imports/batches';
 import { AddPurchaseModal } from './AddPurchaseModal';
@@ -207,6 +208,7 @@ export function StockRegister() {
   const [deleting, setDeleting] = useState(false);
   /** store_item_id → emergency ticket ids that issued this part */
   const [issueTickets, setIssueTickets] = useState<Record<string, string[]>>({});
+  const ticketNoForId = useTicketNos(Object.values(issueTickets).flat());
 
   const canUploadExcel =
     isAdminProfile(activeProfile);
@@ -1040,7 +1042,7 @@ export function StockRegister() {
                                   className="num text-blue-600 font-semibold mr-1"
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
                                   title={t('storereq.open_ticket', 'Open maintenance ticket')}
-                                >#{ticketShort(tid)}</button>
+                                >#{ticketNoForId(tid)}</button>
                               ))}
                               {m.ticketNos.length > 3 ? <span className="text-slate-400">+{m.ticketNos.length - 3}</span> : null}
                             </td>

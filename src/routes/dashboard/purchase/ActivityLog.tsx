@@ -283,7 +283,6 @@ function ActivityRoleAccessCard() {
               >
                 <div className="min-w-0 flex-1">
                   <div className="text-[13px] font-semibold text-slate-800 truncate">{role.label}</div>
-                  <div className="text-[10px] text-slate-400 font-mono">{role.id}</div>
                 </div>
                 <button
                   type="button"
