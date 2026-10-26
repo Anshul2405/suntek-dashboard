@@ -1520,6 +1520,7 @@ const hi: Translations = {
     "searchPlaceholder": "सर्च बाय बैच # ऑर IP...",
     "synchronizing": "सिंक्रोनाइज़िंग ऑडिट डेटा...",
     "noLogsFound": "नो ऑडिट लॉग्स फाउंड मैचिंग \"{{query}}\"",
+    "noLogsYet": "नो ऑडिट लॉग्स यट।",
     "batchPrefix": "बैच #",
     "startedBatch": "स्टार्टेड बैच",
     "loggedReading": "लॉग्ड रीडिंग",
