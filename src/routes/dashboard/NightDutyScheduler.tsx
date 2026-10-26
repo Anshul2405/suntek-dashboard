@@ -459,14 +459,14 @@ export function NightDutyScheduler() {
     <div>
       {/* KPI cards — "View →" links drive the schedule-table filters */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <StatCard label={t('nightBoard.onDutyTonight', 'On Duty Tonight')} value={String(report.tonight).padStart(2, '0')} caption={t('nightBoard.employees', 'Employees')}
+        <StatCard label={t('nightBoard.onDutyTonight', 'On Duty Tonight')} value={loading ? '…' : report.tonight} caption={t('nightBoard.employees', 'Employees')}
           viewLabel={t('nightBoard.viewList', 'View list')} onView={() => { resetSchedFilters(); setSchedFrom(today); setSchedTo(today); }} />
-        <StatCard label={t('nightBoard.upcomingDuties', 'Upcoming Duties')} value={String(report.scheduled).padStart(2, '0')} caption={t('nightBoard.scheduledAhead', 'Scheduled ahead')}
+        <StatCard label={t('nightBoard.upcomingDuties', 'Upcoming Duties')} value={loading ? '…' : report.scheduled} caption={t('nightBoard.scheduledAhead', 'Scheduled ahead')}
           viewLabel={t('nightBoard.viewCalendar', 'View calendar')} onView={() => { resetSchedFilters(); setSchedStatus('scheduled'); }} />
-        <StatCard label={t('nightBoard.checkedInLabel', 'Checked In')} value={String(report.checkedIn).padStart(2, '0')} caption={t('nightBoard.todayCaption', 'Today')}
+        <StatCard label={t('nightBoard.checkedInLabel', 'Checked In')} value={loading ? '…' : report.checkedIn} caption={t('nightBoard.todayCaption', 'Today')}
           valueTone={report.checkedIn > 0 ? 'green' : 'default'}
           viewLabel={t('nightBoard.viewCheckins', 'View check-ins')} onView={() => { resetSchedFilters(); setSchedStatus('checked_in'); }} />
-        <StatCard label={t('nightBoard.missedCheckins', 'Missed Check-ins')} value={String(report.missed).padStart(2, '0')} caption={t('nightBoard.employees', 'Employees')}
+        <StatCard label={t('nightBoard.missedCheckins', 'Missed Check-ins')} value={loading ? '…' : report.missed} caption={t('nightBoard.employees', 'Employees')}
           valueTone={report.missed > 0 ? 'orange' : 'default'}
           viewLabel={t('nightBoard.viewDetails', 'View details')} onView={() => { resetSchedFilters(); setSchedStatus('missed'); }} />
       </div>
@@ -525,11 +525,6 @@ export function NightDutyScheduler() {
             </tr>
           </thead>
           <tbody>
-            {schedPg.pageRows.length === 0 && (
-              <tr><td colSpan={8} className="text-center text-slate-400 py-8 text-sm">
-                {duties.length === 0 ? t('nightBoard.noUpcomingDuty', 'No upcoming night duty scheduled.') : t('nightBoard.noDutiesMatch', 'No duties match your filters.')}
-              </td></tr>
-            )}
             {schedPg.pageRows.map(r => (
               <tr key={r.d.id}>
                 <td className="font-semibold text-slate-700">{r.name}</td>
@@ -559,6 +554,12 @@ export function NightDutyScheduler() {
           </tbody>
         </table>
       </div>
+      {/* Below the scrolling table, not inside it — a full-width row is cut off on a phone. */}
+      {schedPg.pageRows.length === 0 && (
+        <div className="text-center text-slate-400 py-8 text-sm border-t border-slate-100">
+          {loading ? '…' : duties.length === 0 ? t('nightBoard.noUpcomingDuty', 'No upcoming night duty scheduled.') : t('nightBoard.noDutiesMatch', 'No duties match your filters.')}
+        </div>
+      )}
       <TablePaginationV2 controls={schedPg.controls} label={t('nightBoard.records', 'records')} />
     </SectionCard>
     </div>

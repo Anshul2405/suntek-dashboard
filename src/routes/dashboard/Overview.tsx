@@ -259,15 +259,17 @@ export function Overview() {
           <button
             type="button"
             className="ops-shift-tile"
-            data-tone={activeBatchCount && activeBatchCount > 0 ? 'warn' : 'ok'}
+            data-tone={activeBatchCount == null ? undefined : activeBatchCount > 0 ? 'warn' : 'ok'}
             onClick={() => navigate('/dashboard/batches')}
           >
             <div className="ops-shift-label">{t('overview.activeBatches', 'Active Batches')}</div>
             <div className="ops-shift-val">{activeBatchCount ?? '…'}</div>
             <div className="ops-shift-cap">
-              {avgBatchHours != null
-                ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
-                : t('overview.acrossFactories', { count: allowedPlants.length })}
+              {activeBatchCount == null
+                ? '\u00a0'
+                : avgBatchHours != null
+                  ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
+                  : t('overview.acrossFactories', { count: allowedPlants.length })}
             </div>
           </button>
           <button
@@ -289,7 +291,8 @@ export function Overview() {
           </button>
         </div>
 
-        {alerts.length === 0 ? (
+        {/* Nothing until alerts load — "No open alerts" during loading was a false all-clear. */}
+        {!alertsLoaded ? null : alerts.length === 0 ? (
           <div className="ops-alert-banner" id="ov-alerts">
             <span className="ops-alert-clear-dot" aria-hidden />
             <div>
