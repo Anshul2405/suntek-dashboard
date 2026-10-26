@@ -615,8 +615,8 @@ export function ActivityLog() {
     <>
       <ActivityRoleAccessCard />
       {/* KPI row */}
-      <div className="grid grid-cols-12 gap-5 mb-5">
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+      <div className="grid grid-cols-12 gap-3 sm:gap-5 mb-5">
+        <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'All activity events', what: 'Every activity across all plants — manual log entries PLUS milestones auto-fed from the maintenance workflow (raised, procured, handed over, completed, defective decided). The single overall record.', source: 'Derived', note: 'Manual activity_logs + maintenance_tickets / maintenance_store_requests milestones.' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi('all')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiTotal')}</div>
@@ -624,21 +624,21 @@ export function ActivityLog() {
           <div className="text-[11px] text-slate-500 mt-1">{loading ? '\u00a0' : t('activity.kpiFromMaintenance', { count: fromMaintenance })}</div>
           </button>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+        <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Verified', what: 'Activity events that carry a verifier (supervisor / unit head sign-off, or the raising role on a completed maintenance ticket).', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'verified' ? 'all' : 'verified')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiVerified')}</div>
           <div className="text-[28px] font-extrabold mt-1 num text-green-600">{loading ? '…' : verified}</div>
           </button>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+        <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Pending verification', what: 'Events with no verifier yet. These need supervisor sign-off.', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'pending' ? 'all' : 'pending')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPending')}</div>
           <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{loading ? '…' : pendingVerify}</div>
           </button>
         </div>
-        <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
+        <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Photo proof coverage', what: 'Percentage of activity events that carry photo proof — manual uploads plus the completion / handover / defective-part photos captured through the maintenance workflow.', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'photo' ? 'all' : 'photo')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPhotoProof')}</div>

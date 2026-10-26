@@ -222,6 +222,7 @@ const en = {
     daysAgo: '{{count}}d ago',
   },
   common: {
+    dateRange: "Date (from – to)",
     feedback: "Feedback",
     saving: "Saving…",
     loading: "Loading…",
