@@ -8,6 +8,7 @@ import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { StatCard, SectionCard, ButtonV2, FilterBar, FilterSelect, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { exportToCsv } from '../../lib/utils/exportCsv';
+import { formatDate, formatDateTime, formatTime } from '../../lib/utils/formatting';
 
 /**
  * Night-duty scheduler — shown to users with the `allocate_night_duty` capability
@@ -292,7 +293,7 @@ export function NightDutyScheduler() {
 
   /** Un-schedule a future duty (scheduled only — check-ins are audit history). */
   async function removeDuty(d: Duty) {
-    const dateLabel = new Date(d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+    const dateLabel = formatDate(d.duty_date);
     if (!window.confirm(t('nightBoard.removeDutyConfirm', { defaultValue: 'Remove this scheduled duty ({{date}})?', date: dateLabel }))) return;
     const { error } = await supabase.from('night_duty').delete().eq('id', d.id);
     if (error) { toast.error(t('nightBoard.removeFailed', { defaultValue: 'Remove failed: {{message}}', message: error.message })); return; }
@@ -308,7 +309,7 @@ export function NightDutyScheduler() {
     ], scheduleRows.map(r => ({
       name: r.name, role: r.role, plant: r.plant, date: r.d.duty_date, shift: SHIFT_LABEL,
       status: STATUS_CFG[r.d.status]?.label ?? r.d.status,
-      checkin: r.d.checked_in_at ? new Date(r.d.checked_in_at).toLocaleString('en-IN') : '',
+      checkin: r.d.checked_in_at ? formatDateTime(r.d.checked_in_at) : '',
     })));
   }
 
@@ -350,7 +351,7 @@ export function NightDutyScheduler() {
         <div className="mt-3 pt-3 border-t border-slate-100">
           <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-wide mb-1">{selectedDates.length === 1 ? t('nightBoard.selectedDateOne', 'Selected Date') : t('nightBoard.selectedDatesMany', { defaultValue: 'Selected Dates ({{n}})', n: selectedDates.length })}</div>
           <div className="text-[13px] font-semibold text-[#C5421F]">
-            {[...selectedDates].sort().slice(0, 3).map(d => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })).join(' · ')}
+            {[...selectedDates].sort().slice(0, 3).map(d => `${new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long' })}, ${formatDate(d)}`).join(' · ')}
             {selectedDates.length > 3 && ` ${t('nightBoard.moreDates', { defaultValue: '+{{n}} more', n: selectedDates.length - 3 })}`}
           </div>
         </div>
@@ -536,7 +537,7 @@ export function NightDutyScheduler() {
                 <td className="text-slate-500">{r.role || '—'}</td>
                 <td className="text-slate-500">{r.plant || '—'}</td>
                 <td>
-                  <div className="text-slate-700 font-medium">{new Date(r.d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                  <div className="text-slate-700 font-medium">{formatDate(r.d.duty_date)}</div>
                   <div className="text-[11px] text-slate-400">{new Date(r.d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' })}</div>
                 </td>
                 <td className="text-slate-500">{SHIFT_LABEL}</td>
@@ -544,8 +545,8 @@ export function NightDutyScheduler() {
                 <td>
                   {r.d.checked_in_at ? (
                     <>
-                      <div className="text-slate-700">{new Date(r.d.checked_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
-                      <div className="text-[11px] text-slate-400">{new Date(r.d.checked_in_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</div>
+                      <div className="text-slate-700">{formatTime(r.d.checked_in_at)}</div>
+                      <div className="text-[11px] text-slate-400">{formatDate(r.d.checked_in_at)}</div>
                     </>
                   ) : <span className="text-slate-300">—</span>}
                 </td>

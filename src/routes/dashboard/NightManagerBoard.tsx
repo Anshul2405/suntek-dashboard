@@ -11,6 +11,7 @@ import type { Database } from '../../lib/database.types';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { formatDate } from '../../lib/utils/formatting';
 
 type DeviceMappingRow = Database['public']['Tables']['device_mappings']['Row'];
 type ShiftLogJoined = Database['public']['Tables']['shift_logs']['Row'] & {
@@ -91,7 +92,7 @@ function formatRelativeTime(dateStr: string, t: (key: string, options?: Record<s
   if (mins < 60) return t('nightBoard.minAgo', { defaultValue: '{{n}} min ago', n: mins });
   const hours = Math.floor(mins / 60);
   if (hours < 24) return t('nightBoard.hrAgo', { defaultValue: '{{n}} hr ago', n: hours });
-  return new Date(dateStr).toLocaleDateString('en-IN');
+  return formatDate(dateStr);
 }
 
 

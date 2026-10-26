@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { StatCard, SectionCard, FilterBar, ButtonV2, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { fetchAllRows } from '../../lib/fetchAll';
+import { formatDate as formatIstDate, formatTime as formatIstTime } from '../../lib/utils/formatting';
 
 interface AuditLogEntry {
   id: string;
@@ -91,23 +92,8 @@ export function AuditLog() {
   // Timeline is paged; a new search goes back to page 1.
   const { pageRows: logPage, controls: logPager } = usePagination(filteredLogs, { resetKey: searchQuery });
 
-  function formatTime(isoString: string) {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    } catch (e) {
-      return '—';
-    }
-  }
-
-  function formatDate(isoString: string) {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    } catch (e) {
-      return '—';
-    }
-  }
+  const formatTime = (isoString: string) => formatIstTime(isoString);
+  const formatDate = (isoString: string) => formatIstDate(isoString);
 
   return (
     <div>

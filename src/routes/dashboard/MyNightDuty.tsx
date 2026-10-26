@@ -9,6 +9,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { uploadCheckinPhoto } from '../../lib/cloudinary';
 import { validateGeofence } from '../../lib/algorithms/geofencing';
 import { CameraCapture } from '../../components/CameraCapture';
+import { formatDate, formatTime } from '../../lib/utils/formatting';
 
 /**
  * The technician's own night-duty view + check-in. Shows the duties assigned to
@@ -113,7 +114,7 @@ export function MyNightDuty({ showEmpty = false }: { showEmpty?: boolean }) {
       const now = new Date().toISOString();
       await updateRows('night_duty', { status: 'checked_in', checked_in_at: now, shift_log_id: logRow?.id ?? null }).eq('id', duty.id);
       // 5) notify the unit head who scheduled + admin, with the photo as proof
-      const time = new Date(now).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      const time = formatTime(now);
       const targets = ['admin'];
       if (duty.assigned_by) targets.push(`db_${duty.assigned_by}`);
       insertRows('notifications', {
@@ -196,7 +197,7 @@ export function MyNightDuty({ showEmpty = false }: { showEmpty?: boolean }) {
           const plant = d.plant_id ? plants[d.plant_id] : undefined;
           const isToday = d.duty_date === today;
           const done = d.status === 'checked_in' || d.status === 'completed';
-          const dateLabel = new Date(d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
+          const dateLabel = `${new Date(d.duty_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' })}, ${formatDate(d.duty_date)}`;
           return (
             <div key={d.id} style={{ border: '1px solid #E2E8F0', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 160 }}>
@@ -205,7 +206,7 @@ export function MyNightDuty({ showEmpty = false }: { showEmpty?: boolean }) {
               </div>
               {done ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="badge" style={{ background: '#DCFCE7', color: '#16A34A', fontSize: 11 }}>✓ {t('checkin.checkedIn', 'Checked in')} {d.checked_in_at ? new Date(d.checked_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                  <span className="badge" style={{ background: '#DCFCE7', color: '#16A34A', fontSize: 11 }}>✓ {t('checkin.checkedIn', 'Checked in')} {d.checked_in_at ? formatTime(d.checked_in_at) : ''}</span>
                 </div>
               ) : isToday ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

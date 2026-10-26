@@ -15,6 +15,7 @@ import { ProductionBatchSheetForm } from '../../components/ProductionBatchSheetF
 import type { ExtractedBatchSheet } from '../../lib/nvidiaOcr';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
+import { formatDateTime } from '../../lib/utils/formatting';
 // Sales/Purchase OCR upload moved to the Sales & Purchase pages (admin/unit-head/
 // accountant only). The Technical Team's batch logger no longer carries them.
 
@@ -293,7 +294,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
         if (!error && data) {
           const formatted = data.map((row) => {
             const now = new Date(row.timestamp);
-            const timeStr = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')} ${now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+            const timeStr = formatDateTime(now);
             return {
               id: row.id,
               time: timeStr,
@@ -335,7 +336,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
 
       if (data) {
         const now = new Date(data.timestamp);
-        const timeStr = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')} ${now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+        const timeStr = formatDateTime(now);
         const newRow: ReadingRow = {
           id: data.id,
           time: timeStr,
@@ -436,7 +437,7 @@ export function BatchLogger({ embedded = false }: BatchLoggerProps) {
   // Started / elapsed come from the selected batch — never a placeholder.
   const startedAt = selectedBatch?.started_at ? new Date(selectedBatch.started_at) : null;
   const startedLabel = startedAt
-    ? startedAt.toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit', hour: 'numeric', minute: '2-digit' })
+    ? formatDateTime(startedAt)
     : null;
   const elapsedMin = startedAt ? Math.max(0, Math.floor((now - startedAt.getTime()) / 60000)) : 0;
   const elapsedH = Math.floor(elapsedMin / 60);

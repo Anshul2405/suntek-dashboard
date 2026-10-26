@@ -17,6 +17,7 @@ import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../
 import { reconcileBillAmount } from '../../../lib/nvidiaOcr';
 import { normalizeGstin, isValidGstin } from '../../../lib/utils/gst';
 import { ProgressBar, useFakeProgress } from '../../../components/ui/ProgressBar';
+import { formatDate } from '../../../lib/utils/formatting';
 
 type StockItem = StockLite & { plant_id: string | null };
 type Plant = { id: string; name: string };
@@ -510,5 +511,5 @@ const btnGhost: React.CSSProperties = { padding: '10px 16px', borderRadius: 10, 
 function fmtLateDate(iso: string | null) {
   if (!iso) return '—';
   const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return Number.isNaN(d.getTime()) ? iso : formatDate(d);
 }

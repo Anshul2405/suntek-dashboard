@@ -21,6 +21,7 @@ import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination, WorkCard } from '../../components/v2';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th } from '../../components/v2';
+import { formatDate as formatIstDate, formatDateTime } from '../../lib/utils/formatting';
 
 interface UserEvent {
   id: string;
@@ -131,8 +132,7 @@ const STATUS_CFG = {
 };
 
 function formatDate(d: string | null | undefined) {
-  if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return formatIstDate(d);
 }
 
 const BLANK_FORM = {
@@ -1678,6 +1678,6 @@ const EVENT_CFG: Record<string, { label: string; labelKey: string; bg: string; c
 };
 
 function formatEventTime(d: string) {
-  return new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return formatDateTime(d);
 }
 
