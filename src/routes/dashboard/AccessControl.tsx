@@ -400,6 +400,49 @@ export function AccessControl() {
             </table>
           </div>
 
+          <h3 className="text-sm font-bold mt-6">Hide photos from a person</h3>
+          <p className="text-xs text-slate-500 mt-1">Tick to hide that picture from this person only. Everyone else still sees it. Admin always sees every photo. Ravi Shankar is ticked off batch-sheet photos by default; heat and bucket stay visible.</p>
+          <div className="overflow-x-auto mt-2">
+            <table className="dt2 text-xs">
+              <thead><tr><th>Person</th>{PHOTOS.map((p) => <th key={p.key}>{p.label}</th>)}</tr></thead>
+              <tbody>
+                {shownPeople.length === 0 && (
+                  <tr><td colSpan={PHOTOS.length + 1} className="text-center text-slate-400 py-6">No people match.</td></tr>
+                )}
+                {shownPeople.map((person) => {
+                  const always = isAdminProfile(person);
+                  const hidden = draft.photosHiddenFrom || { heat: [], sheet: [], bucket: [] };
+                  const n = person.name.trim().toLowerCase();
+                  const isHid = (kind: PhotoKey) => hidden[kind].some((h) => h === person.id || h.trim().toLowerCase() === n);
+                  return (
+                    <tr key={`photo-hide-${person.id}`}>
+                      <td className="font-semibold">
+                        {person.name}
+                        <div className="text-slate-400 font-normal">{person.roleLabel}{person.plant ? ` · ${displayLocationName(person.plant)}` : ''}</div>
+                      </td>
+                      {PHOTOS.map((p) => (
+                        <td key={p.key}>
+                          <input
+                            type="checkbox"
+                            disabled={always}
+                            checked={!always && isHid(p.key)}
+                            onChange={(e) => setDraft((d) => {
+                              const cur = d.photosHiddenFrom || { heat: [], sheet: [], bucket: [] };
+                              const nextList = e.target.checked
+                                ? [...cur[p.key].filter((h) => h !== person.id && h.trim().toLowerCase() !== n), person.id]
+                                : cur[p.key].filter((h) => h !== person.id && h.trim().toLowerCase() !== n);
+                              return { ...d, photosHiddenFrom: { ...cur, [p.key]: nextList } };
+                            })}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
           <button type="button" className="btn-accent rounded-[10px] px-4 py-2 text-sm font-semibold mt-5" disabled={saving} onClick={() => void save()}>
             {saving ? 'Saving…' : 'Save permissions'}
           </button>
