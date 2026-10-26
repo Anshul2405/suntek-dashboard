@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { formatDate, istDayKey } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange, istDayKey } from '../../../lib/utils/formatting';
+import { useUrlFilters } from '../../../lib/urlFilters';
+import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
+import { Activity, Warehouse } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -175,14 +178,20 @@ export function StockRegister() {
   const [months, setMonths] = useState<StockMonthRow[]>([]);
   const [plants, setPlants] = useState<Plant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  // Register filters live in the URL (q, store, status, from, to) — refresh / back= keep them.
+  const filters = useUrlFilters(['q', 'store', 'status', 'from', 'to'] as const);
+  const search = filters.values.q;
+  const { store: storeFilter, status: stockStatusFilter, from: entryFrom, to: entryTo } = filters.values;
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAnoms, setShowAnoms] = useState(false);
   const [showSettled, setShowSettled] = useState(false);   // resolved / false-positive rows
   const [resolutions, setResolutions] = useState<AnomalyResolutionRow[]>([]);
   const [reviewItem, setReviewItem] = useState<ReviewedAnomaly | null>(null);
-  const [collapsed, setCollapsed] = useState(true);        // the 400+ row table is hidden until asked
-  const [plantFilter, setPlantFilter] = useState<string[]>([]); // empty = all plants (merged)
+  // The 400+ row table is hidden until asked — unless the URL already carries a
+  // filter (refresh / back=), which would otherwise apply to a hidden list.
+  const [collapsed, setCollapsed] = useState(() => !filters.active);
+  // One store, or none = every accessible store combined (identical items summed).
+  const plantFilter = useMemo(() => (storeFilter ? [storeFilter] : []), [storeFilter]);
   const [showPurchase, setShowPurchase] = useState(false);
 
   // Import flow
@@ -448,7 +457,6 @@ export function StockRegister() {
     return null;
   }, [plantFilter, storeChips, t]);
 
-  function togglePlant(id: string) { setPlantFilter(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]); }
 
   // Group identical items across the selected registers.
   //
@@ -485,17 +493,24 @@ export function StockRegister() {
       }
       else map.set(key, { key, itemName: it.item_name, equipment: it.equipment || '', model: it.model, unit: it.unit || '', opening: store.opening, onHand: store.onHand, issued: store.issued, procured: store.procured, repaired: store.repaired, stores: [store], jobNo: job, ticketNos: [...tickets], entryAt: it.created_at || it.updated_at || '' });
     }
-    return [...map.values()].sort((a, b) => (b.entryAt || '').localeCompare(a.entryAt || '') || a.itemName.localeCompare(b.itemName));
-  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap]); // eslint-disable-line react-hooks/exhaustive-deps
+    return [...map.values()]
+      .filter(m => inIstDayRange(m.entryAt, entryFrom, entryTo))
+      .sort((a, b) => (b.entryAt || '').localeCompare(a.entryAt || '') || a.itemName.localeCompare(b.itemName));
+  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap, entryFrom, entryTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Counts stay across all statuses so picking "Low" doesn't zero the others.
   const summary = useMemo(() => {
     let inStock = 0, low = 0, out = 0;
     for (const m of merged) { const s = stockStatus(m.onHand); if (s.key === 'out') out++; else if (s.key === 'low') low++; else inStock++; }
     return { total: merged.length, inStock, low, out };
   }, [merged]);
+  const shownMerged = useMemo(
+    () => (stockStatusFilter ? merged.filter(m => stockStatus(m.onHand).key === stockStatusFilter) : merged),
+    [merged, stockStatusFilter],
+  );
 
   // Column sort — click a header to sort by it (toggles asc/desc).
-  const mergedSort = useSortable(merged, {
+  const mergedSort = useSortable(shownMerged, {
     date: r => r.entryAt || '',
     item: r => r.itemName,
     opening: r => r.opening,
@@ -506,7 +521,7 @@ export function StockRegister() {
   }, { key: 'date', dir: 'desc' });
 
   // Paginate the register — it can hold hundreds of items per plant.
-  const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${search}|${plantFilter.join(',')}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
+  const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
 
   // ── Import ──────────────────────────────────────────────────────────────────
   // Stores this user may upload against. At Rehla that is the one shared
@@ -873,26 +888,28 @@ export function StockRegister() {
                   )}
                 </div>
               )}
-              {storeChips.length > 1 && (
-                <div className="flex gap-2 mb-3 flex-wrap">
-                  <button onClick={() => setPlantFilter([])} className={`chip${plantFilter.length === 0 ? ' active' : ''}`}>{t('storereq.all_stores', 'All stores')}</button>
-                  {storeChips.map(p => (
-                    <button
-                      key={p.id} onClick={() => togglePlant(p.id)}
-                      className={`chip${plantFilter.includes(p.id) ? ' active' : ''}`}
-                      // An empty register stays selectable — that is how you
-                      // confirm it is genuinely empty rather than filtered out.
-                      style={p.hasData ? undefined : { opacity: 0.55 }}
-                      title={p.hasData ? undefined : t('storereq.storeNoStock', 'no stock file uploaded yet')}
-                    >
-                      {p.name}{p.hasData ? '' : ' ·'}
-                    </button>
-                  ))}
-                  {plantFilter.length > 1 && <span style={{ fontSize: 11, color: '#94A3B8', alignSelf: 'center' }}>{t('storereq.stockCombinedNote', 'combined · identical items summed')}</span>}
-                </div>
-              )}
-
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('storereq.stockSearchPh', 'Search item, job no, or ticket #…')} style={{ ...inputStyle, width: '100%', marginBottom: 12 }} />
+              <FilterBar
+                className="mb-3 !p-0 !border-0 !shadow-none !bg-transparent"
+                search={search} onSearch={(q) => filters.set({ q })}
+                searchPlaceholder={t('storereq.stockSearchPh', 'Search item, job no, or ticket #…')}
+                onReset={filters.reset}
+              >
+                {storeChips.length > 1 && (
+                  <FilterSelect icon={<Warehouse />} value={storeFilter || 'all'} onChange={(v) => filters.set({ store: v === 'all' ? '' : v })}
+                    options={[{ value: 'all', label: t('storereq.all_stores', 'All stores') }, ...storeChips.map(p => ({
+                      value: p.id,
+                      label: `${p.name}${p.hasData ? '' : ` · ${t('storereq.storeNoStock', 'no stock file uploaded yet')}`}`,
+                    }))]} />
+                )}
+                <FilterSelect icon={<Activity />} value={stockStatusFilter || 'all'} onChange={(v) => filters.set({ status: v === 'all' ? '' : v })}
+                  options={[
+                    { value: 'all', label: t('common.allStatus') },
+                    { value: 'in', label: t('storereq.legend_in_stock', 'In stock') },
+                    { value: 'low', label: t('storereq.legend_low', 'Low') },
+                    { value: 'out', label: t('storereq.legend_out', 'Out') },
+                  ]} />
+                <DateRangeFilter from={entryFrom} to={entryTo} onChange={({ from, to }) => filters.set({ from, to })} />
+              </FilterBar>
 
               {/* Anomalies — open ones count; settled (resolved / false-positive) collapse
                   behind a toggle. Review actions go through the resolve_stock_anomaly RPC. */}
@@ -1004,7 +1021,7 @@ export function StockRegister() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 12 : 11} className="text-center text-slate-400 py-6 text-sm">{t('storereq.stockNoItemsMatch', 'No items match.')}</td></tr>}
+                    {mergedSort.sorted.length === 0 && <tr><td colSpan={multiStore ? 12 : 11} className="text-center text-slate-400 py-6 text-sm">{loading ? '…' : t('common.noRowsMatchFilters', 'No rows match these filters')}</td></tr>}
                     {pageRows.map((m, idx) => {
                       const st = stockStatus(m.onHand);
                       const isOpen = expanded === m.key;
