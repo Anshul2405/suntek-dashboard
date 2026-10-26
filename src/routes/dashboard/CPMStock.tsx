@@ -153,18 +153,18 @@ export function CPMStock() {
     <>
       {/* KPIs */}
       <div className="grid grid-cols-12 gap-4 mb-4">
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Boxes />} tone="orange"
-          label={t('cpmStock.totalStockRecords')} value={stockItems.length}
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Boxes />} tone="orange"
+          label={t('cpmStock.totalStockRecords')} value={loading ? '…' : stockItems.length}
           caption={t('cpmStock.acrossAllPlants')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Layers />} tone="blue"
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Layers />} tone="blue"
           label={t('cpmStock.totalQuantity')}
-          value={stockItems.reduce((s, i) => s + (i.quantity || 0), 0).toFixed(0)}
+          value={loading ? '…' : stockItems.reduce((s, i) => s + (i.quantity || 0), 0).toFixed(0)}
           caption={t('cpmStock.unitsOnRecord')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Package />} tone="purple"
-          label={t('cpmStock.productsTracked')} value={new Set(stockItems.map(i => i.product)).size}
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Package />} tone="purple"
+          label={t('cpmStock.productsTracked')} value={loading ? '…' : new Set(stockItems.map(i => i.product)).size}
           caption={t('cpmStock.uniqueProducts')} />
-        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Fuel />} tone="amber"
-          label={t('cpmStock.tankCapacity')} value={`${avgTankLevel}%`}
+        <StatCard className="col-span-6 lg:col-span-3" icon={<Fuel />} tone="amber"
+          label={t('cpmStock.tankCapacity')} value={loading ? '…' : tanks.length ? `${avgTankLevel}%` : '—'}
           caption={<div className="progress mt-1"><div style={{ width: `${avgTankLevel}%` }}></div></div>} />
       </div>
 
@@ -216,6 +216,13 @@ export function CPMStock() {
                     </tr>
                   );
                 })}
+                {!loading && locations.length === 0 && (
+                  <tr>
+                    <td colSpan={densities.length + 2} className="text-center text-slate-400 py-6 text-sm">
+                      {t('cpmStock.noDrumStock')}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
