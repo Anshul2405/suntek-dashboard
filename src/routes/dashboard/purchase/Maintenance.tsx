@@ -3644,6 +3644,7 @@ export function Maintenance() {
           reporterRole={role}
           focusId={searchParams.get('incident')}
           onCloseFocused={backTo ? () => navigate(backTo) : undefined}
+          isAdmin={isAdmin}
         />
       )}
 

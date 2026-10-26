@@ -3581,6 +3581,9 @@ const en = {
     fileNotLinked: "The file uploaded, but it could not be saved on the incident.",
     uploadFailed: "Upload failed.",
     tagFailed: "Could not save the tagged people.",
+    edit: "Edit",
+    saveChanges: "Save changes",
+    editFailed: "Could not save the changes.",
   },
   recon: {
     netHelp: "Net units = added − consumed. Positive means this factory has put more into the shared store than it has taken out; negative means it has drawn on stock someone else paid for.",
