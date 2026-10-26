@@ -70,6 +70,13 @@ const SYSTEM_TYPE_KEYS: Record<string, [string, string]> = {
   defective_disposition: ['activity.sysDefective', 'Defective part decided'],
   import_deleted: ['activity.sysImportDeleted', 'Upload deleted'],
 };
+/** Labels only for other app-written types, so the feed never shows a slug.
+ *  Kept out of SYSTEM_TYPE_KEYS: that map also decides source/verification. */
+const OTHER_TYPE_LABELS: Record<string, [string, string]> = {
+  stock_edit: ['activity.typeStockEdit', 'Stock item edited'],
+  stock_delete: ['activity.typeStockDelete', 'Stock item deleted'],
+  stock_check_override: ['activity.typeStockCheckOverride', 'Store check overridden'],
+};
 const ticketRef = (tk: { id: string; ticket_no?: string | number | null }) => ticketNoLabel(tk);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
 const photoList = (pairs: [string | null | undefined, string][]): LightboxImage[] =>
@@ -421,7 +428,7 @@ export function ActivityLog() {
       key: a.id || `manual-${i}`,
       equipment: a.equipment || '—',
       // Saved lower-case ('regular'); show the same label the form offers.
-      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : a.type,
+      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : OTHER_TYPE_LABELS[kind] ? t(OTHER_TYPE_LABELS[kind][0], OTHER_TYPE_LABELS[kind][1]) : a.type,
       date: a.date,
       doneBy: a.done_by,
       verifiedBy: sys ? null : a.verified_by,
