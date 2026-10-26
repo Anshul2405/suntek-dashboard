@@ -1409,6 +1409,9 @@ export function Maintenance() {
       if (ticketForStore && needsPart) {
         setSelectedTicket(ticketForStore);
         setShowStoreForm(true);
+      } else if (backTo) {
+        // Raised from another screen (FAR ?back=) — go back there.
+        navigate(backTo);
       }
     }, 900);
     } finally { setRaising(false); }
@@ -3920,7 +3923,7 @@ export function Maintenance() {
       )}
 
       {/* ── PANEL: Raise ticket ──────────────────────────────────────────── */}
-      <SlidePanel open={showRaisePanel} onClose={() => { setShowRaisePanel(false); setRaiseSaved(false); }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
+      <SlidePanel open={showRaisePanel} onClose={() => { setShowRaisePanel(false); setRaiseSaved(false); if (backTo) navigate(backTo); }} title={t('maint.raisePanelTitle')} subtitle={t('maint.raisePanelSubtitle')}>
         <PanelField label={t('maint.materialKind', 'Material')}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             {(['spare', 'consumable'] as const).map(kind => {
@@ -4025,7 +4028,7 @@ export function Maintenance() {
         <PhotoUploader onBlobReady={setRaisePhotoBlob} label={t('maint.defectivePhoto')} hint={t('maint.defectivePhotoHint')} />
         {uploading && <UploadBar pct={uploadPct} color="#EF6C00" />}
         <PanelDivider />
-        <PanelFooter saved={raiseSaved} onCancel={() => setShowRaisePanel(false)} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={raising || (raiseForm.materialKind === 'spare' ? !raiseForm.farAssetId : raiseForm.materialKind === 'consumable' ? !raiseForm.equipment.trim() : true)} requiredHint={raiseForm.materialKind === 'spare' ? t('maint.spareNeedPick', 'Pick the equipment from the FAR list.') : raiseForm.materialKind === 'consumable' ? t('maint.consumableNeedName', 'Write the consumable name.') : t('maint.chooseMaterialKind', 'Choose Material Spare or Material Consumable')} />
+        <PanelFooter saved={raiseSaved} onCancel={() => { setShowRaisePanel(false); if (backTo) navigate(backTo); }} onSave={handleRaiseTicket} saveLabel={raising ? t('maint.raising') : t('maint.raiseTicket')} successLabel={t('maint.ticketRaised')} successSub={t('maint.ticketRaisedSub')} disabled={raising || (raiseForm.materialKind === 'spare' ? !raiseForm.farAssetId : raiseForm.materialKind === 'consumable' ? !raiseForm.equipment.trim() : true)} requiredHint={raiseForm.materialKind === 'spare' ? t('maint.spareNeedPick', 'Pick the equipment from the FAR list.') : raiseForm.materialKind === 'consumable' ? t('maint.consumableNeedName', 'Write the consumable name.') : t('maint.chooseMaterialKind', 'Choose Material Spare or Material Consumable')} />
       </SlidePanel>
 
       {/* ── PANEL: Complete periodic ─────────────────────────────────────── */}
