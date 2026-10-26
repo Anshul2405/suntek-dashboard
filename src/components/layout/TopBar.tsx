@@ -182,23 +182,26 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
         </div>
       </div>
 
-      {/* Right: sync + actions + profile */}
-      <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
-        <label className="min-w-0">
-          <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
-          <select
-            value={busyCompany}
-            onChange={(e) => setBusyCompany(e.target.value as typeof busyCompany)}
-            aria-label={t('topbar.busyCompany', { defaultValue: 'Busy company' })}
-            className="h-8 max-w-[9.5rem] sm:max-w-[11rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] font-medium text-slate-700"
-          >
-            <option value="all">{t('topbar.busyAll', { defaultValue: 'All companies' })}</option>
-            {BUSY_COMPANIES.map((company) => (
-              <option key={company.code} value={company.code}>{company.short}</option>
-            ))}
-          </select>
-        </label>
-        <BusySyncStamp formatAge={formatAge} />
+      {/* Right: sync + actions + profile. On a phone the company picker + sync
+          dot take their own row so they never sit on top of the icons. */}
+      <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-wrap md:flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
+        <div className="flex items-center justify-end min-w-0 w-full md:w-auto">
+          <label className="min-w-0">
+            <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
+            <select
+              value={busyCompany}
+              onChange={(e) => setBusyCompany(e.target.value as typeof busyCompany)}
+              aria-label={t('topbar.busyCompany', { defaultValue: 'Busy company' })}
+              className="h-8 w-full max-w-[9.5rem] sm:max-w-[11rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] font-medium text-slate-700"
+            >
+              <option value="all">{t('topbar.busyAll', { defaultValue: 'All companies' })}</option>
+              {BUSY_COMPANIES.map((company) => (
+                <option key={company.code} value={company.code}>{company.short}</option>
+              ))}
+            </select>
+          </label>
+          <BusySyncStamp formatAge={formatAge} />
+        </div>
 
         {/* Global quick-search (Cmd/Ctrl+K) */}
         <button
