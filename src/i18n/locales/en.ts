@@ -580,6 +580,7 @@ const en = {
       'New Batch starts the run → Log Reading records it hourly → Close runs yield QC → Create Batch Sheet records density and photos as P12-13 → the register holds it → the accountant moves it to stock, then dispatch. Upload OCR is the paper shortcut into the readings.\n\nOpen questions for the plant: who creates the sheet, who closes the run, and whether every batch gets a sheet or only the ones that go to stock.\n\nReplay this anytime with How this works.',
   },
   batchProd: {
+    noReactors: "No reactors are set up for this plant yet — ask an admin to add them.",
     photoHeat: "Heat sample",
     photoBucket: "Bucket",
     photoSheet: "Sheet",
@@ -3401,6 +3402,7 @@ const en = {
     invoiceNo: "Invoice no. (optional)",
     date: "Return date",
     cost: "Repair cost ₹ (optional)",
+    costShort: "Repair cost",
     dupInvoice: "A repair return with this invoice number already exists for this plant — double-check before saving (saving anyway is allowed).",
     bill: "Invoice / bill file (optional — PDF, JPG, PNG)",
     attach: "Attach file",

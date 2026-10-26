@@ -876,7 +876,7 @@ export function FAR() {
 
       {/* FAR register */}
       <div className="relative" ref={farRegisterRef}>
-        <KpiInfoButton info={{ title: 'Fixed Asset Register (FAR)', what: 'Complete list of all capitalized fixed assets across 4 plants. Each asset must be individually named on the FAR to be covered by the marine/fire insurance policy. Photo proof required for audit. New assets added via the "+ Add asset" slide panel.', source: 'Form entry', formLabel: '+ Add asset form', formPath: '/dashboard/purchase/far', note: 'Data from FAR_DATA mock (mockData.ts). Future: Supabase fixed_assets table.' }} />
+        <KpiInfoButton info={{ title: 'Fixed Asset Register (FAR)', what: 'Complete list of capitalised fixed assets across your plants. Each asset must be individually named on the FAR to be covered by the marine/fire insurance policy. Photo proof required for audit. New assets are added with "Register asset" or a CSV / Excel import.', source: 'Form entry', formLabel: 'Register asset', formPath: '/dashboard/purchase/far', note: 'Live from the fixed asset register.' }} />
       <SectionCard
         title={t('far.fixedAssetRegister')}
         subtitle={t('far.equipMasterSubtitle', { defaultValue: 'Equipment master for Preventive Maintenance — grouped by type · {{types}} types · {{assets}} assets', types: loading ? '…' : equipGroups.length, assets: loading ? '…' : assets.length })}
@@ -1208,7 +1208,8 @@ export function FAR() {
           const open = entries.filter(e => e.status !== 'closed').length;
           return (
             <div>
-              <div className="grid grid-cols-3 gap-3 mb-4">
+              {/* 2-up on a phone (cost spans) — three ₹ values don't fit a 390px panel. */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
                 <div className="rounded-xl border border-slate-100 p-3" style={{ background: '#F8FAFC' }}>
                   <div className="text-[10px] text-slate-500 uppercase tracking-wider">{t('far.repairsWord', 'Repairs')}</div>
                   <div className="text-lg font-extrabold num text-slate-800">{entries.length}</div>
@@ -1217,7 +1218,7 @@ export function FAR() {
                   <div className="text-[10px] text-slate-500 uppercase tracking-wider">{t('far.openWord', 'Open')}</div>
                   <div className="text-lg font-extrabold num" style={{ color: open ? '#B45309' : '#0F172A' }}>{open}</div>
                 </div>
-                <div className="rounded-xl border border-slate-100 p-3" style={{ background: '#F0FDF4' }}>
+                <div className="col-span-2 sm:col-span-1 rounded-xl border border-slate-100 p-3" style={{ background: '#F0FDF4' }}>
                   <div className="text-[10px] text-slate-500 uppercase tracking-wider">{t('far.totalCost', 'Total cost')}</div>
                   <div className="text-lg font-extrabold num" style={{ color: '#15803D' }}>{total ? inr(total) : '—'}</div>
                 </div>

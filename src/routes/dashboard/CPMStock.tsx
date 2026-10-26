@@ -318,7 +318,7 @@ export function CPMStock() {
           style={{ background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(4px)' }}
           onClick={e => { if (e.target === e.currentTarget) handleCloseBulkModal(); }}
         >
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl p-7 relative">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl p-5 sm:p-7 relative">
             {/* Header */}
             <div className="flex items-start justify-between mb-5">
               <div>
@@ -378,14 +378,14 @@ export function CPMStock() {
                         value={row.item}
                         onChange={e => updateBulkRow(idx, 'item', e.target.value)}
                         placeholder="NC Thinner…"
-                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
+                        className="min-w-0 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
                       />
                       <input
                         type="number"
                         value={row.adjustment}
                         onChange={e => updateBulkRow(idx, 'adjustment', e.target.value)}
                         placeholder="5"
-                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
+                        className="min-w-0 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
                       />
                       <div className="flex rounded-xl overflow-hidden border border-slate-200 text-xs font-semibold">
                         <button
@@ -405,7 +405,7 @@ export function CPMStock() {
                         value={row.note}
                         onChange={e => updateBulkRow(idx, 'note', e.target.value)}
                         placeholder={t('cpmStock.reasonPlaceholder')}
-                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
+                        className="min-w-0 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-200 transition"
                       />
                       <button
                         onClick={() => bulkRows.length > 1 ? removeBulkRow(idx) : undefined}

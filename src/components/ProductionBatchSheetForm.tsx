@@ -477,7 +477,7 @@ export function ProductionBatchSheetForm({
               <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Reactor</span>
               {reactors.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-xs text-slate-400">
-                  {t('batchProd.noReactors', 'No reactors for this plant. Run migration 0009 / query 81 first.')}
+                  {t('batchProd.noReactors', 'No reactors are set up for this plant yet — ask an admin to add them.')}
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
