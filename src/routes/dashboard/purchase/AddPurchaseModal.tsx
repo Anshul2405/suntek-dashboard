@@ -44,10 +44,12 @@ function localToday(): string {
  *  Submission is a single atomic, idempotent RPC (apply_stock_purchase): the
  *  receipt (vendor, amount, GST, invoice, bill) is persisted and the register
  *  increments happen server-side in one transaction. */
-export function AddPurchaseModal({ open, onClose, onApplied }: {
+export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
   open: boolean;
   onClose: () => void;
   onApplied: () => void;
+  /** Preselect this factory when it is one the user may pick (e.g. a dispatch's destination). */
+  initialPlantId?: string;
 }) {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
@@ -101,7 +103,8 @@ export function AddPurchaseModal({ open, onClose, onApplied }: {
       const { data: si } = await storeQuery(supabase.from('store_items').select('id, item_name, on_hand, unit, plant_id, store_id')).returns<StockItem[]>();
       if (!alive) return;
       setPlants(base);
-      setPlantId(prev => prev || base[0]?.id || '');
+      const preferred = initialPlantId && base.some(p => p.id === initialPlantId) ? initialPlantId : '';
+      setPlantId(prev => prev || preferred || base[0]?.id || '');
       try {
         const late = await loadMyLateRequests('purchase', actorName);
         if (alive) setMyLate(late);
