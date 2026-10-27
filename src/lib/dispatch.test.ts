@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canReceive, groupInTransit, isStorePart, placesOrFilter, type DispatchRow } from './dispatch';
+import { billUrlFromRemarks, canReceive, groupInTransit, isStorePart, placesOrFilter, withBillRemark, type DispatchRow } from './dispatch';
 
 const row = (over: Partial<DispatchRow>): DispatchRow => ({
   id: Math.random().toString(36).slice(2),
@@ -45,6 +45,12 @@ describe('dispatch', () => {
     expect(canReceive(row({ destination: 'Madan Chemical – Sikandrabad' }), mine, false)).toBe(false);
     expect(canReceive(row({ destination: 'Madan Chemical – Sikandrabad' }), mine, true)).toBe(true);
     expect(canReceive(row({ receive_date: '2026-10-27' }), mine, true)).toBe(false);
+  });
+
+  it('keeps the purchaser bill URL in remarks', () => {
+    const remarks = withBillRemark('Store req #12', 'https://res.cloudinary.com/x/bill.jpg');
+    expect(billUrlFromRemarks(remarks)).toBe('https://res.cloudinary.com/x/bill.jpg');
+    expect(billUrlFromRemarks(null)).toBe(null);
   });
 
   it('quotes place names for the PostgREST filter', () => {

@@ -10,9 +10,10 @@ type TicketStatus = Database['public']['Tables']['maintenance_tickets']['Row']['
 // single status is a roll-up of the least-advanced open item.
 //
 // In store:      store → unit_head → handover → done
-// Not in store:  store → unit_head → vijay → purchase (named purchaser)
-//                → purchase_manager (bill) → handover → done
+// Not in store:  store → unit_head → vijay → purchase (named purchaser:
+//                BUSY ref + supplier bill on the same form) → handover → done
 //
+// The purchaser has the bill, so there is no Purchase Manager bill step.
 // Vijay ji IS management — there is no further management step. The vijay step
 // needs migration 0038 (columns on maintenance_store_requests + the ticket
 // statuses). Until it is applied `vijayLive` is false and a not-in-store item
@@ -37,7 +38,8 @@ export function itemStageOf(r: StoreReqRow, vijayLive: boolean): ItemStage {
     }
     return 'purchase';
   }
-  if (!r.bill_verified) return 'purchase_manager'; // awaiting the aggregate PM bill
+  // Purchaser still has to attach the bill on this same step.
+  if (!r.bill_verified && !r.handover_invoice_url) return 'purchase';
   return r.handover_confirmed_at ? 'done' : 'handover';
 }
 
@@ -51,7 +53,7 @@ export function stageToTicket(stage: ItemStage, vijayLive: boolean): TicketStatu
     case 'unit_head': return 'pending_unit_head';
     case 'vijay': return 'pending_vijay';
     case 'purchase': return vijayLive ? 'pending_buyer' : 'pending_purchase';
-    case 'purchase_manager': return 'pending_purchase_manager';
+    case 'purchase_manager': return vijayLive ? 'pending_buyer' : 'pending_purchase';
     case 'handover': return 'pending_handover';
     default: return undefined;
   }

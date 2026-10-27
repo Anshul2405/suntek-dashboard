@@ -12,8 +12,10 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination, ButtonV2 } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { AddPurchaseModal } from './AddPurchaseModal';
+import { PhotoUploader } from './maintenance/shared';
+import { uploadWorkflowImage } from '../../../lib/cloudinary';
 import {
-  HEAD_OFFICE, canReceive, groupInTransit, isInTransit, isStorePart, placesOrFilter, type DispatchRow,
+  HEAD_OFFICE, billUrlFromRemarks, canReceive, groupInTransit, isInTransit, isStorePart, placesOrFilter, withBillRemark, type DispatchRow,
 } from '../../../lib/dispatch';
 
 const input = 'block mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm w-full';
@@ -65,6 +67,7 @@ export function DispatchLog() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState(BLANK);
+  const [billBlob, setBillBlob] = useState<Blob | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -97,18 +100,26 @@ export function DispatchLog() {
 
   const openForm = () => {
     setForm({ ...BLANK, date: istToday(), sender: activeProfile.name, from: myPlaces[0] ?? '' });
+    setBillBlob(null);
     setSaveError(null);
     setShowForm(true);
   };
 
   const canSave = !!form.destination && !!form.date && !!form.item.trim() && !!form.sender.trim() && !!form.from
-    && form.destination !== form.from && (form.kind === 'item' || !!form.supplier.trim());
+    && form.destination !== form.from && (form.kind === 'item' || (!!form.supplier.trim() && !!billBlob));
 
   async function save() {
     if (!canSave) return;
     setSaving(true);
     setSaveError(null);
     try {
+      let remarks = form.remarks.trim();
+      if (form.kind === 'part' && billBlob) {
+        const uploaded = await uploadWorkflowImage(billBlob, {
+          workflow: 'store-req', kind: 'bill', creator: activeProfile.name, entityId: form.item.trim().slice(0, 40),
+        });
+        remarks = withBillRemark(remarks, uploaded.secure_url);
+      }
       const { data, error } = await insertRows('dispatch_logs', {
         destination: form.destination,
         date: form.date,
@@ -120,15 +131,18 @@ export function DispatchLog() {
         from_location: form.from,
         supplier: form.kind === 'part' ? form.supplier.trim() : null,
         receive_date: null,
-        remarks: form.remarks.trim() || null,
+        remarks: remarks || null,
       }).select('*').single();
       if (error) {
         setSaveError(error.message);
         return;
       }
       if (data) setRows(prev => [data as DispatchRow, ...prev]);
+      setBillBlob(null);
       setShowForm(false);
       toast.success(t('dispatch.savedInTransit', 'Saved. It shows as in transit until the receiving place fills the receive date.'));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -261,7 +275,10 @@ export function DispatchLog() {
             </label>
           </div>
           {form.kind === 'part' && (
-            <p className="text-xs text-slate-500 mt-2">{t('dispatch.partHint', 'On arrival the receiving plant opens Receive into stock, which is the same Add purchase used in the Stock register.')}</p>
+            <>
+              <PhotoUploader onBlobReady={setBillBlob} label={t('dispatch.bill', 'Supplier bill *')} hint={t('dispatch.billHint', 'The purchaser has the bill — attach it with the vehicle number.')} />
+              <p className="text-xs text-slate-500 mt-2">{t('dispatch.partHint', 'On arrival the receiving plant opens Receive into stock, which is the same Add purchase used in the Stock register.')}</p>
+            </>
           )}
           {saveError && (
             <p className="text-xs text-red-600 mt-2">{t('dispatch.saveFailed', { defaultValue: 'Not saved: {{msg}}. If the table refuses every row it is waiting for SQL (migration 0038).', msg: saveError })}</p>
@@ -296,6 +313,7 @@ export function DispatchLog() {
                     <div className="flex flex-wrap items-center gap-2">{kindBadge(r)}<span className="font-semibold break-words">{r.item || '—'}</span></div>
                     <div className="text-xs text-slate-500 mt-0.5 break-words">
                       {r.from_location || '—'} → {r.destination || '—'} · {r.sender || '—'}{r.supplier ? ` · ${r.supplier}` : ''}
+                      {billUrlFromRemarks(r.remarks) ? <> · <a className="text-emerald-700 font-semibold" href={billUrlFromRemarks(r.remarks)!} target="_blank" rel="noreferrer">{t('dispatch.billLink', 'Bill')}</a></> : null}
                     </div>
                   </div>
                   {receiveAction(r)}
@@ -347,7 +365,9 @@ export function DispatchLog() {
                     </div>
                   )}
                 </td>
-                <td>{r.remarks || '—'}</td>
+                <td>{billUrlFromRemarks(r.remarks)
+                  ? <a className="text-emerald-700 font-semibold" href={billUrlFromRemarks(r.remarks)!} target="_blank" rel="noreferrer">{t('dispatch.billLink', 'Bill')}</a>
+                  : (r.remarks || '—')}</td>
               </tr>
             ))}
             {page.pageRows.length === 0 && (

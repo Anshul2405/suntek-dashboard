@@ -271,22 +271,8 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
     },
   },
 
-  // ── Purchase Manager: bill upload & dispatch ──────────────────────────────
-  {
-    key: 'purchase-bill',
-    titleKey: 'todo.section.purchaseBill',
-    icon: '🧾',
-    tone: 'purple',
-    columns: TICKET_COLS('todo.col.action'),
-    appliesTo: (ctx) => hasRole(ctx, 'purchase_manager'),
-    fetch: async (ctx) => {
-      const { data } = await ctx.scopeQuery(
-        supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_purchase_manager'),
-        { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
-      return (data ?? []).map((t) => ticketItem(ctx, t, { badge: { text: 'Bill & dispatch', tone: 'purple' } }));
-    },
-  },
+  // Purchase Manager bill queue removed: the purchaser uploads the bill with
+  // vehicle / BUSY details. Leftover pending_purchase_manager tickets sit in Buying.
 
   // ── Vijay ji (management): approve buying a part that is not in store ────
   {
@@ -329,7 +315,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       if (!admin && !isListedBuyer(buyers, ctx.personName)) return [];
       const [{ data: tk }, { data: rq }] = await Promise.all([
         ctx.scopeQuery(
-          supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_buyer'),
+          supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_buyer', 'pending_purchase', 'pending_purchase_manager']),
           { unitCol: 'unit_id' },
         ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>(),
         ctx.scopeQuery(

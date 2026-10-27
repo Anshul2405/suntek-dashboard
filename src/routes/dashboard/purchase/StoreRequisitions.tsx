@@ -35,6 +35,9 @@ import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
 import { useColumnLive } from '../../../lib/schemaProbe';
 import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
+import { PhotoUploader } from './maintenance/shared';
+import { uploadWorkflowImage } from '../../../lib/cloudinary';
+import { withBillRemark } from '../../../lib/dispatch';
 
 // ticket_id is added by migration NN_requisition_ticket_link.sql; typed here until
 // database.types.ts is regenerated so requisitions raised from a maintenance ticket
@@ -114,6 +117,7 @@ export function StoreRequisitions() {
     || (row.buyer_name ? personMatches(row.buyer_name, activeProfile.name) : isListedBuyer(buyers, activeProfile.name));
   const [buyerPick, setBuyerPick] = useState('');
   const [transit, setTransit] = useState({ supplier: '', vehicle: '' });
+  const [transitBill, setTransitBill] = useState<Blob | null>(null);
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const me = useMyIdentity();
   const [open, setOpen] = useState(false);
@@ -307,9 +311,13 @@ export function StoreRequisitions() {
     if (!canBuyRow(row)) return;
     const supplier = transit.supplier.trim();
     const vehicle = transit.vehicle.trim().toUpperCase();
-    if (!supplier || !vehicle) return;
+    if (!supplier || !vehicle || !transitBill) return;
     setDeciding(true);
     try {
+      const uploaded = await uploadWorkflowImage(transitBill, {
+        workflow: 'store-req', subfolder: row.id, entityId: row.id, kind: 'bill', creator: activeProfile.name,
+      });
+      const remarks = withBillRemark(`Store req #${reqNoLabel(row)}`, uploaded.secure_url);
       const { data, error } = await insertRows('dispatch_logs', {
         destination: row.plants?.name || null,
         date: istToday(),
@@ -321,7 +329,7 @@ export function StoreRequisitions() {
         from_location: null,
         supplier,
         receive_date: null,
-        remarks: `Store req #${reqNoLabel(row)}`,
+        remarks,
       }).select('id').single();
       if (error) { toast.error(error.message); return; }
       const patch = { status: 'in_transit' as const, supplier, vehicle_no: vehicle, dispatch_id: (data as { id: string } | null)?.id ?? null };
@@ -330,6 +338,7 @@ export function StoreRequisitions() {
       setItems(prev => prev.map(r => (r.id === row.id ? { ...r, ...patch } : r)));
       setDetailReq(prev => (prev && prev.id === row.id ? { ...prev, ...patch } : prev));
       setTransit({ supplier: '', vehicle: '' });
+      setTransitBill(null);
       toast.success(t('storereq.transit_ok', 'Marked in transit — it is on Dispatch by vehicle.'));
       insertRows('notifications', {
         target_roles: ['admin', 'store_manager_maint', 'warehouse_manager', 'unit_head'],
@@ -342,6 +351,8 @@ export function StoreRequisitions() {
         read_by: [],
         plant_id: row.plant_id || null,
       }).then(() => {}, () => {});
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setDeciding(false);
     }
@@ -737,7 +748,8 @@ export function StoreRequisitions() {
                 <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <PanelInput placeholder={t('storereq.supplier_ph', 'Supplier')} value={transit.supplier} onChange={e => setTransit(f => ({ ...f, supplier: e.target.value }))} />
                   <PanelInput placeholder={t('storereq.vehicle_ph', 'Vehicle number')} value={transit.vehicle} onChange={e => setTransit(f => ({ ...f, vehicle: e.target.value }))} />
-                  <ButtonV2 variant="primary" disabled={deciding || !transit.supplier.trim() || !transit.vehicle.trim()} onClick={() => void markInTransit(detailReq)}>
+                  <PhotoUploader onBlobReady={setTransitBill} label={t('storereq.bill_label', 'Supplier bill *')} hint={t('storereq.bill_hint', 'The purchaser has the bill — attach it with the vehicle number.')} />
+                  <ButtonV2 variant="primary" disabled={deciding || !transit.supplier.trim() || !transit.vehicle.trim() || !transitBill} onClick={() => void markInTransit(detailReq)}>
                     {t('storereq.mark_transit_btn', 'Bought — mark in transit')}
                   </ButtonV2>
                   <p style={{ fontSize: 11.5, color: '#64748B' }}>{t('storereq.transit_hint', 'It shows on Purchase book → Dispatch by vehicle. The plant receives it into stock there.')}</p>

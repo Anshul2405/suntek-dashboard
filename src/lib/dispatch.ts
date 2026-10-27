@@ -67,3 +67,14 @@ export function canReceive(row: Pick<DispatchRow, 'destination' | 'receive_date'
   if (!isInTransit(row)) return false;
   return admin || (!!row.destination && myPlaces.has(row.destination));
 }
+
+/** Purchaser bill URL kept in remarks until a dedicated column exists. */
+export function billUrlFromRemarks(remarks: string | null | undefined): string | null {
+  const m = /(https?:\/\/[^\s]+)/i.exec(remarks || '');
+  return m?.[1] ?? null;
+}
+
+export function withBillRemark(remarks: string, url: string): string {
+  const base = remarks.trim();
+  return base ? `${base} · bill ${url}` : `bill ${url}`;
+}

@@ -33,7 +33,7 @@ export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: 
   pending_vijay:            { label: 'Vijay ji',          labelKey: 'maint.statusVijay',            bg: '#EDE9FE', color: '#7C3AED' },
   pending_buyer:            { label: 'Purchaser',         labelKey: 'maint.statusPurchaser',        bg: '#FEF3C7', color: '#D97706' },
   pending_purchase:         { label: 'Purchasing',        labelKey: 'maint.statusPurchasing',       bg: '#EDE9FE', color: '#7C3AED' },
-  pending_purchase_manager: { label: 'Bill & Dispatch',   labelKey: 'maint.statusBillDispatch',     bg: '#FAE8FF', color: '#A21CAF' },
+  pending_purchase_manager: { label: 'Purchaser',         labelKey: 'maint.statusPurchaser',        bg: '#FEF3C7', color: '#D97706' },
   pending_handover:         { label: 'Handover',          labelKey: 'maint.statusHandover',         bg: '#F3E8FF', color: '#9333EA' },
   pending_defective_return: { label: 'Used or return',    labelKey: 'maint.statusDefectiveReturn',  bg: '#FEF3C7', color: '#D97706' },
   changes_requested:        { label: 'Changes Requested', labelKey: 'maint.statusChangesRequested', bg: '#FEF2F2', color: '#DC2626' },
@@ -43,19 +43,19 @@ export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: 
 // pending_purchase is shown in strip but may be skipped (available-in-store path)
 export const EMERGENCY_STAGES = [
   'open', 'in_progress', 'pending_store', 'pending_unit_head',
-  'pending_purchase', 'pending_purchase_manager', 'pending_handover', 'pending_defective_return', 'closed',
+  'pending_purchase', 'pending_handover', 'pending_defective_return', 'closed',
 ];
 
 export const STAGE_LABELS: Record<string, string> = {
   open: 'Raised', in_progress: 'Assessed', pending_store: 'Store Check',
-  pending_unit_head: 'Unit Head', pending_vijay: 'Vijay ji', pending_buyer: 'Purchaser', pending_purchase: 'Purchase', pending_purchase_manager: 'Purchase Mgr',
+  pending_unit_head: 'Unit Head', pending_vijay: 'Vijay ji', pending_buyer: 'Purchaser', pending_purchase: 'Purchaser', pending_purchase_manager: 'Purchaser',
   pending_handover: 'Handover', pending_defective_return: 'Used / Return', closed: 'Closed',
 };
 
 /** i18n keys for STAGE_LABELS — translate at render with t(key, STAGE_LABELS[stage]). */
 export const STAGE_LABEL_KEYS: Record<string, string> = {
   open: 'maint.stageRaised', in_progress: 'maint.stageAssessed', pending_store: 'maint.stageStoreCheck',
-  pending_unit_head: 'maint.stageUnitHead', pending_vijay: 'maint.stageVijay', pending_buyer: 'maint.stagePurchaser', pending_purchase: 'maint.stagePurchase', pending_purchase_manager: 'maint.stagePurchaseMgr',
+  pending_unit_head: 'maint.stageUnitHead', pending_vijay: 'maint.stageVijay', pending_buyer: 'maint.stagePurchaser', pending_purchase: 'maint.stagePurchaser', pending_purchase_manager: 'maint.stagePurchaser',
   pending_handover: 'maint.stageHandover', pending_defective_return: 'maint.stageDefective', closed: 'maint.stageClosed',
 };
 
@@ -73,7 +73,7 @@ export const INHOUSE_STAGE_LABEL_KEYS: Record<string, string> = {
   pending_unit_head: 'maint.stageUnitHead', closed: 'maint.stageClosed',
 };
 
-// Part needed but AVAILABLE in store → no procurement, so the Purchase / Purchase Mgr
+// Part needed but AVAILABLE in store → no procurement, so the purchaser
 // stages are omitted entirely (not just greyed): Raised → Assessed → Store Check →
 // Unit Head → Handover → Used / Return → Closed.
 export const AVAILABLE_STAGES = [
