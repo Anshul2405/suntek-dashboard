@@ -72,7 +72,11 @@ export interface Movement {
   sub: string;
   amt: string;
   col: string;
+  /** Display label from the feed: "24 Oct", or "35 min ago" on the today feed. */
   when: string;
+  /** Voucher date yyyy-mm-dd and entry time (ISO) — sent by newer Busy pushes; sort on these. */
+  date?: string;
+  at?: string | null;
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────

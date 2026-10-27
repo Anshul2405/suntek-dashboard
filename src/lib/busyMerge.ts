@@ -79,7 +79,8 @@ function sumRecord(rows: Record<string, unknown>[]): Record<string, unknown> {
       out[key] = sumRecord(values as Record<string, unknown>[]);
     } else if ((key === 'monthly' || key === 'monthlyPurchase') && values.every(Array.isArray)) {
       const flat = values.flat() as Record<string, unknown>[];
-      out[key] = sumBy(flat, 'label', ['revenue', 'invoiceCount', 'uniqueCustomers', 'purchase']);
+      // One company may lack a month the other has; keep the months in calendar order.
+      out[key] = byLabelAsc(sumBy(flat, 'label', ['revenue', 'invoiceCount', 'uniqueCustomers', 'purchase']), 'label');
     } else if ((key === 'top5' || key === 'top5Suppliers') && values.every(Array.isArray)) {
       out[key] = values.flat();
     } else if (typeof values[0] === 'string' || typeof values[0] === 'boolean') {
@@ -98,6 +99,81 @@ function sumRecord(rows: Record<string, unknown>[]): Record<string, unknown> {
     }));
   }
   return out;
+}
+
+// ── Movements: newest first by the real date, never by the "24 Oct" label ──────
+
+const IST_MS = 5.5 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/** Midnight IST (as epoch ms) of the IST day containing `ms`. */
+function istDayStart(ms: number): number {
+  return Math.floor((ms + IST_MS) / DAY_MS) * DAY_MS - IST_MS;
+}
+
+/**
+ * When a movement happened, as { day, at } epoch ms (0 = unknown).
+ *
+ * Uses the voucher date (`date`, yyyy-mm-dd) and entry time (`at`, ISO) when
+ * the feed carries them. Older pushes only carry the display label — "24 Oct"
+ * (no year) or "35 min ago" / "2 hr ago" — so that label is turned into a real
+ * date first: the year is the latest one that does not put the day in the
+ * future. The label itself is never compared as text.
+ */
+export function movementTime(row: Record<string, unknown>, now: number = Date.now()): { day: number; at: number } {
+  const at = typeof row.at === 'string' ? Date.parse(row.at) || 0 : 0;
+  if (typeof row.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(row.date)) {
+    const day = Date.parse(`${row.date.slice(0, 10)}T00:00:00+05:30`);
+    if (Number.isFinite(day)) return { day, at };
+  }
+  const label = String(row.when ?? '').trim().toLowerCase();
+  const rel = /^(\d+)\s*(min|hr|hour)/.exec(label);
+  if (rel) {
+    const ms = now - Number(rel[1]) * (rel[2] === 'min' ? 60_000 : 3_600_000);
+    return { day: istDayStart(ms), at: at || ms };
+  }
+  const m = /^(\d{1,2})\s+([a-z]{3})/.exec(label);
+  if (m && MONTHS[m[2]] != null) {
+    const todayIst = new Date(now + IST_MS);
+    let year = todayIst.getUTCFullYear();
+    let day = Date.UTC(year, MONTHS[m[2]], Number(m[1])) - IST_MS;
+    if (day > istDayStart(now) + DAY_MS) { year -= 1; day = Date.UTC(year, MONTHS[m[2]], Number(m[1])) - IST_MS; }
+    return { day, at };
+  }
+  return { day: 0, at };
+}
+
+/**
+ * A chart label as a day (epoch ms) so merged series stay in calendar order:
+ * "Oct 2026" (revenue trend), "Oct" (analytics months), "24 Oct" (weeks).
+ * Year-less labels take the latest year that is not in the future.
+ */
+export function labelDay(label: unknown, now: number = Date.now()): number {
+  const text = String(label ?? '').trim().toLowerCase();
+  const monYear = /^([a-z]{3})\s+(\d{2}|\d{4})$/.exec(text);
+  if (monYear && MONTHS[monYear[1]] != null) {
+    const y = Number(monYear[2]);
+    return Date.UTC(y < 100 ? 2000 + y : y, MONTHS[monYear[1]], 1) - IST_MS;
+  }
+  if (/^[a-z]{3}$/.test(text) && MONTHS[text] != null) return movementTime({ when: `01 ${text}` }, now).day;
+  return movementTime({ when: text }, now).day;
+}
+
+function byLabelAsc<T extends Record<string, unknown>>(rows: T[], key: string): T[] {
+  return rows.map((row, i) => ({ row, i, d: labelDay(row[key]) }))
+    .sort((a, b) => a.d - b.d || a.i - b.i)
+    .map(x => x.row);
+}
+
+/** Newest first; same day → latest entry first; otherwise the feed's own order. */
+export function sortMovements<T extends object>(rows: T[], now: number = Date.now()): T[] {
+  return rows
+    .map((row, i) => ({ row, i, t: movementTime(row as Record<string, unknown>, now) }))
+    .sort((a, b) => b.t.day - a.t.day || b.t.at - a.t.at || a.i - b.i)
+    .map(x => x.row);
 }
 
 function tagRows(parts: CompanyPart[], nameKey: string): Record<string, unknown>[] {
@@ -175,8 +251,8 @@ function mergeScan(parts: CompanyPart[]) {
 function mergeAnalytics(parts: CompanyPart[]) {
   const rows = parts.map((part) => part.data).filter((data): data is Record<string, unknown> => !!data && typeof data === 'object');
   const first = rows[0] ?? {};
-  const salesPurchase = sumBy(rows.flatMap((row) => Array.isArray(row.salesPurchase) ? row.salesPurchase as Record<string, unknown>[] : []), 'label', ['sales', 'purchase']);
-  const cashflow = sumBy(rows.flatMap((row) => Array.isArray(row.cashflow) ? row.cashflow as Record<string, unknown>[] : []), 'label', ['receipts', 'payments', 'net']);
+  const salesPurchase = byLabelAsc(sumBy(rows.flatMap((row) => Array.isArray(row.salesPurchase) ? row.salesPurchase as Record<string, unknown>[] : []), 'label', ['sales', 'purchase']), 'label');
+  const cashflow = byLabelAsc(sumBy(rows.flatMap((row) => Array.isArray(row.cashflow) ? row.cashflow as Record<string, unknown>[] : []), 'label', ['receipts', 'payments', 'net']), 'label');
   const vendors: Record<string, unknown>[] = parts.flatMap((part) => {
     const list = (part.data as { vendors?: Record<string, unknown>[] } | null)?.vendors ?? [];
     return list.map((row): Record<string, unknown> => ({ ...row, name: tag(row.name, part.code) }));
@@ -215,10 +291,13 @@ function mergeSeries(parts: CompanyPart[]) {
     }
     return {
       ...first,
-      points: [...grouped.entries()].map(([period, group]) => ({ ...group[0], period, value: weighted(group, 'value') })),
+      points: [...grouped.entries()]
+        .map(([period, group]) => ({ ...group[0], period, value: weighted(group, 'value') }))
+        .sort((a, b) => a.period.localeCompare(b.period)),
     };
   }
-  return { ...first, points };
+  // period is an ISO key (2026-10-24 / 2026-10), so text order is time order.
+  return { ...first, points: points.sort((a, b) => String(a.period ?? '').localeCompare(String(b.period ?? ''))) };
 }
 
 export function mergeCompanyPayloads(path: string, parts: CompanyPart[]): unknown {
@@ -229,7 +308,8 @@ export function mergeCompanyPayloads(path: string, parts: CompanyPart[]): unknow
   const params = new URLSearchParams(q === -1 ? '' : path.slice(q + 1));
 
   if (pathname === '/api/kpis/revenue-trend') {
-    return sumBy(ready.flatMap((part) => Array.isArray(part.data) ? part.data as Record<string, unknown>[] : []), 'month', ['revenue', 'invoiceCount']);
+    const months = sumBy(ready.flatMap((part) => Array.isArray(part.data) ? part.data as Record<string, unknown>[] : []), 'month', ['revenue', 'invoiceCount']);
+    return byLabelAsc(months, 'month');
   }
   if (pathname === '/api/customers/top') {
     const limit = Number(params.get('limit') || 5);
@@ -238,11 +318,13 @@ export function mergeCompanyPayloads(path: string, parts: CompanyPart[]): unknow
   if (pathname === '/api/customers/outstanding') {
     return tagRows(ready, 'name').sort((a, b) => num(b.outstanding) - num(a.outstanding));
   }
-  if (pathname === '/api/customers/list') return tagRows(ready, 'name');
-  if (pathname === '/api/sales/contracts') return tagRows(ready, 'customer');
+  // Each company's list is ranked on its own; rank the combined list the same way.
+  if (pathname === '/api/customers/list') return tagRows(ready, 'name').sort((a, b) => num(b.fyRevenue) - num(a.fyRevenue));
+  if (pathname === '/api/sales/contracts') return tagRows(ready, 'customer').sort((a, b) => num(b.totalSales) - num(a.totalSales));
   if (pathname === '/api/sales/sites') return mergeSites(ready);
   if (pathname === '/api/movements/recent' || pathname === '/api/movements/today') {
-    return tagRows(ready, 'title');
+    // Each company arrives as its own block; glued together they read 26, 24, 26.
+    return sortMovements(tagRows(ready, 'title'));
   }
   if (pathname === '/api/purchases/recent') {
     return ready

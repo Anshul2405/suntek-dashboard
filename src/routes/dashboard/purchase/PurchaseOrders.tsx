@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Download, ShoppingCart, Package, Truck, Hourglass, IndianRupee, ReceiptText } from 'lucide-react';
@@ -180,7 +180,7 @@ function PurchaseOrderRegister() {
     const { data, error } = await insertRows('oil_contracts', {
       oil_type: form.material,
       company: form.supplier,
-      date: new Date().toISOString().split('T')[0],
+      date: istToday(),
       book_qty_mt: parseFloat(form.qty) || null,
       price: form.value ? parseFloat(form.value.replace(/[^0-9.]/g, '')) : null,
       port: form.destination,

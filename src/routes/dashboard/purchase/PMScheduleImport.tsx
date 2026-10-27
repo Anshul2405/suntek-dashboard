@@ -15,6 +15,7 @@ import { matchAsset, type AssetLite } from '../../../lib/far/assets';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import { FREQ_LABEL, calculateNextDue } from './maintenance/shared';
 import { fetchAllRows } from '../../../lib/fetchAll';
+import { istToday } from '../../../lib/utils/formatting';
 
 type Plant = { id: string; name: string };
 
@@ -42,7 +43,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
   const [stage, setStage] = useState<'form' | 'parsing' | 'review' | 'saving' | 'done' | 'error'>('form');
   const [err, setErr] = useState<string | null>(null);
   const [plantIds, setPlantIds] = useState<string[]>([]);   // factories this workbook applies to
-  const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [startDate, setStartDate] = useState(() => istToday());
   const [untilDate, setUntilDate] = useState('');
   const [templates, setTemplates] = useState<PMTemplate[]>([]);
   const [justification, setJustification] = useState('');

@@ -9,9 +9,10 @@ import { fmtINR, useBusyPurchases, useOverviewKPIs } from '../hooks/useBusyData'
 import { useBusyCompany } from '../contexts/BusyCompanyContext';
 import { formatDate } from '../lib/utils/formatting';
 
+// Busy sends a calendar day (yyyy-mm-dd). formatDate reads a bare day as IST;
+// going through new Date(…T00:00) first used the browser's zone instead.
 function fmtBusyDate(iso: string) {
-  const d = new Date(`${iso}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : formatDate(d);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? formatDate(iso) : iso;
 }
 
 export function BusyPurchasesCard({ className = 'mb-4' }: { className?: string }) {

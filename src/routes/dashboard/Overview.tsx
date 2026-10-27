@@ -26,6 +26,7 @@ type ReqRow = Database['public']['Tables']['store_requisitions']['Row'] & { plan
 import {
   useOverviewKPIs, useTopCustomers, useRecentMovements, useAnalyticsKPIs, fmtINR,
 } from '../../hooks/useBusyData';
+import { sortMovements } from '../../lib/busyMerge';
 import { DSOGauge, RingProgress, MiniBarChart, BulletCompare, DeltaBadge, OverdueAgingBar } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { StockSnapshot } from '../../components/overview/StockSnapshot';
@@ -206,9 +207,21 @@ export function Overview() {
 
   // Movements feed
   const movementsSource = busyMovements && busyMovements.length > 0 ? busyMovements : [];
-  const filteredMoves = movementsSource
+  // Newest first by the voucher date (a single company comes in entry order;
+  // all companies are merged the same way in busyMerge). Keys are the voucher,
+  // not the row position, so rows do not swap content when the order changes.
+  const filteredMoves = sortMovements(movementsSource)
     .filter(m => moveFilter === 'all' || m.type === moveFilter)
     .filter(m => (m.title + m.sub).toLowerCase().includes(moveSearch.toLowerCase()));
+  const moveKeys = (() => {
+    const seen = new Map<string, number>();
+    return filteredMoves.map(m => {
+      const base = `${m.title}|${m.sub}|${m.date ?? m.when}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return n ? `${base}#${n}` : base;
+    });
+  })();
 
   const displayCustomers = topCustomers && topCustomers.length > 0
     ? topCustomers.map(c => ({ name: c.name, mtdVal: fmtINR(c.mtdRevenue).replace('₹ ', '') }))
@@ -640,8 +653,8 @@ export function Overview() {
 
         {/* Movements feed */}
         <div className="col-span-12 lg:col-span-8 ops-surface p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: "Today's Movements Feed", what: 'Real-time activity feed showing sales, purchase, batch, stock, and maintenance events from the last 3 days. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType in (9,14,16,19), last 3 days' }} />
-          <OpsHead title={t('overview.todaysMovements')} />
+          <KpiInfoButton info={{ title: 'Recent Movements Feed', what: 'Busy vouchers (sales, purchase, batch, stock transfer, journal) dated today or in the last 3 days, newest first. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'Cancelled = 0 · Date ≥ today − 3 days · per company, top 30' }} />
+          <OpsHead title={t('overview.recentMovements', 'Recent movements · today + last 3 days')} />
 
           {/* Search */}
           <div className="relative mb-3">
@@ -658,7 +671,9 @@ export function Overview() {
 
           {/* Filter chips */}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {['all','purchase','sales','batch','stock','maint'].map(f => (
+            {/* Busy sends sales / purchase / batch / stock / journal — never maintenance,
+                so a Maint. chip could only ever show an empty list. */}
+            {['all','purchase','sales','batch','stock'].map(f => (
               <div
                 key={f}
                 className={`chip${moveFilter === f ? ' active' : ''}`}
@@ -673,7 +688,7 @@ export function Overview() {
           <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
             {filteredMoves.length > 0 ? filteredMoves.map((m, i) => (
               <div
-                key={i}
+                key={moveKeys[i]}
                 className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
                 onClick={() => navigate(MOVE_ROUTE[m.type] ?? '/dashboard')}
               >
@@ -691,7 +706,7 @@ export function Overview() {
               </div>
             )) : (
               <div className="ops-empty rounded-xl border border-dashed border-slate-200">
-                <strong>{t('overview.noMovementsMatch')}</strong>
+                <strong>{movementsSource.length === 0 ? t('overview.noMovementsYet', 'No Busy movements today or in the last 3 days.') : t('overview.noMovementsMatch')}</strong>
                 <span>{t('overview.noMovementsHint', 'Sales, purchases, and batch closes from BUSY will stream here.')}</span>
               </div>
             )}

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { mergeCompanyPayloads } from './busyMerge';
+import { mergeCompanyPayloads, movementTime, sortMovements } from './busyMerge';
 
 describe('mergeCompanyPayloads', () => {
   it('adds sales across companies and keeps a margin as a weighted rate', () => {
@@ -53,5 +53,66 @@ describe('mergeCompanyPayloads', () => {
     ]) as { month: string; revenue: number; invoiceCount: number }[];
 
     expect(merged).toEqual([{ month: 'Oct', revenue: 14, invoiceCount: 3 }]);
+  });
+
+  it('merges movements from two companies newest first (26 Oct above 24 Oct)', () => {
+    const now = Date.parse('2026-10-27T06:00:00Z');
+    const mv = (title: string, when: string) => ({ type: 'sales', title, sub: 'V1', amt: '+₹1', col: '#000', when });
+    const merged = mergeCompanyPayloads('/api/movements/recent?days=3', [
+      { code: '0007', data: [mv('Sales Invoice · A', '26 Oct'), mv('Sales Invoice · B', '24 Oct')] },
+      { code: '0009', data: [mv('Sales Invoice · C', '26 Oct'), mv('Sales Invoice · D', '25 Oct')] },
+    ]) as { title: string; when: string }[];
+    expect(sortMovements(merged, now).map(m => m.when)).toEqual(['26 Oct', '26 Oct', '25 Oct', '24 Oct']);
+    // The plain merge (real clock) keeps the same order.
+    expect(merged.map(m => m.when)).toEqual(['26 Oct', '26 Oct', '25 Oct', '24 Oct']);
+  });
+
+  it('sorts on the voucher date and entry time when the feed sends them', () => {
+    const rows = [
+      { when: '24 Oct', date: '2026-10-24', at: '2026-10-26T10:00:00Z' },
+      { when: '26 Oct', date: '2026-10-26', at: '2026-10-26T04:00:00Z' },
+      { when: '26 Oct', date: '2026-10-26', at: '2026-10-26T09:00:00Z' },
+    ];
+    expect(sortMovements(rows).map(r => r.at)).toEqual(['2026-10-26T09:00:00Z', '2026-10-26T04:00:00Z', '2026-10-26T10:00:00Z']);
+  });
+
+  it('reads a label year-less date as the latest one not in the future', () => {
+    const jan = Date.parse('2027-01-03T06:00:00Z');
+    const dec = movementTime({ when: '30 Dec' }, jan).day;
+    const jan2 = movementTime({ when: '02 Jan' }, jan).day;
+    expect(new Date(dec + 5.5 * 3600_000).toISOString().slice(0, 10)).toBe('2026-12-30');
+    expect(jan2).toBeGreaterThan(dec);
+    expect(movementTime({ when: '35 min ago' }, jan).day).toBeGreaterThanOrEqual(jan2);
+  });
+});
+
+describe('merged Busy lists keep a real order', () => {
+  it('ranks the combined customer list and contracts, not company by company', () => {
+    const list = mergeCompanyPayloads('/api/customers/list', [
+      { code: '0007', data: [{ name: 'A', fyRevenue: 50 }, { name: 'B', fyRevenue: 10 }] },
+      { code: '0009', data: [{ name: 'C', fyRevenue: 30 }] },
+    ]) as { fyRevenue: number }[];
+    expect(list.map(r => r.fyRevenue)).toEqual([50, 30, 10]);
+    const contracts = mergeCompanyPayloads('/api/sales/contracts', [
+      { code: '0007', data: [{ customer: 'A', totalSales: 5 }] },
+      { code: '0009', data: [{ customer: 'C', totalSales: 9 }] },
+    ]) as { totalSales: number }[];
+    expect(contracts.map(r => r.totalSales)).toEqual([9, 5]);
+  });
+
+  it('keeps months in calendar order when one company lacks a month', () => {
+    const trend = mergeCompanyPayloads('/api/kpis/revenue-trend', [
+      { code: '0007', data: [{ month: 'Sep 2026', revenue: 1 }, { month: 'Oct 2026', revenue: 1 }] },
+      { code: '0009', data: [{ month: 'Aug 2026', revenue: 1 }, { month: 'Sep 2026', revenue: 1 }] },
+    ]) as { month: string }[];
+    expect(trend.map(r => r.month)).toEqual(['Aug 2026', 'Sep 2026', 'Oct 2026']);
+  });
+
+  it('orders a merged series by its period', () => {
+    const series = mergeCompanyPayloads('/api/anomaly/timeseries', [
+      { code: '0007', data: { meta: { unit: 'inr' }, points: [{ period: '2026-10-20', value: 1 }] } },
+      { code: '0009', data: { meta: { unit: 'inr' }, points: [{ period: '2026-10-13', value: 2 }, { period: '2026-10-20', value: 3 }] } },
+    ]) as { points: { period: string; value: number }[] };
+    expect(series.points.map(p => [p.period, p.value])).toEqual([['2026-10-13', 2], ['2026-10-20', 4]]);
   });
 });

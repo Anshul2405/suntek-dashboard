@@ -398,7 +398,7 @@ export function NightManagerBoard() {
               
               {sortedDuty.map((d, i) => (
                 <Marker
-                  key={i}
+                  key={d.id ?? `${d.name}-${i}`}
                   position={d.coords}
                   icon={createCustomIcon(d.initial, d.status)}
                   eventHandlers={{
@@ -491,7 +491,7 @@ export function NightManagerBoard() {
               
               return (
                 <div
-                  key={i}
+                  key={d.id ?? `${d.name}-${i}`}
                   onClick={() => {
                     setMapCenter(d.coords);
                     setMapZoom(13);

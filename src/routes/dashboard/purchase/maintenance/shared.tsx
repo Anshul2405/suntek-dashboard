@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { formatDate as formatIstDate } from '../../../../lib/utils/formatting';
+import { formatDate as formatIstDate, istDayKey, istToday } from '../../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
 
 /** Loose translator signature so callers can pass react-i18next's `t` without type friction. */
@@ -110,10 +110,11 @@ export function formatDate(d: string | null | undefined) {
 
 export function daysFromNow(d: string | null | undefined): number | null {
   if (!d) return null;
-  // Compare by calendar date, so a task due *today* (any time) reads as 0, not −1.
-  const due = new Date(d); due.setHours(0, 0, 0, 0);
-  const now = new Date(); now.setHours(0, 0, 0, 0);
-  return Math.round((due.getTime() - now.getTime()) / 86400000);
+  // Compare IST calendar days, so a task due *today* (any time) reads as 0, not −1,
+  // whatever zone the browser is in.
+  const due = istDayKey(d);
+  if (!due) return null;
+  return Math.round((Date.parse(due) - Date.parse(istToday())) / 86400000);
 }
 
 export function dueDateLabel(days: number | null, t?: TFn): { text: string; color: string } {

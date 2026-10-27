@@ -14,7 +14,7 @@ import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../../components/v2';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday } from '../../../lib/utils/formatting';
 
 type Panel = 'topup' | 'ledger' | null;
 type LedgerRow = Database['public']['Tables']['marine_insurance']['Row'];
@@ -31,7 +31,7 @@ export function MarineInsurance() {
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({ amount: '', reference: '', date: today, mode: 'NEFT', notes: '' });
 
   async function load() {

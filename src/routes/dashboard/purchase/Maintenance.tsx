@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { patchUrlParams } from '../../../lib/urlParams';
-import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -662,7 +662,7 @@ export function Maintenance() {
   const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
 
   // Form state
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   // unit is NOT seeded from the legacy plant_name (that mis-tagged non-Jharkhand users
   // with Plasticiser/Chlorides). Plant defaults from the real data scope; unit only
   // applies when the chosen plant is a Jharkhand plant.
@@ -2260,7 +2260,7 @@ export function Maintenance() {
       }
       await insertRows('activity_logs', {
         equipment: `Stock check: ${req.part_name}`, type: 'stock_check_override',
-        date: new Date().toISOString().slice(0, 10), done_by: activeProfile.name, plant_id: selectedTicket.plant_id,
+        date: istToday(), done_by: activeProfile.name, plant_id: selectedTicket.plant_id,
         note: `Register said ${regQty}, store counted ${enteredQty}. ${storeDecisionForm.qtyJustification.trim()}`,
       });
     }

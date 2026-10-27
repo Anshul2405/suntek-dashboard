@@ -13,7 +13,7 @@ import { withEmbedFallback } from '../../lib/scopedList';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2 } from '../../components/v2';
 import type { Database } from '../../lib/database.types';
-import { formatDate } from '../../lib/utils/formatting';
+import { formatDate, istToday } from '../../lib/utils/formatting';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
 
@@ -122,7 +122,7 @@ export function CPMStock() {
   async function handleBulkSave() {
     const filled = bulkRows.filter(r => r.item.trim() && r.adjustment);
     if (filled.length === 0) return;
-    const today = new Date().toISOString().split('T')[0];
+    const today = istToday();
     const plantId = bulkPlant || pickerPlants[0]?.id;
     if (!plantId) { toast.error(t('cpmStock.noPlantSelected')); return; }
     const inserts = filled.map(r => ({

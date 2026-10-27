@@ -2642,6 +2642,8 @@ const en = {
     "received": "Received",
     "gap": "Gap",
     "todaysMovements": "Today's movements",
+    "recentMovements": "Recent movements · today + last 3 days",
+    "noMovementsYet": "No Busy movements today or in the last 3 days.",
     "searchMovesPlaceholder": "Search a batch, dispatch, party …",
     "movefilter_all": "All",
     "movefilter_purchase": "Purchase",

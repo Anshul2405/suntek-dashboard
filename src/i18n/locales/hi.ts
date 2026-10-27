@@ -2642,6 +2642,8 @@ const hi: Translations = {
     "received": "रिसीव्ड",
     "gap": "गैप",
     "todaysMovements": "टुडेज़ मूवमेंट्स",
+    "recentMovements": "रीसेंट मूवमेंट्स · टुडे + लास्ट 3 डेज",
+    "noMovementsYet": "नो Busy मूवमेंट्स टुडे ऑर इन द लास्ट 3 डेज।",
     "searchMovesPlaceholder": "सर्च अ बैच, डिस्पैच, पार्टी …",
     "movefilter_all": "ऑल",
     "movefilter_purchase": "परचेज़",

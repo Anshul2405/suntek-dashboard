@@ -17,6 +17,18 @@ const VCH_TYPE_LABELS = {
   13: { type: 'sales',    label: 'Sales Return' },
 };
 
+/** yyyy-mm-dd of a SQL date without shifting the calendar day through toISOString. */
+function sqlCalendarDay(d) {
+  if (!d) return null;
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function formatAmt(amt) {
   return amt >= 10000000
     ? `₹${(amt / 10000000).toFixed(2)} Cr`
@@ -36,6 +48,9 @@ function toMovement(r, useRelativeTime = false) {
     : new Date(r.Date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
   return {
     type: meta.type,
+    // Calendar day from the SQL date (do not use toISOString — that can shift the day).
+    date: sqlCalendarDay(r.Date),
+    at: r.CreationTime ? new Date(r.CreationTime).toISOString() : null,
     title: `${meta.label} · ${r.partyName || 'Unknown'}`,
     sub: `${r.VchNo}${r.GrNo ? ' · GR ' + r.GrNo : ''}`,
     amt: meta.type === 'sales' || meta.type === 'batch' ? `+${fmtAmt}` : `-${fmtAmt}`,
@@ -77,7 +92,7 @@ router.get('/recent', withFallback('movements-recent', async (req) => {
       LEFT JOIN VchOtherInfo o ON t.VchCode = o.VchCode
       WHERE t.[Date] >= DATEADD(DAY, -${days}, CAST(GETDATE() AS DATE))
         AND t.Cancelled = 0
-      ORDER BY t.CreationTime DESC
+      ORDER BY t.[Date] DESC, t.CreationTime DESC
     `);
 
     return result.recordset.map(r => toMovement(r, false));

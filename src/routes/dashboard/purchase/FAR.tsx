@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { formatDateTime } from '../../../lib/utils/formatting';
+import { formatDateTime, istToday } from '../../../lib/utils/formatting';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -354,7 +354,7 @@ export function FAR() {
   const [cloudUrl, setCloudUrl] = useState<string | null>(null);
   const [importFileName, setImportFileName] = useState('');
   const importInputRef = useRef<HTMLInputElement>(null);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({
     mark: '', model: '', capacity: '', origin: 'India',
     year: new Date().getFullYear().toString(),
@@ -1231,7 +1231,7 @@ export function FAR() {
             { key: 'model',        label: t('far.ocrFldModelMake'),     value: 'Atlas Copco GA18' },
             { key: 'capacity',     label: t('far.ocrFldCapacitySpecs'), value: '18 kW / 10 bar' },
             { key: 'value',        label: t('far.ocrFldTaxableValue'),  value: '3,85,000' },
-            { key: 'purchaseDate', label: t('far.ocrFldInvoiceDate'),   value: new Date().toISOString().slice(0, 10) },
+            { key: 'purchaseDate', label: t('far.ocrFldInvoiceDate'),   value: istToday() },
           ]}
           onExtracted={handleOcr}
         />

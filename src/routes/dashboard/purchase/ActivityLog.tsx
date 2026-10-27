@@ -26,7 +26,7 @@ import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
 import { Building2, Factory, Layers, MapPin, Plus } from 'lucide-react';
-import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange, istToday } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
@@ -380,7 +380,7 @@ export function ActivityLog() {
   const setKpi = (v: 'all' | 'verified' | 'pending' | 'photo' | 'maint') => patchParams({ kpi: v === 'all' ? '' : v });
   const setFromTo = (from: string, to: string) => patchParams({ from, to });
   const [incidents, setIncidents] = useState<{ id: string; what_text: string; who_text: string | null; occurred_at: string; reported_by: string | null; plants?: { name: string } | null }[]>([]);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
 
   async function load() {

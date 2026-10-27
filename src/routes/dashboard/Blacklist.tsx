@@ -17,7 +17,7 @@ import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import type { Database } from '../../lib/database.types';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
-import { formatDate, formatDateTime } from '../../lib/utils/formatting';
+import { formatDate, formatDateTime, istToday } from '../../lib/utils/formatting';
 
 type BlacklistEventRow = Database['public']['Tables']['blacklist_events']['Row'];
 
@@ -121,7 +121,7 @@ export function Blacklist() {
   const [entries, setEntries] = useState<BlacklistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
 
   const [showPanel, setShowPanel] = useState(false);
   const [form, setForm] = useState({ ...BLANK_FORM });

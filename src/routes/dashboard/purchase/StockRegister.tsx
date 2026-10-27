@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { formatDate, inIstDayRange, istDayKey } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange, istDayKey, istToday } from '../../../lib/utils/formatting';
 import { useUrlFilters } from '../../../lib/urlFilters';
 import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
 import { Activity, Warehouse } from 'lucide-react';
@@ -720,7 +720,7 @@ export function StockRegister() {
         actor_name: activeProfile.name,
       });
       await insertRows('activity_logs', {
-        equipment: `Stock: ${newName}`, type: 'stock_edit', date: new Date().toISOString().slice(0, 10),
+        equipment: `Stock: ${newName}`, type: 'stock_edit', date: istToday(),
         done_by: activeProfile.name, plant_id: editItem.plant_id,
         note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${equipmentChanged ? `Equipment "${oldEquipment || '—'}" → "${newEquipment || '—'}". ` : ''}${modelChanged ? `Model "${oldModel || '—'}" → "${newModel || '—'}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
       });
@@ -754,7 +754,7 @@ export function StockRegister() {
       await insertRows('activity_logs', {
         equipment: `Stock: ${deleteItem.item_name}`,
         type: 'stock_delete',
-        date: new Date().toISOString().slice(0, 10),
+        date: istToday(),
         done_by: activeProfile.name,
         plant_id: deleteItem.plant_id,
         note: `Deleted stock item "${deleteItem.item_name}" (on-hand ${Number(deleteItem.on_hand)} ${normalizeUnit(deleteItem.unit)}). ${reason}`,
