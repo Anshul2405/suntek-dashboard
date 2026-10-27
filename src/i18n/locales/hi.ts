@@ -1608,6 +1608,7 @@ const hi: Translations = {
     "closeBatchRunQc": "क्लोज़ बैच एंड रन QC",
   },
   "benchmarking": {
+    "tableTitle": "कॉस्ट पर MT बाय प्लांट",
     "plantsCompared": "प्लांट्स कम्पेयर्ड",
     "lowestCostPerMT": "लोएस्ट कॉस्ट / MT",
     "noDataYet": "नो डेटा यट",
@@ -3676,6 +3677,8 @@ const hi: Translations = {
     title: "फ़ैक्टरी के हिसाब से परचेज़ वर्सेस कंज़म्पशन",
   },
   book: {
+    workbookNotFiltered: "द Busy कंपनी पिकर एट द टॉप चेंजेज़ द Busy टाइल्स एंड इनवॉइसेज़ अबव, नॉट दिस शीट।",
+    dateLooksWrong: "डेट लुक्स रॉन्ग",
     bannerLive: "टाइल्स एंड टेबल्स मार्क्ड Busy कम स्ट्रेट फ्रॉम Busy, रीड ओनली। द शीट्स बिलो आर द परचेज़ 2026-27 वर्कबुक। सप्लायर स्पेलिंग्स आर फोल्डेड टुगेदर। द वर्कबुक शीट्स कैरी नो अकाउंट नंबर्स।",
     tabPurchases: "परचेज़ेज़",
     tabPayments: "पेमेंट्स",

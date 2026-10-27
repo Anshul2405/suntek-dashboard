@@ -107,7 +107,7 @@ export function Benchmarking() {
           value={`${stats.reduce((s, p) => s + p.totalOutputMT, 0).toFixed(0)} MT`} />
       </div>
 
-      <SectionCard flush title={t('benchmarking.title')} subtitle={t('benchmarking.subtitle')}>
+      <SectionCard flush title={t('benchmarking.tableTitle', 'Cost per MT by plant')} subtitle={t('benchmarking.subtitle')}>
         {isLoading ? (
           <div className="px-5 pb-5"><SkeletonRows rows={5} /></div>
         ) : isError ? (

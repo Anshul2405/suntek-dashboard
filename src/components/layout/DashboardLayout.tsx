@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import { busyChromeOn } from '../../lib/busyChrome';
 import { useTranslation } from 'react-i18next';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
@@ -339,7 +340,7 @@ export function DashboardLayout() {
 
       <main className="min-h-screen p-4 md:p-7 ml-0 md:ml-[var(--sidebar-width,260px)] transition-[margin] duration-200">
         <div className="max-w-[1500px] mx-auto">
-          <TopBar title={title} breadcrumb={breadcrumb} subtitle={subtitle} onMenu={() => setSidebarOpen(true)} />
+          <TopBar title={title} breadcrumb={breadcrumb} subtitle={subtitle} busyChrome={busyChromeOn(location.pathname, location.search)} onMenu={() => setSidebarOpen(true)} />
 
           {/* DEV-ONLY: no Supabase session → the shell shows the demo admin
               profile, but the database sees an ANONYMOUS caller, so every

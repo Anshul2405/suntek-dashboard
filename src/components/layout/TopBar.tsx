@@ -14,6 +14,7 @@ import { dropdownStyle } from '../../lib/uiPosition';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 import { IconBell, IconChecklist, IconMenu, IconSearch, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
 import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
+import type { BusyChrome } from '../../lib/busyChrome';
 import { useBusyHeartbeat } from '../../hooks/useBusyData';
 import { formatDateTime } from '../../lib/utils/formatting';
 
@@ -62,6 +63,8 @@ interface TopBarProps {
   subtitle?: string;
   /** Open the mobile sidebar drawer (shown only below md). */
   onMenu?: () => void;
+  /** Busy company picker / feed stamp — only on pages that read the Busy feed (lib/busyChrome). */
+  busyChrome?: BusyChrome;
 }
 
 
@@ -99,7 +102,7 @@ function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
   );
 }
 
-export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
+export function TopBar({ title, breadcrumb, subtitle, onMenu, busyChrome = { company: false, stamp: false } }: TopBarProps) {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { openPalette } = useSearchPalette();
@@ -186,7 +189,9 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
       {/* Right: sync + actions + profile. On a phone the company picker + sync
           dot take their own row so they never sit on top of the icons. */}
       <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-wrap md:flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
+        {(busyChrome.company || busyChrome.stamp) && (
         <div className="flex items-center justify-end min-w-0 w-full md:w-auto">
+          {busyChrome.company && (
           <label className="min-w-0">
             <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
             <select
@@ -201,8 +206,10 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
               ))}
             </select>
           </label>
-          <BusySyncStamp formatAge={formatAge} />
+          )}
+          {busyChrome.stamp && <BusySyncStamp formatAge={formatAge} />}
         </div>
+        )}
 
         {/* Global quick-search (Cmd/Ctrl+K) */}
         <button

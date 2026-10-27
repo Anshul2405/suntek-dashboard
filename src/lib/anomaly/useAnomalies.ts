@@ -2,12 +2,14 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import type { ScanResult, AnomalyFinding, Narrative, MetricsCatalog, TimeSeriesResult, Grain, AnalyticsResult } from './types';
 import { fetchBusy, savedBusy } from '../../hooks/useBusyData';
 import { useBusyCompany } from '../../contexts/BusyCompanyContext';
+import type { BusyCompanyCode } from '../busyCompanies';
 
 const BUSY_BASE = import.meta.env.VITE_BUSY_API_URL ?? '';
 
 /** Full anomaly scan over real BUSY data — findings + problem-KPI snapshot. */
-export function useAnomalyScan() {
-  const { code } = useBusyCompany();
+export function useAnomalyScan(company?: BusyCompanyCode) {
+  const { code: picked } = useBusyCompany();
+  const code = company ?? picked;
   return useQuery<ScanResult>({
     queryKey: ['anomaly-scan', code],
     queryFn: () => fetchBusy('/api/anomaly/scan', code),

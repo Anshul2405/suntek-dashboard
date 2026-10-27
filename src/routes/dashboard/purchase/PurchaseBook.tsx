@@ -11,7 +11,7 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination } from '../../../components/v2';
 import { useTextFilter } from '../../../components/ui/TableSearch';
 import { TableSearch } from '../../../components/ui/TableSearch';
-import { formatDate } from '../../../lib/utils/formatting';
+import { isBogusWorkbookDate, sortWorkbookRows, workbookDateLabel } from '../../../lib/workbookDates';
 import { DispatchLog } from './DispatchLog';
 import { BookPayments } from './BookPayments';
 
@@ -104,20 +104,6 @@ const COLUMNS: Record<BookTab, Array<{ key: string; label: string; money?: boole
   ],
 };
 
-const WORKBOOK_DATE = /^(\d{2})\.(\d{2})\.(\d{4})$/;
-
-function dateKey(value: unknown): number {
-  const m = WORKBOOK_DATE.exec(String(value || ''));
-  if (!m) return 0;
-  return Number(m[3] + m[2] + m[1]);
-}
-
-/** The workbook writes dates as 22.10.2026; show them like every other screen. */
-function bookDate(value: unknown): string {
-  const m = WORKBOOK_DATE.exec(String(value ?? '').trim());
-  return m ? formatDate(`${m[3]}-${m[2]}-${m[1]}`) : String(value ?? '');
-}
-
 function isBookTab(value: string): value is BookTab {
   return (BOOK_TABS as readonly string[]).includes(value);
 }
@@ -125,7 +111,7 @@ function isBookTab(value: string): value is BookTab {
 function cellText(value: Row[string], money?: boolean): string {
   if (value == null || value === '') return '—';
   if (money && typeof value === 'number') return fmtINR(value);
-  return bookDate(value);
+  return workbookDateLabel(value);
 }
 
 export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab) => void }) {
@@ -192,7 +178,8 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
     let list = source;
     if (active === 'purchases' && hideChlorine) list = list.filter(r => !r.chlorine);
     if (status !== 'all') list = list.filter(r => r.status === status);
-    return [...list].sort((a, b) => dateKey(b.date) - dateKey(a.date));
+    // Newest first; typo years (24.04.2036, 29.08.2029) sink to the bottom.
+    return sortWorkbookRows(list, 'date');
   }, [source, active, hideChlorine, status]);
 
   const columns = COLUMNS[active];
@@ -209,9 +196,12 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
 
   return (
     <>
-      <InfoBanner className="mb-4">
-        {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.')}
-      </InfoBanner>
+      {/* Only Purchases has Busy tiles; other tabs say "Workbook sheet" over their table. */}
+      {active === 'purchases' && (
+        <InfoBanner className="mb-4">
+          {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.')}
+        </InfoBanner>
+      )}
 
       <SegmentTabs
         className="mb-4"
@@ -259,7 +249,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
             <StatCard
               label={t('book.marineCoverWorkbook', 'Marine cover · workbook')}
               value={fmtINR(meta.marineBalance)}
-              caption={t('book.marineAsOf', { defaultValue: 'Running balance on {{date}}', date: bookDate(meta.marineAsOf) })}
+              caption={t('book.marineAsOf', { defaultValue: 'Running balance on {{date}}', date: workbookDateLabel(meta.marineAsOf) })}
             />
           </div>
         </div>
@@ -281,6 +271,9 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
       )}
 
       <div className="text-sm font-bold mb-2">{t('book.workbookSheet', 'Workbook sheet (history, read only)')}</div>
+      {active === 'purchases' && (
+        <p className="text-xs text-slate-500 -mt-1 mb-2">{t('book.workbookNotFiltered', 'The Busy company picker at the top changes the Busy tiles and invoices above, not this sheet.')}</p>
+      )}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="w-full sm:w-72">
           <TableSearch value={q} onChange={setQ} placeholder={t('book.search', 'Search this sheet…')} />
@@ -330,6 +323,9 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
                   return (
                     <td key={col.key} className={col.money ? 'num' : col.key === 'date' ? 'whitespace-nowrap' : undefined}>
                       {cellText(value, col.money)}
+                      {col.key === 'date' && isBogusWorkbookDate(value) && (
+                        <div className="text-[10.5px] text-slate-400 font-normal">{t('book.dateLooksWrong', 'date looks wrong')}</div>
+                      )}
                     </td>
                   );
                 })}

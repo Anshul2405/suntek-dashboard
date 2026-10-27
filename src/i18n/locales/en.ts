@@ -1604,6 +1604,7 @@ const en = {
     "closeBatchRunQc": "Close Batch & Run QC",
   },
   "benchmarking": {
+    "tableTitle": "Cost per MT by plant",
     "plantsCompared": "Plants compared",
     "lowestCostPerMT": "Lowest cost / MT",
     "noDataYet": "no data yet",
@@ -3679,6 +3680,8 @@ const en = {
     title: "Purchase vs consumption by factory",
   },
   book: {
+    workbookNotFiltered: "The Busy company picker at the top changes the Busy tiles and invoices above, not this sheet.",
+    dateLooksWrong: "date looks wrong",
     bannerLive: "Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.",
     tabPurchases: "Purchases",
     tabPayments: "Payments",

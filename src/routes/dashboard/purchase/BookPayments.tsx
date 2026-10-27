@@ -44,7 +44,8 @@ export function BookPayments() {
   const canInput = admin || role === 'accountant_delhi';
   const canPay = admin || role === 'management';
   const pickerPlants = plantsForPicker(allowedPlants, ready);
-  const { data: feed } = useRecentMovements(3);
+  // Every company: this tab has no company picker, and a payment may be booked in any of them.
+  const { data: feed } = useRecentMovements(3, 'all');
 
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [loaded, setLoaded] = useState(false);

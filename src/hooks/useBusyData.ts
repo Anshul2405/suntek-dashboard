@@ -263,8 +263,15 @@ export function savedBusy<T>(path: string, company: BusyCompanyCode) {
   };
 }
 
-function useBusyQuery<T>(key: readonly unknown[], path: string, opts: { stale?: number; retry?: boolean } = {}) {
-  const { code } = useBusyCompany();
+function useBusyQuery<T>(
+  key: readonly unknown[],
+  path: string,
+  opts: { stale?: number; retry?: boolean; company?: BusyCompanyCode } = {},
+) {
+  const { code: picked } = useBusyCompany();
+  // A caller with no company picker on screen pins the company so a choice made
+  // on another page cannot silently filter it.
+  const code = opts.company ?? picked;
   return useQuery<T>({
     queryKey: [...key, code],
     queryFn: () => fetchBusy<T>(path, code),
@@ -359,8 +366,8 @@ export function useBusyPurchases() {
   return useBusyQuery<BusyPurchase[]>(['busy-purchases'], '/api/purchases/recent', { retry: false });
 }
 
-export function useRecentMovements(days = 3) {
-  return useBusyQuery<Movement[]>(['busy-movements', days], `/api/movements/recent?days=${days}`, { stale: 60 * 1000 });
+export function useRecentMovements(days = 3, company?: BusyCompanyCode) {
+  return useBusyQuery<Movement[]>(['busy-movements', days], `/api/movements/recent?days=${days}`, { stale: 60 * 1000, company });
 }
 
 export interface AnalyticsKPIs {
