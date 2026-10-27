@@ -1318,6 +1318,35 @@ export interface Database {
         Update: Partial<Database['public']['Tables']['dispatch_logs']['Insert']>;
       };
 
+      // Live payments (0038_dispatch_payments_vijay.sql — not applied yet).
+      purchase_payments: {
+        Row: {
+          id: string;
+          pay_date: string;
+          beneficiary: string;
+          account_no: string | null;
+          ifsc: string | null;
+          bank: string | null;
+          amount: number;
+          remarks: string | null;
+          input_by: string;
+          // entered → input_done (Delhi office, Axis) → payment_done (management) → busy_done
+          status: 'entered' | 'input_done' | 'payment_done' | 'busy_done';
+          input_done_by: string | null;
+          input_done_at: string | null;
+          payment_done_by: string | null;
+          payment_done_at: string | null;
+          busy_done_at: string | null;
+          busy_voucher: string | null;
+          plant_id: string | null;
+          created_at: string;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['purchase_payments']['Row'], 'id' | 'created_at' | 'status'>> & {
+          status?: Database['public']['Tables']['purchase_payments']['Row']['status'];
+        };
+        Update: Partial<Database['public']['Tables']['purchase_payments']['Insert']>;
+      };
+
       daily_stock_entries: {
         Row: {
           id: string;
