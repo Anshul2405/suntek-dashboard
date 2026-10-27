@@ -1041,13 +1041,18 @@ export interface Database {
           qty: number;
           urgency: 'low' | 'medium' | 'high' | 'plant_stopper';
           // pending_vijay / pending_buyer: a buy goes Unit Head → Vijay ji → purchaser (0038).
-          status: 'pending' | 'pending_vijay' | 'pending_buyer' | 'approved' | 'dispatched' | 'received' | 'rejected';
+          status: 'pending' | 'pending_store' | 'pending_approval' | 'pending_vijay' | 'pending_buyer' | 'in_transit'
+            | 'approved' | 'dispatched' | 'received' | 'rejected';
           raised_by: string | null;
           approved_by: string | null;
           photo_url: string | null;
           remarks: string | null;
-          /** Purchaser Vijay ji named (0038; absent until applied). */
+          /** Purchaser (0028 live / 0038). */
           buyer_name: string | null;
+          /** Set when the purchaser marks it in transit; dispatch_id is the Dispatch row. */
+          supplier: string | null;
+          vehicle_no: string | null;
+          dispatch_id: string | null;
           created_at: string;
         };
         Insert: OptionalNulls<Omit<Database['public']['Tables']['store_requisitions']['Row'], 'id' | 'created_at'>>;

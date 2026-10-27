@@ -30,7 +30,7 @@ import { useMyIdentity } from '../../../lib/useMyIdentity';
 import { reqNoLabel, useTicketNos } from '../../../lib/ticketNo';
 import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
 import { useUrlFilters } from '../../../lib/urlFilters';
-import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
 import { useColumnLive } from '../../../lib/schemaProbe';
@@ -72,6 +72,7 @@ const STATUS_STAGE: Record<string, { bg: string; color: string; label: string }>
   pending_approval: { bg: '#FEF3C7', color: '#D97706', label: 'Unit head' },
   pending_buyer:    { bg: '#FEF3C7', color: '#D97706', label: 'Buyer' },
   pending_vijay:    { bg: '#FEF3C7', color: '#D97706', label: 'Vijay' },
+  in_transit:       { bg: '#FFEDD5', color: '#C2410C', label: 'In transit' },
   approved:   { bg: '#DCFCE7', color: '#16A34A', label: 'Approved' },
   dispatched: { bg: '#DBEAFE', color: '#2563EB', label: 'Dispatched' },
   received:   { bg: '#DCFCE7', color: '#16A34A', label: 'Received' },
@@ -112,6 +113,7 @@ export function StoreRequisitions() {
   const canBuyRow = (row: ReqRow) => isAdmin
     || (row.buyer_name ? personMatches(row.buyer_name, activeProfile.name) : isListedBuyer(buyers, activeProfile.name));
   const [buyerPick, setBuyerPick] = useState('');
+  const [transit, setTransit] = useState({ supplier: '', vehicle: '' });
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const me = useMyIdentity();
   const [open, setOpen] = useState(false);
@@ -296,6 +298,55 @@ export function StoreRequisitions() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
+  /**
+   * Purchaser bought it: the part travels like any un-ticketed store part — a
+   * Dispatch row naming the supplier, to this requisition's plant. The plant
+   * books it into stock from Purchase book → Dispatch, which closes this row.
+   */
+  async function markInTransit(row: ReqRow) {
+    if (!canBuyRow(row)) return;
+    const supplier = transit.supplier.trim();
+    const vehicle = transit.vehicle.trim().toUpperCase();
+    if (!supplier || !vehicle) return;
+    setDeciding(true);
+    try {
+      const { data, error } = await insertRows('dispatch_logs', {
+        destination: row.plants?.name || null,
+        date: istToday(),
+        item: `${row.item}${row.qty ? ` · qty ${row.qty}` : ''}`,
+        document_ref: `#${reqNoLabel(row)}`,
+        vehicle_no: vehicle,
+        sender: activeProfile.name,
+        receiver: null,
+        from_location: null,
+        supplier,
+        receive_date: null,
+        remarks: `Store req #${reqNoLabel(row)}`,
+      }).select('id').single();
+      if (error) { toast.error(error.message); return; }
+      const patch = { status: 'in_transit' as const, supplier, vehicle_no: vehicle, dispatch_id: (data as { id: string } | null)?.id ?? null };
+      const saved = await updateRows('store_requisitions', patch).eq('id', row.id);
+      if (saved.error) { toast.error(saved.error.message); return; }
+      setItems(prev => prev.map(r => (r.id === row.id ? { ...r, ...patch } : r)));
+      setDetailReq(prev => (prev && prev.id === row.id ? { ...prev, ...patch } : prev));
+      setTransit({ supplier: '', vehicle: '' });
+      toast.success(t('storereq.transit_ok', 'Marked in transit — it is on Dispatch by vehicle.'));
+      insertRows('notifications', {
+        target_roles: ['admin', 'store_manager_maint', 'warehouse_manager', 'unit_head'],
+        title: `In transit: ${row.item}`,
+        body: `${vehicle} · ${supplier} · ${row.plants?.name ?? ''}`,
+        type: 'info',
+        route: '/dashboard/purchase/book?tab=dispatch',
+        actor_name: activeProfile.name || '',
+        actor_role: activeProfile.id,
+        read_by: [],
+        plant_id: row.plant_id || null,
+      }).then(() => {}, () => {});
+    } finally {
+      setDeciding(false);
+    }
+  }
+
   async function decideReq(
     row: ReqRow,
     status: 'approved' | 'rejected' | 'dispatched' | 'pending_vijay' | 'pending_buyer',
@@ -314,7 +365,7 @@ export function StoreRequisitions() {
     try {
       // Record who decided (approved_by is a uuid); a database without the
       // column still takes the decision. The unit head's call is the one kept.
-      const decidedBy = row.status === 'pending' && status !== 'dispatched' ? { approved_by: me.authUserId } : {};
+      const decidedBy = (row.status === 'pending' || row.status === 'pending_approval') && status !== 'dispatched' ? { approved_by: me.authUserId } : {};
       const buyer = status === 'pending_buyer' ? { buyer_name: buyerName || null } : {};
       let { error } = await updateRows('store_requisitions', { status, ...decidedBy, ...buyer }).eq('id', row.id);
       if (error && /approved_by/.test(error.message || '')) {
@@ -331,7 +382,6 @@ export function StoreRequisitions() {
       toast.success(
         status === 'pending_vijay' ? t('storereq.sent_vijay_ok', 'Sent to Vijay ji to approve the purchase') :
         status === 'pending_buyer' ? t('storereq.buyer_ok', { defaultValue: 'Purchase approved — {{name}} to buy it', name: buyerName || '' }) :
-        status === 'approved' && row.status === 'pending_buyer' ? t('storereq.bought_ok', 'Marked bought — ready to dispatch') :
         status === 'approved' ? t('storereq.approved_ok', 'Request approved') :
         status === 'rejected' ? t('storereq.rejected_ok', 'Request rejected') :
         t('storereq.dispatched_ok', 'Marked dispatched'),
@@ -634,6 +684,17 @@ export function StoreRequisitions() {
                 </button>
               )}
               {detailReq.buyer_name && <Row k={t('storereq.col_buyer', 'Purchaser')} v={detailReq.buyer_name} />}
+              {detailReq.status === 'in_transit' && detailReq.vehicle_no && <Row k={t('storereq.col_vehicle', 'Vehicle')} v={`${detailReq.vehicle_no}${detailReq.supplier ? ` · ${detailReq.supplier}` : ''}`} />}
+              {canDecideReq && detailReq.status === 'pending_approval' && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'pending_vijay')}>
+                    {t('storereq.approve_to_vijay_btn', 'Approve — send to Vijay ji')}
+                  </ButtonV2>
+                  <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
+                    {t('storereq.reject_btn', 'Reject')}
+                  </ButtonV2>
+                </div>
+              )}
               {canDecideReq && detailReq.status === 'pending' && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -657,13 +718,13 @@ export function StoreRequisitions() {
               {detailReq.status === 'pending_vijay' && (isVijay ? (
                 <div style={{ marginTop: 16 }}>
                   <PanelField label={t('storereq.pick_buyer', 'Purchaser *')}>
-                    <PanelSelect value={buyerPick} onChange={e => setBuyerPick(e.target.value)}>
+                    <PanelSelect value={buyerPick || detailReq.buyer_name || ''} onChange={e => setBuyerPick(e.target.value)}>
                       <option value="">{t('storereq.pick_buyer_ph', 'Pick the purchaser…')}</option>
                       {buyers.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </PanelSelect>
                   </PanelField>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <ButtonV2 variant="primary" disabled={deciding || !buyerPick} onClick={() => decideReq(detailReq, 'pending_buyer', buyerPick)}>
+                    <ButtonV2 variant="primary" disabled={deciding || !(buyerPick || detailReq.buyer_name)} onClick={() => decideReq(detailReq, 'pending_buyer', buyerPick || detailReq.buyer_name || '')}>
                       {t('storereq.approve_purchase_btn', 'Approve purchase')}
                     </ButtonV2>
                     <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
@@ -673,10 +734,13 @@ export function StoreRequisitions() {
                 </div>
               ) : <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 16 }}>{t('storereq.awaiting_vijay', 'Awaiting Vijay ji…')}</p>)}
               {detailReq.status === 'pending_buyer' && (canBuyRow(detailReq) ? (
-                <div style={{ marginTop: 16 }}>
-                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
-                    {t('storereq.mark_bought_btn', 'Mark bought')}
+                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <PanelInput placeholder={t('storereq.supplier_ph', 'Supplier')} value={transit.supplier} onChange={e => setTransit(f => ({ ...f, supplier: e.target.value }))} />
+                  <PanelInput placeholder={t('storereq.vehicle_ph', 'Vehicle number')} value={transit.vehicle} onChange={e => setTransit(f => ({ ...f, vehicle: e.target.value }))} />
+                  <ButtonV2 variant="primary" disabled={deciding || !transit.supplier.trim() || !transit.vehicle.trim()} onClick={() => void markInTransit(detailReq)}>
+                    {t('storereq.mark_transit_btn', 'Bought — mark in transit')}
                   </ButtonV2>
+                  <p style={{ fontSize: 11.5, color: '#64748B' }}>{t('storereq.transit_hint', 'It shows on Purchase book → Dispatch by vehicle. The plant receives it into stock there.')}</p>
                 </div>
               ) : <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 16 }}>{t('storereq.awaiting_buyer', { defaultValue: 'Purchaser {{name}} buying…', name: detailReq.buyer_name || '' })}</p>)}
               {canDecideReq && detailReq.status === 'approved' && (

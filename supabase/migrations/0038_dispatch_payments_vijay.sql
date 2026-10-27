@@ -36,7 +36,10 @@ alter table public.maintenance_store_requests
   add constraint maintenance_store_requests_vijay_approval_check
   check (vijay_approval is null or vijay_approval in ('approved', 'rejected'));
 
--- 3. Store requisitions: a buy goes pending → pending_vijay → pending_buyer → approved.
+-- 3. Store requisitions. Live already runs 0028's chain (pending_approval with a
+--    purchaser, buyer_name present); this keeps it and is a no-op where applied.
+--    pending | pending_approval → (unit head) pending_vijay → (Vijay ji) pending_buyer
+--    → (purchaser, supplier + vehicle → Dispatch row) in_transit → received.
 alter table public.store_requisitions drop constraint if exists store_requisitions_status_check;
 alter table public.store_requisitions
   add constraint store_requisitions_status_check
@@ -45,7 +48,11 @@ alter table public.store_requisitions
     'pending_store', 'issued', 'pending_approval', 'pending_vijay', 'pending_buyer', 'in_transit'
   ]));
 alter table public.store_requisitions
-  add column if not exists buyer_name text;
+  add column if not exists approver_key text,
+  add column if not exists buyer_name text,
+  add column if not exists supplier text,
+  add column if not exists vehicle_no text,
+  add column if not exists dispatch_id uuid;
 
 -- 4. Live payments (not on the ticket). Entered with the inputter's name,
 --    Delhi office marks input done (Axis), management marks payment done.

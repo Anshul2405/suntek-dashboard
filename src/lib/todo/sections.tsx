@@ -234,7 +234,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
 
       const reqs = ctx.scopeQuery(
-        supabase.from('store_requisitions').select('id,item,qty,urgency,status,remarks,created_at,plant_id').eq('status', 'pending'),
+        supabase.from('store_requisitions').select('id,item,qty,urgency,status,remarks,created_at,plant_id').in('status', ['pending', 'pending_approval']),
         { unitCol: 'unit_id' },
       ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<
         { id: string; item: string; qty: number | null; urgency: string | null; remarks: string | null; created_at: string | null; plant_id: string | null }[]
