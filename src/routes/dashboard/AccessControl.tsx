@@ -12,6 +12,7 @@ import { useToast } from '../../components/ui/toast';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
 import { formatDate, formatDateTime } from '../../lib/utils/formatting';
+import { codeLabel } from '../../lib/labels';
 
 const PHOTOS: { key: PhotoKey; label: string }[] = [
   { key: 'heat', label: 'Heat sample' },
@@ -275,11 +276,11 @@ export function AccessControl() {
               {requestPage.map((r) => (
                 <tr key={r.id}>
                   <td className="text-xs font-bold">{formatDateTime(r.created_at)}</td>
-                  <td className="text-xs">{r.requested_by}<div className="text-slate-400">{r.requested_role}</div></td>
-                  <td className="text-xs">{r.module}</td>
+                  <td className="text-xs">{r.requested_by}<div className="text-slate-400">{codeLabel(r.requested_role)}</div></td>
+                  <td className="text-xs">{codeLabel(r.module)}</td>
                   <td className="text-xs font-bold">{formatDate(r.entry_date)}</td>
                   <td className="text-xs">{r.reason}</td>
-                  <td className="text-xs font-bold">{r.status}</td>
+                  <td className="text-xs font-bold">{codeLabel(r.status)}</td>
                   <td>
                     {r.status === 'pending' && isManagementProfile(activeProfile) && (
                       <span className="inline-flex gap-2">
@@ -299,7 +300,7 @@ export function AccessControl() {
       {admin && (
         <section className="card2 p-5">
           <h2 className="text-base font-bold">Who can edit or delete</h2>
-          <p className="text-xs text-slate-500 mt-1">Owner/Admin always can. Tick a role, then save. Edit and delete on tickets, stock, FAR, batch sheets and store requests follow these ticks. A ticked role applies to everyone in that role. Deleting an uploaded workbook or CSV is a separate allowance in User Management → the role.</p>
+          <p className="text-xs text-slate-500 mt-1">Owner/Admin always can. Tick a role (or a person below), then save. Until you save, each screen keeps its built-in rule. After saving, these ticks decide: Maintenance ticket edit and delete, Stock Register edit and delete, FAR asset photo, Batch Sheet delete. A closed ticket, or a batch sheet already in stock or dispatched, can only be deleted by Owner/Admin. Store requests and purchases have no edit or delete screen yet, so their ticks have nothing to control. Deleting an uploaded workbook or CSV is a separate allowance in User Management → the role.</p>
           <div className="overflow-x-auto mt-3">
             <table className="dt2 text-xs">
               <thead>
@@ -472,8 +473,8 @@ export function AccessControl() {
               {auditPage.map((row) => (
                 <tr key={row.id}>
                   <td className="text-xs font-bold whitespace-nowrap">{formatDateTime(row.created_at)}</td>
-                  <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{row.actor_role}</div></td>
-                  <td className="text-xs">{row.module}</td>
+                  <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{codeLabel(row.actor_role)}</div></td>
+                  <td className="text-xs">{codeLabel(row.module)}</td>
                   <td className="text-xs">{row.summary}</td>
                   <td>{row.photo_url ? <a className="text-xs font-bold text-[var(--accent-deep)]" href={row.photo_url} target="_blank" rel="noreferrer">View</a> : '—'}</td>
                 </tr>

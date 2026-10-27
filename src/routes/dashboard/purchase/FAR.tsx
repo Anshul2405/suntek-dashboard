@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { formatDateTime, istDayKey, istFyStartYear, istToday } from '../../../lib/utils/formatting';
+import { canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -291,7 +292,15 @@ export function FAR() {
 
   /** PIC column upload: Cloudinary → fixed_assets.photo_url → local state.
    *  The same photo then appears on the Asset Profile (QR landing) header. */
+  // Access & backup → "Who can edit or delete" (FAR): once saved, only ticked
+  // roles / people change an asset's photo. Admin always can.
+  const opsTicks = useOpsSettings();
+  const canEditFar = canEditModule(opsTicks, activeProfile, 'far');
   async function handleAssetPicUpload(asset: AssetRow, file: File) {
+    if (!canEditFar) {
+      toast.error(t('far.editForbidden', 'Your role is not allowed to edit FAR assets (Access & backup).'));
+      return;
+    }
     try {
       const up = await uploadWorkflowImage(file, {
         workflow: 'general', subfolder: 'far-assets', kind: 'asset-pic',
@@ -335,6 +344,8 @@ export function FAR() {
   // register; the client's requirement is "FAR different for all 3".
   const [importPlantId, setImportPlantId] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  // The first page paints the table; totals wait for every page (no 1000 / partial % shown as final).
+  const [assetsComplete, setAssetsComplete] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Maintenance/repair cost register (annual, for insurance)
   const [maintEntries, setMaintEntries] = useState<MaintEntry[]>([]);
@@ -375,7 +386,7 @@ export function FAR() {
         withEmbedFallback(
           fetchAllRows<AssetRow>((from, to) =>
             scopeQuery(supabase.from('fixed_assets').select(`${ASSET_COLS}, plants(name)`)).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>(),
-            { onPartial: rows => { setAssets(rows); setLoading(false); } }),
+            { onPartial: rows => { setAssets(rows); setLoading(false); setAssetsComplete(false); } }),
           () => fetchAllRows<AssetRow>((from, to) =>
             scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
           'FAR.assets',
@@ -384,6 +395,7 @@ export function FAR() {
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
       if (error) throw error;
       setAssets(data || []);
+      setAssetsComplete(true);
       setLoadError(false);
       // Display codes come from assignSequentialJobNos / jobNoFar. Do not write
       // job_no just because the register opened — that used to RPC next_job_no
@@ -826,7 +838,7 @@ export function FAR() {
               changed twice (migration 58's rename, migration 69's Drum Plant).
               A hard-coded roster in help text goes stale silently. */}
           <KpiInfoButton info={{ title: 'Total Fixed Assets', what: 'Count of all capitalised fixed assets registered across the factories you have access to. Each asset is named and tracked in the FAR, and belongs to exactly one factory.', source: 'Form entry', formLabel: 'Add Asset form', formPath: '/dashboard/purchase/far', note: 'Live count from the Supabase fixed_assets table, scoped to your factories.' }} />
-          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading ? '…' : assets.length}
+          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading || !assetsComplete ? '…' : assets.length}
             onView={() => { filters.only({}); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')}
             caption={loading ? '\u00a0' : plantsInFar.length === 0
@@ -843,7 +855,7 @@ export function FAR() {
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Pic-Proof Coverage', what: 'Percentage of registered assets that have a photo on file as proof of existence. Required for insurance claims and audits. Target 100%.', source: 'Derived', note: 'Assets with a photo on file ÷ total registered assets. 0% when the FAR is empty. Updates as photos are added or removed.' }} />
-          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading ? '…' : `${picCoverage}%`}
+          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading || !assetsComplete ? '…' : `${picCoverage}%`}
             caption={<div className="progress mt-1"><div style={{ width: `${picCoverage}%` }}></div></div>}
             onView={() => { filters.only({ pic: 'missing' }); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')} />

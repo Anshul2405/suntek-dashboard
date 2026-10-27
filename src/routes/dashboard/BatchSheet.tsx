@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { insertRows } from '../../lib/db';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { FileSpreadsheet, FileText, Plus } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
-import { formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday } from '../../lib/utils/formatting';
 import { useUrlFilters } from '../../lib/urlFilters';
 import { plantsForPicker } from '../../lib/access/pickerPlants';
 import { DateRangeFilter, FilterBar, FilterSelect, TablePaginationV2 } from '../../components/v2';
@@ -13,7 +14,7 @@ import { Building2, FlaskConical, Layers } from 'lucide-react';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
-import { canViewPhoto, useOpsSettings } from '../../lib/opsControls';
+import { canDeleteModule, canViewPhoto, useOpsSettings } from '../../lib/opsControls';
 import { fetchAllRows } from '../../lib/fetchAll';
 import { parseTypedOilRatio } from '../../components/ProductionBatchSheetForm';
 import { isProductionSheetBatchNo, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
@@ -117,11 +118,16 @@ export function BatchSheet() {
   const isFactoryAccountant = role === 'accountant_delhi' || role === 'accountant_other'
     || isAdminProfile(activeProfile);
   // Cleanup of dummy / wrong sheets — admin, accountants, unit heads, Technical.
-  const canDeleteSheet = isFactoryAccountant
-    || role === 'unit_head'
-    || role === 'factory_operator'
-    || activeProfile.baseRoleId === 'unit_head'
-    || activeProfile.baseRoleId === 'factory_operator';
+  // Once Access & backup's "Who can edit or delete" is saved, its Batch ticks
+  // decide instead. A sheet already in stock or dispatched is admin-only.
+  const isBatchAdmin = isAdminProfile(activeProfile);
+  const canDeleteSheet = ops.enforced
+    ? canDeleteModule(ops, activeProfile, 'batch')
+    : (isFactoryAccountant
+      || role === 'unit_head'
+      || role === 'factory_operator'
+      || activeProfile.baseRoleId === 'unit_head'
+      || activeProfile.baseRoleId === 'factory_operator');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
   // False until the first load returns — the empty state must not flash meanwhile.
@@ -280,6 +286,10 @@ export function BatchSheet() {
   }, [scopeReady, loadProductionSheets]);
 
   async function deleteSheet(row: ProductionSheetRow) {
+    if (row.stage !== 'created' && !isBatchAdmin) {
+      toast.error(t('batchProd.deleteLocked', 'This sheet is in stock or dispatched — only an admin can delete it.'));
+      return;
+    }
     if (!canDeleteSheet) {
       toast.error(t('batchProd.deleteForbidden', 'You do not have permission to delete batch sheets.'));
       return;
@@ -300,6 +310,12 @@ export function BatchSheet() {
         return;
       }
       setProdSheets((prev) => prev.filter((r) => r.id !== row.id));
+      // Keep a trace in the Activity Log (shown shaded as deleted).
+      insertRows('activity_logs', {
+        type: 'batch_sheet_deleted', date: istToday(), done_by: activeProfile.name, verified_by: null,
+        equipment: `Batch ${row.batch_no}`, plant_id: row.plant_id ?? null, photo_url: null,
+        note: `Batch sheet ${row.batch_no} deleted by ${activeProfile.name}`,
+      }).then(() => {}, () => {});
       toast.success(t('batchProd.deleted', 'Batch sheet deleted'));
     } finally {
       setDeletingId(null);
@@ -479,7 +495,7 @@ export function BatchSheet() {
                         >
                           <FileText size={12} /> COA
                         </button>
-                        {canDeleteSheet && (
+                        {canDeleteSheet && (row.stage === 'created' || isBatchAdmin) && (
                           <button
                             type="button"
                             disabled={deletingId === row.id}

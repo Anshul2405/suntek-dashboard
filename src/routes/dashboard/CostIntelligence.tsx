@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IndianRupee, Wallet, Boxes } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useQuery } from '@tanstack/react-query';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
@@ -30,13 +31,17 @@ function fmtINR(v: number): string {
 export function CostIntelligence() {
   const { t } = useTranslation();
   const [config, setConfig] = useState<CostConfig>({ ...DEFAULT_COST_CONFIG });
+  // Plant-scoped (fail-closed): a user sees batches of their own plants only.
+  const { scopeQuery, ready: scopeReady, plantIds, isGlobal } = usePlantScope();
+  const scopeKey = isGlobal ? 'all' : plantIds.join(',');
 
   const { data, isLoading, isError, refetch } = useQuery<BatchRow[]>({
-    queryKey: ['cost-closed-batches'],
+    queryKey: ['cost-closed-batches', scopeKey],
+    enabled: scopeReady,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await scopeQuery(supabase
         .from('active_batches')
-        .select('*, plants(name)')
+        .select('*, plants(name)'))
         .eq('status', 'closed')
         .order('closed_at', { ascending: false })
         .returns<BatchRow[]>();

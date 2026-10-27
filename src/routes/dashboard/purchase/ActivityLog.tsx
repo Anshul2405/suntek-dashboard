@@ -48,6 +48,10 @@ const STORE_REQ_FEED_SELECT = 'id, ticket_id, part_name, supplier_name, busy_tra
 type UnifiedRow = {
   key: string;
   equipment: string;
+  /** Free-text note saved with the row (+ Log activity notes, stock "old → new"). */
+  note?: string | null;
+  /** Sort instant for the Date column; manual entries sit at the end of their day. */
+  sortAt?: number;
   type: string;            // event kind / activity type
   date: string;            // ISO or YYYY-MM-DD
   doneBy: string | null;
@@ -76,13 +80,26 @@ const SYSTEM_TYPE_KEYS: Record<string, [string, string]> = {
   repair_return_reversed: ['activity.sysRepairReturnReversed', 'Repair return reversed (deleted)'],
   defective_disposition: ['activity.sysDefective', 'Defective part decided'],
   import_deleted: ['activity.sysImportDeleted', 'Upload deleted'],
-};
-/** Labels only for other app-written types, so the feed never shows a slug.
- *  Kept out of SYSTEM_TYPE_KEYS: that map also decides source/verification. */
-const OTHER_TYPE_LABELS: Record<string, [string, string]> = {
+  // Written by the app, not typed by a person: never asks for verification.
   stock_edit: ['activity.typeStockEdit', 'Stock item edited'],
   stock_delete: ['activity.typeStockDelete', 'Stock item deleted'],
   stock_check_override: ['activity.typeStockCheckOverride', 'Store check overridden'],
+  ticket_deleted: ['activity.sysTicketDeleted', 'Maintenance ticket deleted'],
+  batch_sheet_deleted: ['activity.sysBatchSheetDeleted', 'Batch sheet deleted'],
+};
+/** Labels only for other app-written types, so the feed never shows a slug.
+ *  Kept out of SYSTEM_TYPE_KEYS: that map also decides source/verification. */
+const OTHER_TYPE_LABELS: Record<string, [string, string]> = {};
+/** An unknown type still reads as words, never as a slug. */
+const humanizeType = (s: string | null | undefined) =>
+  (s || '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+/** End of the IST day of a yyyy-mm-dd, plus a sub-millisecond nudge by entry
+ *  time, so a + Log activity row stays above that day's timed events and the
+ *  newest manual entry is first — after a refresh too. */
+const manualSortAt = (day: string, createdAt: string | null | undefined) => {
+  const start = Date.parse(`${(day || '').slice(0, 10)}T00:00:00+05:30`);
+  if (!Number.isFinite(start)) return toMs(createdAt);
+  return start + 86_399_000 + (createdAt ? Date.parse(createdAt) / 1e12 : 0);
 };
 const ticketRef = (tk: { id: string; ticket_no?: string | number | null }) => ticketNoLabel(tk);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
@@ -379,6 +396,7 @@ export function ActivityLog() {
   const setPlantFilter = (v: string) => patchParams({ plant: v });
   const setKpi = (v: 'all' | 'verified' | 'pending' | 'photo' | 'maint') => patchParams({ kpi: v === 'all' ? '' : v });
   const setFromTo = (from: string, to: string) => patchParams({ from, to });
+  const [incidentsError, setIncidentsError] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<{ id: string; what_text: string; who_text: string | null; occurred_at: string; reported_by: string | null; plants?: { name: string } | null }[]>([]);
   const today = istToday();
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
@@ -392,8 +410,20 @@ export function ActivityLog() {
     const paintIfReady = () => { if (logsIn && firstTicketsIn) setLoading(false); };
     try {
       const db = supabase as unknown as { from: (table: string) => any };
-      const incidentsP = Promise.resolve(scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)')).order('occurred_at', { ascending: false }))
-        .then(({ data }: { data: typeof incidents | null }) => setIncidents(data || []), () => setIncidents([]));
+      // Incidents: plant-scoped like everything else (an incident saved with no
+      // plant is visible to all-plants users only). A failed read is shown, not
+      // swallowed into an empty list.
+      const incidentsP = withEmbedFallback(
+        scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plant_id, plants(name)')).order('occurred_at', { ascending: false }),
+        () => scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plant_id')).order('occurred_at', { ascending: false }),
+        'ActivityLog.incidents',
+      ).then(
+        ({ data, error }) => {
+          setIncidents((data as typeof incidents | null) || []);
+          setIncidentsError(error ? (error.message || 'error') : null);
+        },
+        (e: unknown) => { setIncidents([]); setIncidentsError(e instanceof Error ? e.message : String(e)); },
+      );
       const logsP = withEmbedFallback(
         scopeQuery(supabase.from('activity_logs').select('*, plants(name)')).order('date', { ascending: false }).returns<ActivityRow[]>(),
         () => scopeQuery(supabase.from('activity_logs').select('*')).order('date', { ascending: false }).returns<ActivityRow[]>(),
@@ -451,8 +481,10 @@ export function ActivityLog() {
       key: a.id || `manual-${i}`,
       equipment: a.equipment || '—',
       // Saved lower-case ('regular'); show the same label the form offers.
-      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : OTHER_TYPE_LABELS[kind] ? t(OTHER_TYPE_LABELS[kind][0], OTHER_TYPE_LABELS[kind][1]) : a.type,
+      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : OTHER_TYPE_LABELS[kind] ? t(OTHER_TYPE_LABELS[kind][0], OTHER_TYPE_LABELS[kind][1]) : humanizeType(a.type),
       date: a.date,
+      note: a.note ?? null,
+      sortAt: sys ? toMs(a.created_at || a.date) : manualSortAt(a.date, a.created_at),
       doneBy: a.done_by,
       verifiedBy: sys ? null : a.verified_by,
       plant: a.plants?.name ?? null,
@@ -540,7 +572,7 @@ export function ActivityLog() {
     equipment: r => r.equipment,
     activity: r => r.type,
     ticket: r => r.ticketRef,
-    date: r => new Date(r.date),
+    date: r => r.sortAt ?? toMs(r.date),
     doneBy: r => r.doneBy,
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
@@ -584,6 +616,7 @@ export function ActivityLog() {
       done_by: form.doneBy,
       verified_by: form.verifiedBy || null,
       plant_id: plant?.id || null,
+      note: form.notes.trim() || null,
     }).select('*, plants(name)').single();
 
     if (error) {
@@ -681,7 +714,7 @@ export function ActivityLog() {
             <button
               className="pill px-3 py-2 text-xs font-semibold btn-ghost"
               style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#475569' }}
-              onClick={() => setShowManualOnly(v => !v)}
+              onClick={() => { const next = !showManualOnly; setShowManualOnly(next); patchParams({ manual: next ? '1' : '' }); }}
               title={t('activity.toggleFeedTitle')}
             >
               {showManualOnly ? t('activity.showMaintenanceFeed') : t('activity.manualOnly')}
@@ -733,6 +766,11 @@ export function ActivityLog() {
           )}
           <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => setFromTo(from, to)} />
         </FilterBar>
+        {incidentsError && !loadError && (
+          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {t('activity.incidentsLoadFailed', { defaultValue: 'Incidents could not be loaded, so they are missing from this list: {{msg}}', msg: incidentsError })}
+          </div>
+        )}
         {loadError ? (
           <ErrorState title={t('activity.errorTitle')} message={t('activity.errorMessage')}
             onRetry={() => { setLoading(true); setLoadError(false); load(); }} />
@@ -759,7 +797,10 @@ export function ActivityLog() {
                   else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&back=${back}`);
                   else if (a.photos.length) setLightbox(a.photos);
                 }} title={a.ticketId ? t('activity.openTicket', 'Open ticket') : undefined}>
-                  <td className="font-semibold">{a.equipment || '—'}</td>
+                  <td className="font-semibold">
+                    {a.equipment || '—'}
+                    {a.note && <div className="text-xs font-normal text-slate-500 whitespace-normal max-w-[360px]">{a.note}</div>}
+                  </td>
                   <td className="text-slate-600">
                     {a.type}
                     {a.deleted && (

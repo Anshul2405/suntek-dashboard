@@ -39,6 +39,8 @@ interface Props {
   iconOnly?: boolean;
   /** Trigger + panel wording. A closed maintenance ticket says "Feedback". */
   variant?: 'notes' | 'feedback';
+  /** Called after a note is posted (e.g. to show the Notes badge at once). */
+  onPosted?: () => void;
 }
 
 type ReceiptMap = Record<string, NoteReceipt[]>;
@@ -57,7 +59,7 @@ function mergeReceipt(map: ReceiptMap, r: NoteReceipt): ReceiptMap {
   return { ...map, [r.note_id]: next };
 }
 
-export function NotesButton({ entityType, entityId, entityLabel, route, triggerClassName = 'chip', iconOnly, variant = 'notes' }: Props) {
+export function NotesButton({ entityType, entityId, entityLabel, route, triggerClassName = 'chip', iconOnly, variant = 'notes', onPosted }: Props) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<EntityNote[]>([]);
   const [receipts, setReceipts] = useState<ReceiptMap>({});
@@ -170,6 +172,7 @@ export function NotesButton({ entityType, entityId, entityLabel, route, triggerC
     try {
       const text = body.trim();
       await postNote({ ref, actor, body: text, mentionIds, people, addNotification });
+      onPosted?.();
 
       // Persist CC watchers and notify the ones not already pinged as mentions.
       const ccPeople = people.filter((p) => cc.includes(p.id));

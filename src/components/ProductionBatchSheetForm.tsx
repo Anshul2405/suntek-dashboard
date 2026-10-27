@@ -29,6 +29,7 @@ import {
   type CatalogReactor,
 } from '../lib/batch/reactorCatalog';
 import { BATCH_FLOW_WIZARD_EVENT, readWizardStep } from './tour/batchFlowTourSession';
+import { batchNumberWarnings, rangeText } from '../lib/batch/batchGaps';
 
 type StageStep = 0 | 1 | 2 | 3;
 
@@ -250,6 +251,32 @@ export function ProductionBatchSheetForm({
   const batchNoOk = !!(selectedReactor?.code && isValidReactorBatchNo(batchNoTyped, selectedReactor.code));
   const batchNoTouched = batchNoTyped.length > batchPrefix.length;
   const batchNoInvalid = batchNoTouched && !batchNoOk;
+
+  // Numbers already on file for this reactor (both registers) → warn on a jump
+  // or on earlier numbers that are missing. Warnings only: nothing is blocked
+  // and no batch is renumbered.
+  const [reactorSeqs, setReactorSeqs] = useState<number[] | null>(null);
+  useEffect(() => {
+    if (!plantId || !batchPrefix) return;
+    let alive = true;
+    const pref = batchPrefix.toUpperCase();
+    const seqOf = (no: string | null) => {
+      const u = (no || '').trim().toUpperCase();
+      if (!u.startsWith(pref)) return null;
+      const n = Number(u.slice(pref.length));
+      return Number.isInteger(n) && n > 0 ? n : null;
+    };
+    void Promise.all([
+      supabase.from('active_batches').select('batch_no').eq('plant_id', plantId).ilike('batch_no', `${pref}%`).limit(5000).returns<{ batch_no: string | null }[]>(),
+      supabase.from('production_batch_sheets').select('batch_no').eq('plant_id', plantId).ilike('batch_no', `${pref}%`).limit(5000).returns<{ batch_no: string | null }[]>(),
+    ]).then(([a, b]) => {
+      if (!alive) return;
+      setReactorSeqs([...(a.data ?? []), ...(b.data ?? [])].map(r => seqOf(r.batch_no)).filter((n): n is number => n != null));
+    });
+    return () => { alive = false; };
+  }, [plantId, batchPrefix]);
+  const typedSeq = batchNoOk ? Number(batchNoTyped.slice(batchPrefix.length)) : null;
+  const batchWarnings = reactorSeqs && batchNoOk ? batchNumberWarnings(reactorSeqs, typedSeq) : [];
 
   const canNext =
     step === 0 ? !!(plantId && reactorId && batchNoOk) :
@@ -537,6 +564,15 @@ export function ProductionBatchSheetForm({
                   })}
                 </span>
               )}
+              {batchWarnings.map(w => (
+                <span key={w.kind} className="text-[10.5px] text-amber-700 font-semibold">
+                  {w.kind === 'duplicate'
+                    ? t('batchProd.gapDuplicate', { defaultValue: '{{no}} is already on file for this reactor.', no: batchNoTyped })
+                    : w.kind === 'jump'
+                      ? t('batchProd.gapJump', { defaultValue: 'Jump: last on file is {{prefix}}{{last}}; this skips {{range}}. Check the number.', prefix: batchPrefix, last: w.last, range: rangeText(w.skipped) })
+                      : t('batchProd.gapMissing', { defaultValue: 'Not on file for this reactor: {{ranges}}{{more}}.', ranges: w.ranges.map(rangeText).join(', '), more: w.more ? ` (+${w.more})` : '' })}
+                </span>
+              ))}
             </label>
           </div>
         )}

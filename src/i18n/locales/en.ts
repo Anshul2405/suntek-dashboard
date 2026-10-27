@@ -588,6 +588,9 @@ const en = {
       'New Batch starts the run → Log Reading records it hourly → Close runs yield QC → Create Batch Sheet records density and photos as P12-13 → the register holds it → the accountant moves it to stock, then dispatch. Upload OCR is the paper shortcut into the readings.\n\nOpen questions for the plant: who creates the sheet, who closes the run, and whether every batch gets a sheet or only the ones that go to stock.\n\nReplay this anytime with How this works.',
   },
   batchProd: {
+    gapDuplicate: "{{no}} is already on file for this reactor.",
+    gapJump: "Jump: last on file is {{prefix}}{{last}}; this skips {{range}}. Check the number.",
+    gapMissing: "Not on file for this reactor: {{ranges}}{{more}}.",
     nounSheets: "sheets",
     thBatchNo: "Batch no",
     thPlant: "Plant",
@@ -1251,6 +1254,9 @@ const en = {
     statusOverdue: 'DUE > ₹5 L',
   },
   "activity": {
+    sysTicketDeleted: "Maintenance ticket deleted",
+    sysBatchSheetDeleted: "Batch sheet deleted",
+    incidentsLoadFailed: "Incidents could not be loaded, so they are missing from this list: {{msg}}",
     deletedBadge: "Deleted",
     srcSystem: "Store & system",
     sysImportDeleted: "Upload deleted",
@@ -3230,6 +3236,10 @@ const en = {
     "errLoginCreateFailed": "Login creation failed: {{msg}}",
   },
   "warehouse": {
+    "demoNotSaved": "Demo — not saved",
+    "demoReqHint": "Nothing was sent to Vijay ji. Raise a real requisition on Store Requisition.",
+    "openStoreReq": "Open Store Requisition",
+    "demoBanner": "This console shows sample tanks and drums and saves nothing. Use Stock Register and Store Requisition for real entries.",
     "lowLevel": "Low level",
     "pctFilled": "{{pct}}% filled",
     "drumsUnit": "drums",

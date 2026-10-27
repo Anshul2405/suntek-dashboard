@@ -83,7 +83,7 @@ const RANGES = [
 export function UploadHistory() {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const { plants, allowedPlants, stores, storeQuery, ready } = usePlantScope();
+  const { plants, allowedPlants, stores, allowedStores, storeQuery, ready } = usePlantScope();
   // The factory filter lists only factories this user may see; `plants` stays for labels.
   const pickerPlants = useMemo(() => plantsForPicker(allowedPlants, ready), [allowedPlants, ready]);
   const toast = useToast();
@@ -349,11 +349,11 @@ export function UploadHistory() {
             />
             {/* Only meaningful for stock uploads — FAR and PM are factory-owned
                 and carry no store — so it appears once a store is in play. */}
-            {stores.length > 1 && (
+            {allowedStores.length > 1 && (
               <FilterSelect
                 label={t('uploads.filterStore', 'Store')} value={storeFilter} onChange={setStoreFilter}
                 options={[{ value: 'all', label: t('uploads.allStores', 'All stores') },
-                          ...stores.map(s => ({ value: s.id, label: s.name }))]}
+                          ...allowedStores.map(s => ({ value: s.id, label: s.name }))]}
               />
             )}
             <FilterSelect

@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Gauge, CheckCircle2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { StatCard, StatusPill, InfoBanner, type PillTone } from '../../components/v2';
@@ -45,11 +46,15 @@ const STATUS_CFG: Record<BatchProjection['status'], { label: string; color: stri
 
 export function PredictiveQCBoard() {
   const { t } = useTranslation();
+  // Plant-scoped (fail-closed): a user sees batches of their own plants only.
+  const { scopeQuery, ready: scopeReady, plantIds, isGlobal } = usePlantScope();
+  const scopeKey = isGlobal ? 'all' : plantIds.join(',');
   const { data, isLoading, isError, refetch } = useQuery<{ batches: BatchRow[]; readings: ReadingRow[] }>({
-    queryKey: ['predictive-qc'],
+    queryKey: ['predictive-qc', scopeKey],
+    enabled: scopeReady,
     queryFn: async () => {
-      const { data: batches, error: be } = await supabase
-        .from('active_batches').select('*, plants(name)').eq('status', 'active').returns<BatchRow[]>();
+      const { data: batches, error: be } = await scopeQuery(supabase
+        .from('active_batches').select('*, plants(name)')).eq('status', 'active').returns<BatchRow[]>();
       if (be) throw be;
       const ids = (batches ?? []).map(b => b.id);
       let readings: ReadingRow[] = [];

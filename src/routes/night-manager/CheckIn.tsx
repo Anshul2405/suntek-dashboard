@@ -59,7 +59,7 @@ export function CheckIn({ embedded = false }: CheckInProps) {
   const [gpsData,  setGpsData]  = useState<GpsData | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
   // Which factory the check-in was matched against (set when GPS resolves).
-  const [matchedPlant, setMatchedPlant] = useState<{ name: string } | null>(null);
+  const [matchedPlant, setMatchedPlant] = useState<{ id: string; name: string } | null>(null);
 
   // The factories this user may check in at. Night duty can be rostered across
   // several (migration 52), so the site is resolved from the GPS reading rather
@@ -195,20 +195,20 @@ export function CheckIn({ embedded = false }: CheckInProps) {
         // Score every factory the user may check in at and keep the closest.
         // Whichever is nearest is the one they are standing at; the on-site
         // decision then uses that factory's own radius.
-        let best: { result: ReturnType<typeof validateGeofence>; name: string } | null = null;
+        let best: { result: ReturnType<typeof validateGeofence>; id: string; name: string } | null = null;
         for (const p of geofencePlants) {
           const r = validateGeofence(
             latitude, longitude, p.lat as number, p.lng as number,
             p.geofence_radius_m ?? FALLBACK_RADIUS_M,
           );
-          if (!best || r.distanceM < best.result.distanceM) best = { result: r, name: p.name };
+          if (!best || r.distanceM < best.result.distanceM) best = { result: r, id: p.id, name: p.name };
         }
         // No factory has coordinates yet → report the reading without a verdict
         // rather than measuring it against an unrelated site.
         const result = best?.result
           ?? { distanceM: 0, isOnSite: true, status: 'on_site' as const, radiusM: FALLBACK_RADIUS_M,
                statusLabel: t('checkin.noGeofenceConfigured', 'Location recorded (no geofence configured)') };
-        setMatchedPlant(best ? { name: best.name } : null);
+        setMatchedPlant(best ? { id: best.id, name: best.name } : null);
         setGpsData({
           lat:         latitude,
           lng:         longitude,
@@ -274,6 +274,9 @@ export function CheckIn({ embedded = false }: CheckInProps) {
       lng:        gpsData.lng,
       is_on_site: gpsData.isOnSite,
       distance_m: gpsData.distanceM,
+      // The factory the reading matched (or the user's only factory), so the
+      // check-in is visible to that plant's managers under plant-scoped RLS.
+      plant_id: matchedPlant?.id ?? (allowedPlants.length === 1 ? allowedPlants[0].id : null),
     });
     if (dbError) {
       console.error('Supabase insert failed:', dbError);

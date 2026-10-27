@@ -592,6 +592,9 @@ const hi: Translations = {
       'New Batch से रन शुरू → Log Reading हर घंटे दर्ज → Close पर yield QC → Create Batch Sheet में घनत्व और फ़ोटो, नंबर P12-13 → रजिस्टर में रिकॉर्ड → अकाउंटेंट स्टॉक, फिर डिस्पैच। Upload OCR कागज़ से रीडिंग भरने का शॉर्टकट है।\n\nप्लांट से पूछने वाली बातें: शीट कौन बनाएगा, रन कौन बंद करेगा, और हर बैच की शीट बनेगी या सिर्फ़ स्टॉक जाने वालों की।\n\nHow this works से कभी भी दोबारा चलाएँ।',
   },
   batchProd: {
+    gapDuplicate: "{{no}} इज़ ऑलरेडी ऑन फाइल फॉर दिस रिएक्टर।",
+    gapJump: "जंप: लास्ट ऑन फाइल इज़ {{prefix}}{{last}}; दिस स्किप्स {{range}}। चेक द नंबर।",
+    gapMissing: "नॉट ऑन फाइल फॉर दिस रिएक्टर: {{ranges}}{{more}}।",
     nounSheets: "शीट्स",
     thBatchNo: "बैच नंबर",
     thPlant: "प्लांट",
@@ -1255,6 +1258,9 @@ const hi: Translations = {
     statusOverdue: 'ड्यू > ₹5 L',
   },
   "activity": {
+    sysTicketDeleted: "मेंटेनेंस टिकट डिलीटेड",
+    sysBatchSheetDeleted: "बैच शीट डिलीटेड",
+    incidentsLoadFailed: "इंसिडेंट्स कुड नॉट बी लोडेड, सो दे आर मिसिंग फ्रॉम दिस लिस्ट: {{msg}}",
     deletedBadge: "डिलीटेड",
     srcSystem: "स्टोर और सिस्टम",
     sysImportDeleted: "अपलोड डिलीटेड",
@@ -3230,6 +3236,10 @@ const hi: Translations = {
     "errLoginCreateFailed": "लॉगिन क्रिएशन फेल्ड: {{msg}}",
   },
   "warehouse": {
+    "demoNotSaved": "डेमो — नॉट सेव्ड",
+    "demoReqHint": "नथिंग वाज़ सेंट टू विजय जी। रेज़ अ रियल रिक्विज़िशन ऑन स्टोर रिक्विज़िशन।",
+    "openStoreReq": "ओपन स्टोर रिक्विज़िशन",
+    "demoBanner": "दिस कंसोल शोज़ सैंपल टैंक्स एंड ड्रम्स एंड सेव्स नथिंग। यूज़ स्टॉक रजिस्टर एंड स्टोर रिक्विज़िशन फॉर रियल एंट्रीज़।",
     "lowLevel": "लो लेवल",
     "pctFilled": "{{pct}}% फिल्ड",
     "drumsUnit": "ड्रम्स",

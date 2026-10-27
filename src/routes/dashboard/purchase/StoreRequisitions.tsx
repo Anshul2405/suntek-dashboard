@@ -38,6 +38,7 @@ import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procuremen
 import { PhotoUploader } from './maintenance/shared';
 import { uploadWorkflowImage } from '../../../lib/cloudinary';
 import { withBillRemark } from '../../../lib/dispatch';
+import { codeLabel } from '../../../lib/labels';
 
 // ticket_id is added by migration NN_requisition_ticket_link.sql; typed here until
 // database.types.ts is regenerated so requisitions raised from a maintenance ticket
@@ -347,7 +348,7 @@ export function StoreRequisitions() {
         type: 'info',
         route: '/dashboard/purchase/book?tab=dispatch',
         actor_name: activeProfile.name || '',
-        actor_role: activeProfile.id,
+        actor_role: activeProfile.baseRoleId || activeProfile.id,
         read_by: [],
         plant_id: row.plant_id || null,
       }).then(() => {}, () => {});
@@ -403,14 +404,14 @@ export function StoreRequisitions() {
           : ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
         title: t('storereq.decide_notif_title', {
           defaultValue: 'Store req {{status}}: {{item}}',
-          status,
+          status: codeLabel(status),
           item: row.item,
         }),
         body: `${reqNoLabel(row)} · ${row.plants?.name ?? ''}`,
         type: status === 'rejected' ? 'urgent' : 'info',
         route: '/dashboard/purchase/storereq',
         actor_name: activeProfile.name || '',
-        actor_role: activeProfile.id,
+        actor_role: activeProfile.baseRoleId || activeProfile.id,
         read_by: [],
         plant_id: row.plant_id || null,
       }).then(() => {}, () => {});

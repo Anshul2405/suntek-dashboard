@@ -19,6 +19,7 @@ import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile, profileHasCapability } from '../../../lib/profiles';
+import { canDeleteModule, canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
@@ -221,8 +222,14 @@ export function StockRegister() {
 
   const canUploadExcel =
     isAdminProfile(activeProfile);
+  // Access & backup → "Who can edit or delete" (Stock Register). Admin always can;
+  // a saved tick lets that role / person delete too. Edit stays open until the
+  // ticks are saved, then follows them.
+  const opsTicks = useOpsSettings();
   const canDeleteStockItem =
-    canUploadExcel || activeProfile.allowedDashboardRoutes.includes('*');
+    canUploadExcel || activeProfile.allowedDashboardRoutes.includes('*')
+    || canDeleteModule(opsTicks, activeProfile, 'stock');
+  const canEditStockItem = canEditModule(opsTicks, activeProfile, 'stock');
 
   async function load() {
     try {
@@ -526,7 +533,8 @@ export function StockRegister() {
   // ── Import ──────────────────────────────────────────────────────────────────
   // Stores this user may upload against. At Rehla that is the one shared
   // register, which is what the client's single Jharkhand workbook maps to.
-  const storeOptions = allowedStores.length ? allowedStores : stores;
+  // Fail-closed: no store grant means nothing to upload against (never every store).
+  const storeOptions = allowedStores;
   function defaultStore(): string { return storeOptions[0]?.id || ''; }
 
   async function handleFile(file: File) {
@@ -665,6 +673,10 @@ export function StockRegister() {
 
   // ── Manual edit (requires justification, logged to Activity Log) ─────────────
   function openEdit(it: StockItem) {
+    if (!canEditStockItem) {
+      toast.error(t('storereq.stockEditForbidden', 'Your role is not allowed to edit stock (Access & backup).'));
+      return;
+    }
     if (isSnapshotItem(it.id)) {
       toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
       return;
@@ -1068,7 +1080,7 @@ export function StockRegister() {
                             <td>
                               {single && !fromSnapshot ? (
                                 <span className="inline-flex items-center gap-2 text-xs" onClick={e => e.stopPropagation()}>
-                                  <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                  {canEditStockItem && <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
                                   {canDeleteStockItem && (
                                     <button onClick={() => openDelete(m.stores[0].raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                   )}
@@ -1093,7 +1105,7 @@ export function StockRegister() {
                                     <span>{t('storereq.stockExpManual', 'Manual')}: <strong>{Number(s.raw.manual_delta) > 0 ? '+' : ''}{Number(s.raw.manual_delta)}</strong></span>
                                     {!fromSnapshot && (
                                       <span className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                                        <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                        {canEditStockItem && <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
                                         {canDeleteStockItem && (
                                           <button onClick={() => openDelete(s.raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                         )}

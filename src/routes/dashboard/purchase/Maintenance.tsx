@@ -57,6 +57,7 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
 import { safeBack } from '../../../lib/backLink';
+import { canDeleteModule, canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { itemStageOf, rollupStatusOf, vijayStepLive, useVijayStepLive, type ItemStage } from './maintenance/itemStage';
 import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
 
@@ -1494,9 +1495,17 @@ export function Maintenance() {
   }
 
   // ── Admin: edit / delete a ticket ───────────────────────────────────────────
+  // Access & backup → "Who can edit or delete" (Maintenance). Until those ticks
+  // are saved, the built-in rule below applies; once saved, they decide too.
+  // Admin always can; a closed ticket is never deleted except by admin.
+  const opsTicks = useOpsSettings();
+  const tickEditMaint = !opsTicks.enforced || canEditModule(opsTicks, activeProfile, 'maintenance');
+  const tickDeleteMaint = isAdmin || canDeleteModule(opsTicks, activeProfile, 'maintenance');
+
   function canCorrectTicket(tk: TicketRow | null | undefined) {
     if (!tk) return false;
     if (isAdmin) return true;
+    if (!tickEditMaint) return false;
     if (tk.status === 'closed') return false;
     if (!canEditRaisedTicket(tk.created_at)) return false;
     const me = activeProfile.name?.trim().toLowerCase();
@@ -1529,6 +1538,8 @@ export function Maintenance() {
     const changes: string[] = [];
     if ((selectedTicket.equipment || '').trim() !== editForm.equipment.trim()) changes.push(`equipment: ${selectedTicket.equipment || '—'} → ${editForm.equipment || '—'}`);
     if ((selectedTicket.description || '').trim() !== (editForm.description || '').trim()) changes.push(`description: ${(selectedTicket.description || '—').slice(0, 40)} → ${(editForm.description || '—').slice(0, 40)}`);
+    if (plant && plant.id !== selectedTicket.plant_id) changes.push(`plant: ${selectedTicket.plants?.name || '—'} → ${plant.name}`);
+    if ((editForm.farAssetId || null) !== (selectedTicket.far_asset_id || null)) changes.push('FAR link changed');
     const { error: editErr } = await updateRows('maintenance_tickets', {
       equipment: editForm.equipment,
       description: editForm.description || null,
@@ -1538,6 +1549,21 @@ export function Maintenance() {
     if (editErr) { toast.error(editErr.message); return; }
     if (changes.length) {
       await auditNote(selectedTicket, `✎ ${isAdmin ? 'Admin edit' : 'Edited'} by ${activeProfile.name} · ${changes.join('; ')}`);
+      // Tell the people on the ticket — and the person who raised it, when
+      // someone else made the change.
+      await notifyTicketWatchers(selectedTicket, `Ticket edited: ${editForm.equipment || selectedTicket.equipment}`, `${activeProfile.name}: ${changes.join('; ')}`);
+      const raiser = (selectedTicket.raised_by || '').trim().toLowerCase();
+      const raiserPerson = raiser && raiser !== (activeProfile.name || '').trim().toLowerCase()
+        ? people.find(p => (p.name || '').trim().toLowerCase() === raiser)
+        : undefined;
+      if (raiserPerson) {
+        await addNote({
+          target_roles: [raiserPerson.id], scope: 'personal',
+          title: `Your ticket was edited: ${editForm.equipment || selectedTicket.equipment}`,
+          body: `${activeProfile.name}: ${changes.join('; ')}`, type: 'info',
+          route: maintRoute(selectedTicket.id), actor_name: activeProfile.name, actor_role: role,
+        });
+      }
     }
     setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, far_asset_id: editForm.farAssetId || null, plants: plant ? { name: plant.name } : t.plants } : t);
     await notifyMentions(editForm.description, {
@@ -1550,7 +1576,7 @@ export function Maintenance() {
   }
 
   async function handleDeleteTicket(tk: TicketRow) {
-    if (!isAdmin) return;
+    if (!(isAdmin || (tickDeleteMaint && tk.status !== 'closed'))) return;
     if (!window.confirm(t('maint.confirmDeleteTicket', { defaultValue: 'Delete ticket "{{name}}"? This permanently removes it and cannot be undone. Any stock issued or reserved for this ticket will be restored to the register.', name: tk.equipment || tk.title }))) return;
     // Reverse stock first (unissue / release), then drop dependent store-request rows.
     const unwind = await unwindStoreRequestsForTickets([tk.id], { actorName: activeProfile.name });
@@ -1565,6 +1591,12 @@ export function Maintenance() {
     if (error) { toast.error(t('maint.deleteFailedMsg', { defaultValue: 'Delete failed: {{message}}', message: error.message })); return; }
     setTickets((prev) => prev.filter((x) => x.id !== tk.id));
     if (selectedTicket?.id === tk.id) { setSelectedTicket(null); setEditingTicket(false); }
+    // Keep a trace: the Activity Log shows this line shaded as deleted.
+    insertRows('activity_logs', {
+      type: 'ticket_deleted', date: istToday(), done_by: activeProfile.name, verified_by: null,
+      equipment: tk.equipment || tk.title, plant_id: tk.plant_id, photo_url: null,
+      note: `Ticket ${ticketNoLabel(tk)} deleted by ${activeProfile.name} (was ${STATUS_CFG[tk.status]?.label ?? tk.status})`,
+    }).then(() => {}, () => {});
     const restored = unwind.unissued + unwind.released + unwind.procuredReversed;
     toast.success(restored > 0
       ? t('maint.ticketDeletedStockRestored', { defaultValue: 'Ticket deleted · {{n}} unit(s) restored to stock', n: restored })
@@ -3543,6 +3575,8 @@ export function Maintenance() {
   function periodicScheduleRows(pageRows: ScheduleRow[]) {
     return pageRows.map(s => {
       const linkedTicket = tickets.find(tk => tk.schedule_id === s.id && tk.status !== 'closed');
+      // Any ticket of this schedule with notes / feedback — the same badge as the emergency list.
+      const scheduleHasNotes = tickets.some(tk => tk.schedule_id === s.id && ticketsWithNotes.has(tk.id));
       const awaitingVerify = linkedTicket?.status === 'pending_unit_head';
       const days = daysFromNow(s.next_due_at);
       const due = dueDateLabel(days, t);
@@ -3557,7 +3591,7 @@ export function Maintenance() {
       return (
         <tr key={s.id}>
           {/* Long text wraps so Status / Action stay on screen at 1366 (dt2 cells are nowrap). */}
-          <td className="font-semibold !whitespace-normal min-w-[180px]">{stripPlaceholderParen(s.title)}</td>
+          <td className="font-semibold !whitespace-normal min-w-[180px]">{stripPlaceholderParen(s.title)}{scheduleHasNotes ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>{t('maint.notesLabel', 'Notes')}</span> : null}</td>
           <td className="!whitespace-normal min-w-[140px]">
             <div>{stripPlaceholderParen(s.equipment)}</div>
             {job ? <div className="text-[11px] font-mono text-slate-400">{job}</div> : null}
@@ -3891,7 +3925,7 @@ export function Maintenance() {
                   <tr>
                     <Th sortKey="ticket" s={emergencySort}>{t('maint.colTicketNo')}</Th><Th sortKey="equipment" s={emergencySort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={emergencySort}>{t('common.plant')}</Th><Th sortKey="issue" s={emergencySort}>{t('maint.colIssue')}</Th>
                     <Th sortKey="status" s={emergencySort}>{t('maint.colStatus')}</Th><Th sortKey="raisedBy" s={emergencySort}>{t('maint.colRaisedBy')}</Th><Th sortKey="created" s={emergencySort} firstDir="desc">{t('maint.colCreated')}</Th>
-                    {isAdmin && <th></th>}
+                    {tickDeleteMaint && <th></th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -3907,13 +3941,13 @@ export function Maintenance() {
                       <td>{statusBadge(tk.status, t)}</td>
                       <td className="text-slate-500 text-xs">{tk.raised_by || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(tk.created_at)}</td>
-                      {isAdmin && (
+                      {tickDeleteMaint && (
                         <td>
-                          <button
+                          {(isAdmin || tk.status !== 'closed') && <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteTicket(tk); }}
                             title={t('maint.deleteTicketTitle', 'Delete ticket')}
                             style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#DC2626', fontSize: 13, padding: '2px 6px', lineHeight: 1 }}
-                          >🗑</button>
+                          >🗑</button>}
                         </td>
                       )}
                     </tr>
@@ -4307,12 +4341,12 @@ export function Maintenance() {
                 Request Changes lets a reviewer send the ticket back for correction. */}
             {!editingTicket && !requestingChanges && !resubmitting && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
+                <NotesButton onPosted={() => { const id = selectedTicket.id; setTicketsWithNotes(prev => new Set(prev).add(id)); }} entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
                 {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
                   <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} className="chip" style={{ color: '#DC2626' }}>{t('maint.requestChangesChip', '↩ Request Changes')}</button>
                 )}
                 {canCorrectTicket(selectedTicket) && <button onClick={() => startEdit(selectedTicket)} className="chip">{isAdmin ? t('maint.editChipAdmin', '✎ Edit') : t('maint.editChip', '✎ Edit')}{!isAdmin && <> · {t('maint.editMinutesLeft', { defaultValue: '{{n}}m left', n: ticketEditMinutesLeft(selectedTicket.created_at) })}</>}</button>}
-                {isAdmin && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
+                {(isAdmin || (tickDeleteMaint && selectedTicket.status !== 'closed')) && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
               </div>
             )}
 

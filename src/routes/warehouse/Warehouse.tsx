@@ -1,8 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MentionTextarea } from '../../components/mentions';
-import { useMentionNotifier } from '../../lib/mentions';
-import { useBlacklistGuard } from '../../lib/blacklist/guard';
 
 type Tab = 'stock' | 'req';
 
@@ -118,8 +116,6 @@ function RequisitionForm() {
   const [qty, setQty]             = useState('');
   const [urgency, setUrgency]     = useState('low');
   const [remarks, setRemarks]     = useState('');
-  const notifyMentions = useMentionNotifier();
-  const screenBlacklist = useBlacklistGuard();
   const [photoName, setPhotoName] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
@@ -129,12 +125,9 @@ function RequisitionForm() {
     if (submittingRef.current) return; // double-submit guard
     submittingRef.current = true;
     try {
-      await new Promise(r => setTimeout(r, 800));
-      await notifyMentions(remarks, { entityLabel: `Warehouse requisition · ${item || 'item'}`, route: '/warehouse/requisition' });
-      await screenBlacklist(
-        [{ value: item, label: 'Item' }, { value: remarks, label: 'Remarks' }],
-        { workflow: 'Warehouse Requisition', source: 'entry', entityLabel: `Warehouse requisition · ${item || 'item'}` },
-      );
+      // Demo screen: nothing is saved and nobody is notified. Real requisitions
+      // are raised on Store Requisition (store_requisitions), which this form
+      // used to imitate with a timer and a "sent to Vijay Ji" message.
       setSubmitted(true);
     } finally {
       submittingRef.current = false;
@@ -149,8 +142,10 @@ function RequisitionForm() {
             <path d="M20 6 9 17l-5-5"/>
           </svg>
         </div>
-        <h3 className="text-xl font-extrabold mb-1">{t('warehouse.requisitionRaised')} ✓</h3>
-        <p className="text-sm text-slate-500 mb-6">{t('warehouse.sentToApprovalQueue', { name: 'Vijay Ji' })}</p>
+        <h3 className="text-xl font-extrabold mb-1">{t('warehouse.demoNotSaved', 'Demo — not saved')}</h3>
+        <p className="text-sm text-slate-500 mb-6">{t('warehouse.demoReqHint', 'Nothing was sent to Vijay ji. Raise a real requisition on Store Requisition.')}{' '}
+          <a href="/dashboard/purchase/storereq" className="font-bold text-[var(--accent-deep)]">{t('warehouse.openStoreReq', 'Open Store Requisition')}</a>
+        </p>
         <button
           onClick={() => { setItem(''); setQty(''); setRemarks(''); setPhotoName(null); setSubmitted(false); }}
           className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700"
@@ -261,6 +256,11 @@ function WarehouseContent({
   const { t } = useTranslation();
   return (
     <>
+      {/* Not wired to the database: say so instead of pretending to save. */}
+      <div className="mb-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <strong>{t('warehouse.demoNotSaved', 'Demo — not saved')}.</strong>{' '}
+        {t('warehouse.demoBanner', 'This console shows sample tanks and drums and saves nothing. Use Stock Register and Store Requisition for real entries.')}
+      </div>
       {tab === 'stock' && (
         <div className="space-y-6">
           <div className="flex items-center justify-between mb-2">
@@ -295,7 +295,7 @@ function WarehouseContent({
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M20 6 9 17l-5-5"/>
                 </svg>
-                {t('warehouse.dailyRegisterSubmitted')} ✓
+                {t('warehouse.demoNotSaved', 'Demo — not saved')}
               </div>
             ) : (
               <button
