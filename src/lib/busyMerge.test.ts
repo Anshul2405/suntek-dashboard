@@ -116,3 +116,43 @@ describe('merged Busy lists keep a real order', () => {
     expect(series.points.map(p => [p.period, p.value])).toEqual([['2026-10-13', 2], ['2026-10-20', 4]]);
   });
 });
+
+describe('combined top-5 shares', () => {
+  it('shares are of all FY sales, not of the five shown', () => {
+    // Company A: FY 1000, top customer 300 (30%). Company B: FY 1000, top 100 (10%).
+    const merged = mergeCompanyPayloads('/api/analytics/kpis', [
+      { code: '0007', data: { top5ConcentrationPct: 30, top5: [{ name: 'A1', fyRevenue: 300, sharePct: 30 }] } },
+      { code: '0009', data: { top5ConcentrationPct: 10, top5: [{ name: 'B1', fyRevenue: 100, sharePct: 10 }] } },
+    ]) as { top5: { sharePct: number }[]; top5ConcentrationPct: number };
+    expect(merged.top5.map(r => r.sharePct)).toEqual([15, 5]);
+    expect(merged.top5ConcentrationPct).toBe(20);
+  });
+});
+
+describe('combined ratios', () => {
+  it('weights a rate by each company’s FY sales when the payload only has top-5', () => {
+    const merged = mergeCompanyPayloads('/api/analytics/kpis', [
+      { code: '0007', data: { grossMarginPct: 20, top5ConcentrationPct: 10, top5: [{ name: 'A', fyRevenue: 90 }] } },  // FY 900
+      { code: '0010', data: { grossMarginPct: -10, top5ConcentrationPct: 50, top5: [{ name: 'B', fyRevenue: 50 }] } }, // FY 100
+    ]) as { grossMarginPct: number };
+    expect(merged.grossMarginPct).toBe(17); // (20×900 − 10×100) / 1000, not the plain average 5
+  });
+});
+
+describe('merged anomaly feeds', () => {
+  it('ranks findings across companies by level then score', () => {
+    const scan = mergeCompanyPayloads('/api/anomaly/scan', [
+      { code: '0007', data: { findings: [{ id: 'a', title: 'A', level: 'mild', score: 0.9 }] } },
+      { code: '0009', data: { findings: [{ id: 'b', title: 'B', level: 'extreme', score: 0.5 }, { id: 'c', title: 'C', level: 'extreme', score: 0.8 }] } },
+    ]) as { findings: { id: string }[] };
+    expect(scan.findings.map(f => f.id)).toEqual(['0009:c', '0009:b', '0007:a']);
+  });
+
+  it('adds every company’s weekly anomaly timeline', () => {
+    const a = mergeCompanyPayloads('/api/anomaly/analytics', [
+      { code: '0007', data: { timeline: [{ key: '2026-10-19', label: '19 Oct', mild: 1, moderate: 0, heavy: 0, extreme: 0, total: 1 }] } },
+      { code: '0009', data: { timeline: [{ key: '2026-10-12', label: '12 Oct', mild: 0, moderate: 2, heavy: 0, extreme: 0, total: 2 }, { key: '2026-10-19', label: '19 Oct', mild: 1, moderate: 0, heavy: 0, extreme: 1, total: 2 }] } },
+    ]) as { timeline: { key: string; total: number }[] };
+    expect(a.timeline.map(t => [t.key, t.total])).toEqual([['2026-10-12', 2], ['2026-10-19', 3]]);
+  });
+});

@@ -9,6 +9,7 @@ import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { matchCandidates, type StockLite } from '../../../lib/store/purchaseParse';
 import type { Database } from '../../../lib/database.types';
+import { istToday } from '../../../lib/utils/formatting';
 
 type TicketRow = Database['public']['Tables']['maintenance_tickets']['Row'] & { plants?: { name: string | null } | null };
 type DefectivePartRow = Database['public']['Tables']['maintenance_defective_parts']['Row'];
@@ -25,11 +26,6 @@ interface AllocDraft {
   qty: string;
   itemName: string;
   choice: string;          // store_item id or 'new'
-}
-
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /**
@@ -63,7 +59,7 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
   const [stock, setStock] = useState<(StockLite & { plant_id: string | null })[]>([]);
   const [vendor, setVendor] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
-  const [returnDate, setReturnDate] = useState(localToday());
+  const [returnDate, setReturnDate] = useState(istToday());
   const [repairCost, setRepairCost] = useState('');
   const [conditionNote, setConditionNote] = useState('');
   const [comment, setComment] = useState('');
@@ -91,7 +87,7 @@ export function RepairReturnModal({ open, focusPart, parts, tickets, onClose, on
       itemName: (p.part_name || '').trim(),
       choice: 'new',
     })));
-    setVendor(''); setInvoiceNo(''); setReturnDate(localToday());
+    setVendor(''); setInvoiceNo(''); setReturnDate(istToday());
     setRepairCost(''); setConditionNote(''); setComment('');
     setBillFile(null); setErr(null); setDupInvoice(false);
     setReceiptId(crypto.randomUUID());

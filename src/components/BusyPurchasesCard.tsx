@@ -29,7 +29,8 @@ export function BusyPurchasesCard({ className = 'mb-4' }: { className?: string }
     setQ(linkedQ);
   }
   const rows = useMemo(() => data ?? [], [data]);
-  const filtered = useTextFilter(rows, q, (row) => [row.supplier, row.item, row.invoice, row.company, row.date]);
+  // Search the date as shown (24/10/2026); the raw 2026-10-24 never matched what people type.
+  const filtered = useTextFilter(rows, q, (row) => [row.supplier, row.item, row.invoice, row.company, row.date ? fmtBusyDate(row.date) : '']);
   const page = usePagination(filtered, { resetKey: `${code}|${q}` });
   const total = useMemo(() => filtered.reduce((sum, row) => sum + (Number(row.amount) || 0), 0), [filtered]);
   const showCompany = code === 'all';

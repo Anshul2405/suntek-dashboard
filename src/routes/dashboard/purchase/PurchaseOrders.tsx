@@ -34,7 +34,7 @@ function BusyPurchaseOpsPage() {
     <>
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<IndianRupee />} tone="blue"
-          label={t('overview.purchasePaidMtd', 'Purchase paid · MTD')}
+          label={t('overview.purchasePaidMtd', 'Purchase invoiced · MTD')}
           value={overview ? fmtINR(overview.purchaseMTD) : '…'}
           caption={t('overview.busyReadOnly', 'From the last Busy read. Never written back.')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ReceiptText />} tone="purple"
@@ -158,7 +158,8 @@ function PurchaseOrderRegister() {
             billTotal: t?.pm_bill_total != null ? Number(t.pm_bill_total) : null,
             billItems: t?.pm_items_count != null ? Number(t.pm_items_count) : null,
             billUrl: t?.pm_bill_url ?? s.handover_invoice_url ?? null,
-            date: t?.closed_at || t?.created_at || null, busyRef: s.busy_transaction_ref,
+            // When the part was bought, not when the ticket was raised / closed.
+            date: s.procured_at || t?.closed_at || t?.created_at || null, busyRef: s.busy_transaction_ref,
           };
         });
       setMaintPOs(mpos);

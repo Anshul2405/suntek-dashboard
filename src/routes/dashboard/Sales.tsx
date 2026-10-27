@@ -343,7 +343,7 @@ export function Sales() {
       />
 
       <div className="relative">
-        <KpiInfoButton info={{ title: 'Sales Contracts Table', what: 'All customer contracts with locked-in price and density spread. Shows FY sales, MTD sales, invoice count, and outstanding balance per customer. Status (On Track / Overdue / Cleared) is derived from BUSY outstanding balance. Live data from BUSY DB.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum/Master1 ParentGrp=116' }} />
+        <KpiInfoButton info={{ title: 'Sales Contracts Table', what: 'Top 20 customers of each Busy company by FY sales (All companies = combined and re-ranked). Shows FY sales, MTD sales, invoice count, and outstanding balance per customer. Status is the outstanding balance only — over ₹5 L, up to ₹5 L, or cleared. Busy sends no due dates, so it does not say whether a bill is overdue. Live data from BUSY DB.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum/Master1 ParentGrp=116' }} />
         <SectionCard
           flush
           title={t('sales.contractsTitle')}

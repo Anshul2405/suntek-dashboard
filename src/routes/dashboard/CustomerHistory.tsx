@@ -155,7 +155,7 @@ export function CustomerHistory() {
       />
 
       <div className="relative mb-4">
-        <KpiInfoButton info={{ title: 'Customer Ledger', what: 'Full list of all customer parties with FY sales, MTD sales, invoice count, and outstanding Dr balance. Data is live from BUSY. Click any customer row to view their full history and density preferences.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1\nBusyFY2026 > dbo > Tables > DailySum', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum grouped by Master1.Code' }} />
+        <KpiInfoButton info={{ title: 'Customer Ledger', what: 'Top 50 customers of each Busy company by FY sales (All companies = those lists combined and re-ranked), with MTD sales, invoice count and outstanding Dr balance. From the last Busy push.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1\nBusyFY2026 > dbo > Tables > DailySum', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum grouped by Master1.Code' }} />
         <SectionCard
           flush
           title={t('customers.customerLedger')}

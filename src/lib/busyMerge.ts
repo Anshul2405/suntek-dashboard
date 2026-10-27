@@ -17,8 +17,18 @@ function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+/** FY sales of one company's analytics payload: its top-5 sum ÷ top-5 concentration. */
+function impliedRevenue(row: Record<string, unknown>): number {
+  const list = Array.isArray(row.top5) ? row.top5 as Record<string, unknown>[] : [];
+  const pct = num(row.top5ConcentrationPct);
+  const sum = list.reduce((acc, r) => acc + num(r.fyRevenue), 0);
+  return sum && pct > 0 ? sum / (pct / 100) : 0;
+}
+
 function weightOf(row: Record<string, unknown>): number {
-  return num(row.fyRevenue) || num(row.salesMTD) || num(row.totalSalesMTD) || num(row.spend) || 1;
+  // The analytics payload carries no revenue field; without impliedRevenue a
+  // small company's margin counted as much as the largest one's.
+  return num(row.fyRevenue) || num(row.salesMTD) || num(row.totalSalesMTD) || num(row.spend) || impliedRevenue(row) || 1;
 }
 
 function weighted(rows: Record<string, unknown>[], key: string): number {
@@ -66,6 +76,20 @@ function sumBy(rows: Record<string, unknown>[], labelKey: string, fields: string
   return [...map.values()];
 }
 
+/** Sum of every company's FY total, recovered from its top-5 list and concentration %. 0 if unknown. */
+function companyTotal(rows: Record<string, unknown>[], listKey: string, amountKey: string, concKey: string): number {
+  let total = 0;
+  for (const row of rows) {
+    const list = Array.isArray(row[listKey]) ? row[listKey] as Record<string, unknown>[] : [];
+    const pct = num(row[concKey]);
+    const sum = list.reduce((acc, r) => acc + num(r[amountKey]), 0);
+    if (!sum) continue;
+    if (pct <= 0) return 0;
+    total += sum / (pct / 100);
+  }
+  return total;
+}
+
 function sumRecord(rows: Record<string, unknown>[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const keys = new Set(rows.flatMap((row) => Object.keys(row)));
@@ -91,12 +115,18 @@ function sumRecord(rows: Record<string, unknown>[]): Record<string, unknown> {
     const list = out[key];
     if (!Array.isArray(list)) continue;
     const amountKey = key === 'top5' ? 'fyRevenue' : 'fyPurchase';
+    const concKey = key === 'top5' ? 'top5ConcentrationPct' : 'top5SupplierConcentrationPct';
     const ranked = [...list].sort((a, b) => num(b[amountKey]) - num(a[amountKey])).slice(0, 5);
-    const total = ranked.reduce((sum, row) => sum + num(row[amountKey]), 0);
+    // Share is "% of all FY sales (purchase)", as the server sends it for one
+    // company — not "% of these five", which always adds to 100. Each company's
+    // FY total = its own top-5 sum ÷ its top-5 concentration.
+    const total = companyTotal(rows, key, amountKey, concKey);
+    const topSum = ranked.reduce((sum, row) => sum + num(row[amountKey]), 0);
     out[key] = ranked.map((row) => ({
       ...row,
-      sharePct: total ? (num(row[amountKey]) / total) * 100 : 0,
+      sharePct: total ? Math.round((num(row[amountKey]) / total) * 1000) / 10 : 0,
     }));
+    if (total) out[concKey] = Math.round((topSum / total) * 1000) / 10;
   }
   return out;
 }
@@ -216,7 +246,7 @@ function mergeScan(parts: CompanyPart[]) {
   const scans = parts.filter((part) => part.data && typeof part.data === 'object') as { code: string; data: Record<string, unknown> }[];
   const findings = scans.flatMap((part) => {
     const list = Array.isArray(part.data.findings) ? part.data.findings as Record<string, unknown>[] : [];
-    return list.map((finding) => ({
+    return list.map((finding): Record<string, unknown> => ({
       ...finding,
       id: `${part.code}:${finding.id}`,
       title: tag(finding.title, part.code),
@@ -245,6 +275,11 @@ function mergeScan(parts: CompanyPart[]) {
     const raw = first.fmt === 'pct' ? weighted(group, 'raw') : group.reduce((sum, kpi) => sum + num(kpi.raw), 0);
     return { ...first, raw, value: first.fmt === 'pct' ? `${raw.toFixed(1)}%` : String(Math.round(raw)) };
   });
+  // Rank like the server does for one company: extreme → mild, then score.
+  // Glued per company, one company's mild findings sat above another's extreme.
+  const LEVEL_RANK: Record<string, number> = { extreme: 0, heavy: 1, moderate: 2, mild: 3 };
+  const rank = (f: Record<string, unknown>) => LEVEL_RANK[String(f.level ?? '')] ?? 4;
+  findings.sort((a, b) => rank(a) - rank(b) || num(b.score) - num(a.score));
   return { ...(scans[0]?.data ?? {}), summary, kpis, findings };
 }
 
@@ -262,12 +297,19 @@ function mergeAnalytics(parts: CompanyPart[]) {
     const list = (part.data as { debtors?: Record<string, unknown>[] } | null)?.debtors ?? [];
     return list.map((row): Record<string, unknown> => ({ ...row, name: tag(row.name, part.code) }));
   }).sort((a, b) => num(b.outstanding) - num(a.outstanding)).slice(0, 8);
+  // Weekly anomaly counts: every company's, added by week key (yyyy-mm-dd), in order.
+  const timeline = sumBy(
+    rows.flatMap((row) => Array.isArray(row.timeline) ? row.timeline as Record<string, unknown>[] : []),
+    'key',
+    ['mild', 'moderate', 'heavy', 'extreme', 'total'],
+  ).sort((a, b) => String(a.key ?? '').localeCompare(String(b.key ?? '')));
   const margins = rows.map((row) => row.margin).filter((row): row is Record<string, unknown> => !!row && typeof row === 'object');
   return {
     ...first,
     margin: margins.length ? sumRecord(margins) : first.margin,
     salesPurchase,
     cashflow,
+    ...(timeline.length ? { timeline } : {}),
     vendors: vendors.map((row) => ({ ...row, sharePct: vendorTotal ? (num(row.spend) / vendorTotal) * 100 : 0 })),
     debtors,
   };

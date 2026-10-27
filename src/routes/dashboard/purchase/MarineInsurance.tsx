@@ -38,6 +38,8 @@ export function MarineInsurance() {
     try {
       const { data, error } = await scopeQuery(supabase.from('marine_insurance').select('*'))
         .order('date', { ascending: false })
+        // Same-day entries: the last one entered carries the running balance.
+        .order('created_at', { ascending: false })
         .returns<LedgerRow[]>();
       if (error) throw error;
       setLedger(data || []);

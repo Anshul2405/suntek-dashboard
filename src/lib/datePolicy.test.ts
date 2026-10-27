@@ -26,4 +26,10 @@ describe('date policy', () => {
     expect(needsLateApproval('2026-09-24', billBufferDays(['jharkhand'], byPlant, 2), now)).toBe(true);
     expect(needsLateApproval('2026-09-25', billBufferDays(['jharkhand'], byPlant, 2), now)).toBe(false);
   });
+
+  it('counts the IST day — 01:30 IST is already the next day though UTC is not', () => {
+    const earlyIst = new Date('2026-09-30T20:00:00Z'); // 1 Oct 01:30 IST
+    expect(daysBeforeToday('2026-09-28', earlyIst)).toBe(3);
+    expect(needsLateApproval('2026-09-28', 2, earlyIst)).toBe(true);
+  });
 });

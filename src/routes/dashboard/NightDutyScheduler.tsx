@@ -9,7 +9,7 @@ import { plantsForPicker } from '../../lib/access/pickerPlants';
 import { StatCard, SectionCard, ButtonV2, FilterBar, FilterSelect, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { exportToCsv } from '../../lib/utils/exportCsv';
-import { formatDate, formatDateTime, formatTime } from '../../lib/utils/formatting';
+import { formatDate, formatDateTime, formatTime, istToday } from '../../lib/utils/formatting';
 
 /**
  * Night-duty scheduler — shown to users with the `allocate_night_duty` capability
@@ -30,7 +30,7 @@ type Duty = {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const todayIso = () => iso(new Date());
+const todayIso = () => istToday(); // IST day, not the browser's
 
 // CSV export keeps the original English labels by design.
 const STATUS_CFG: Record<string, { label: string; bg: string; color: string }> = {

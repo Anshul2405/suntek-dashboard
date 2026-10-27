@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { formatDateTime, istToday } from '../../../lib/utils/formatting';
+import { formatDateTime, istDayKey, istFyStartYear, istToday } from '../../../lib/utils/formatting';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -122,11 +122,10 @@ interface MaintEntry {
 /** Indian financial year (Apr–Mar) label for a date, e.g. "FY2025-26". */
 function fyOf(d: string | null | undefined): string {
   if (!d) return 'Unknown';
-  const dt = new Date(d);
-  if (isNaN(dt.getTime())) return 'Unknown';
-  const y = dt.getFullYear();
-  const apr = dt.getMonth() >= 3; // month 3 = April
-  const start = apr ? y : y - 1;
+  // The IST day decides the year: a ticket closed at 01:00 IST on 1 April is
+  // the new FY even though it is still 31 March in UTC.
+  if (!istDayKey(d)) return 'Unknown';
+  const start = istFyStartYear(d);
   return `FY${start}-${String((start + 1) % 100).padStart(2, '0')}`;
 }
 
@@ -357,7 +356,7 @@ export function FAR() {
   const today = istToday();
   const [form, setForm] = useState({
     mark: '', model: '', capacity: '', origin: 'India',
-    year: new Date().getFullYear().toString(),
+    year: istToday().slice(0, 4),
     value: '', invoice: '', purchaseDate: today,
     account: 'Plant & Machinery', plant: '',
   });
@@ -813,7 +812,7 @@ export function FAR() {
     }
     if (data) setAssets(prev => [data as AssetRow, ...prev]);
     setSaved(true);
-    setTimeout(() => { setOpen(false); setSaved(false); setForm({ mark: '', model: '', capacity: '', origin: 'India', year: new Date().getFullYear().toString(), value: '', invoice: '', purchaseDate: today, account: 'Plant & Machinery', plant: plantOptions[0]?.id ?? '' }); }, 1600);
+    setTimeout(() => { setOpen(false); setSaved(false); setForm({ mark: '', model: '', capacity: '', origin: 'India', year: istToday().slice(0, 4), value: '', invoice: '', purchaseDate: today, account: 'Plant & Machinery', plant: plantOptions[0]?.id ?? '' }); }, 1600);
   }
 
   function handleClose() { setOpen(false); setSaved(false); }

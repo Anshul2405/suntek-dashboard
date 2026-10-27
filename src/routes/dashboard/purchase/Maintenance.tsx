@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { patchUrlParams } from '../../../lib/urlParams';
-import { formatDateTime, inIstDayRange, istToday } from '../../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday, istMonthStartIso } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -1280,12 +1280,12 @@ export function Maintenance() {
     return names.length ? `${names.join(', ')}${extra} · ${dueScopeLabel}` : dueScopeLabel;
   };
   // Emergency KPI "See …" links filter to exactly the statuses each card counts.
-  const grpMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const grpMonthStart = istMonthStartIso();
   const emergencyGroups: Record<string, { label: string; match: (tk: TicketRow) => boolean }> = {
     'grp:open':       { label: t('maint.openTickets'), match: tk => tk.status !== 'closed' },
     'grp:store':      { label: t('maint.pendingStoreApproval'), match: tk => ['pending_store', 'pending_unit_head'].includes(tk.status) },
     'grp:purchase':   { label: t('maint.purchaseHandover'), match: tk => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(tk.status) },
-    'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && tk.closed_at >= grpMonthStart },
+    'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && Date.parse(tk.closed_at) >= Date.parse(grpMonthStart) },
   };
   const fltEmergency = emergencyTickets.filter(t =>
     matchQ(...ticketSearchHaystack(t))
@@ -1357,18 +1357,17 @@ export function Maintenance() {
   const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
   const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
   const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${fltKey}|schedule|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const monthStart = istMonthStartIso();
 
   const openEmergency = emergencyTickets.filter(t => t.status !== 'closed').length;
   const pendingStore = emergencyTickets.filter(t => ['pending_store', 'pending_unit_head'].includes(t.status)).length;
   const pendingPurchase = emergencyTickets.filter(t => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(t.status)).length;
-  const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && Date.parse(t.closed_at) >= Date.parse(monthStart)).length;
 
   const dueToday = dueTodaySchedules.length;
   const dueWeek = dueWeekSchedules.length;
   const overdue = overdueSchedules.length;
-  const closedPeriodicMTD = periodicTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  const closedPeriodicMTD = periodicTickets.filter(t => t.status === 'closed' && !!t.closed_at && Date.parse(t.closed_at) >= Date.parse(monthStart)).length;
 
   // ── Actions ───────────────────────────────────────────────────────────────
 

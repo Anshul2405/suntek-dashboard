@@ -17,6 +17,7 @@
  * the notifications feed). To add a workflow, append one descriptor here.
  */
 import { supabase } from '../supabase';
+import { istToday } from '../utils/formatting';
 import { ticketNoLabel, ticketSearchTerms, reqNoLabel } from '../ticketNo';
 import { STATUS_CFG, daysFromNow, dueDateLabel, formatDate } from '../../routes/dashboard/purchase/maintenance/shared';
 import type { AppNotification } from '../../contexts/NotificationsContext';
@@ -440,8 +441,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
     appliesTo: (ctx) => !!ctx.accountId,
     fetch: async (ctx) => {
       if (!ctx.accountId) return [];
-      const now = new Date();
-      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const todayIso = istToday();
       const { data } = await supabase.from('night_duty').select('id,duty_date,status,plant_id')
         .eq('technician_id', ctx.accountId).eq('status', 'scheduled').gte('duty_date', todayIso)
         .order('duty_date', { ascending: true }).limit(ROW_CAP)

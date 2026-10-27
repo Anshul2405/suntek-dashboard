@@ -16,7 +16,7 @@ import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../
 import { reconcileBillAmount } from '../../../lib/nvidiaOcr';
 import { normalizeGstin, isValidGstin } from '../../../lib/utils/gst';
 import { ProgressBar, useFakeProgress } from '../../../components/ui/ProgressBar';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday } from '../../../lib/utils/formatting';
 
 type StockItem = StockLite & { plant_id: string | null };
 type Plant = { id: string; name: string };
@@ -32,12 +32,6 @@ interface Line {
 
 let seq = 0;
 const nextKey = () => `l${++seq}`;
-
-/** Local calendar date as YYYY-MM-DD (never toISOString — that shifts IST past midnight). */
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 /** Self-contained purchase → stock modal. Drops into any tab; loads its own
  *  plants + stock (plant-scoped) so callers only wire open/onClose/onApplied.
@@ -77,7 +71,7 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
   const [amount, setAmount] = useState('');           // total bill amount (₹)
   const [gstNo, setGstNo] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
-  const [purchaseDate, setPurchaseDate] = useState(localToday());
+  const [purchaseDate, setPurchaseDate] = useState(istToday());
   const [notes, setNotes] = useState('');
   const [knownVendors, setKnownVendors] = useState<string[]>([]);
   const [dupInvoice, setDupInvoice] = useState(false);
@@ -143,7 +137,7 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
     setMode('choose'); setStage('choose'); setLines([]); setBill(null);
     setCloudUrl(null); setFileName(''); setErr(null); setFieldErr(null); setAppliedCount(0);
     setVendor(''); setAmount(''); setGstNo(''); setInvoiceNo(''); setNotes('');
-    setPurchaseDate(localToday()); setDupInvoice(false);
+    setPurchaseDate(istToday()); setDupInvoice(false);
     setReceiptId(crypto.randomUUID());
   }
   function close() { reset(); onClose(); }

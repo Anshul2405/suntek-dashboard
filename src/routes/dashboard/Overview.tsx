@@ -404,10 +404,10 @@ export function Overview() {
             delta={kpis ? t('overview.invoicesFy', { count: kpis.salesInvoiceCount }) : undefined}
           />
           <KpiBlock
-            label={t('overview.purchasePaidMtd', 'Purchase Paid (MTD)')}
+            label={t('overview.purchasePaidMtd', 'Purchase invoiced · MTD')}
             value={kpis ? fmtINR(kpis.purchaseMTD) : '…'}
             delta={t('overview.inclMarineIns', 'incl. marine insurance')}
-            info={{ title: 'Purchase MTD', what: 'Total purchase amount paid to suppliers in the current month, all plants consolidated.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14, Cancelled=0, current month' }}
+            info={{ title: 'Purchase MTD', what: 'Purchase invoices booked in Busy this month (invoice value, not payments), for the company picked above.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14, Cancelled=0, current month' }}
           />
           <KpiBlock
             label={t('overview.debtorsOutstanding', 'Debtors Outstanding')}

@@ -6,7 +6,7 @@
  * current financial year + 1; it keeps showing as typed (so the typo is visible)
  * but sorts to the bottom of its sheet.
  */
-import { formatDate, istToday } from './utils/formatting';
+import { formatDate, istFyStartYear, istToday } from './utils/formatting';
 
 const WORKBOOK_DATE = /^(\d{2})\.(\d{2})\.(\d{4})$/;
 /** Typed like a date but mangled: 16.054.2026, 15.09.206, 3.4.26. */
@@ -15,16 +15,9 @@ const DATE_LIKE = /^\d{1,3}\.\d{1,3}\.\d{1,5}$/;
 /** Earliest believable year in the workbook. */
 export const WORKBOOK_MIN_YEAR = 2020;
 
-/** Indian FY start year for an IST day key: Apr–Dec → same year, Jan–Mar → previous. */
-function fyStartYear(isoDay: string): number {
-  const y = Number(isoDay.slice(0, 4));
-  const m = Number(isoDay.slice(5, 7));
-  return m >= 4 ? y : y - 1;
-}
-
 /** Latest believable year: the current FY's start year + 1 (Oct 2026 → 2027). */
 export function workbookMaxYear(todayIso: string = istToday()): number {
-  return fyStartYear(todayIso) + 1;
+  return istFyStartYear(todayIso) + 1;
 }
 
 /** yyyymmdd for a dd.mm.yyyy value, or 0 when it is not a workbook date. */

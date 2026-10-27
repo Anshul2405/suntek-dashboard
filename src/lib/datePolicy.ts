@@ -1,10 +1,10 @@
-/** Calendar-day gap between an entry date and today, in the local timezone. */
+import { istDayDiff, istDayKey } from './utils/formatting';
+
+/** IST calendar-day gap between an entry date and today (whatever zone the browser is in). */
 export function daysBeforeToday(entryDate: string, now = new Date()): number {
   const day = entryDate.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return 0;
-  const entered = new Date(`${day}T00:00:00`);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((today.getTime() - entered.getTime()) / 86_400_000);
+  return istDayDiff(day, now);
 }
 
 /** True when the date is older than the allowed buffer (default 2 days). */
@@ -31,9 +31,7 @@ export function billBufferDays(
   return Math.min(...custom);
 }
 
+/** Today's IST day (yyyy-mm-dd). Name kept for callers; it was browser-local before. */
 export function localToday(now = new Date()): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return istDayKey(now);
 }

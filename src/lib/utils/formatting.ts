@@ -82,6 +82,26 @@ export function istToday(): string {
   return istDayKey(new Date());
 }
 
+/** The instant (ISO) the current IST calendar month began — "this month" / MTD. */
+export function istMonthStartIso(now: Date = new Date()): string {
+  return new Date(`${istDayKey(now).slice(0, 7)}-01T00:00:00+05:30`).toISOString();
+}
+
+/** Indian financial year (Apr–Mar) start year of an IST day: 15/10/2026 → 2026, 10/02/2027 → 2026. */
+export function istFyStartYear(date: string | Date = new Date()): number {
+  const day = istDayKey(date);
+  const y = Number(day.slice(0, 4));
+  return Number(day.slice(5, 7)) >= 4 ? y : y - 1;
+}
+
+/** Whole IST calendar days from `a` to `b` (b − a). */
+export function istDayDiff(a: string | Date, b: string | Date): number {
+  const ka = istDayKey(a);
+  const kb = istDayKey(b);
+  if (!ka || !kb) return 0;
+  return Math.round((Date.parse(kb) - Date.parse(ka)) / 86_400_000);
+}
+
 /**
  * Normalise a From/To pair typed into two date inputs. Empty bound = open.
  * A To before From is a typo, not an empty range — swap rather than silently

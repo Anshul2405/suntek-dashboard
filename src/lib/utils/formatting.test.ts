@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDate, formatDateTime, formatTime, istDayKey, inIstDayRange, normalizeDayRange, istRangeToIso } from './formatting';
+import { formatDate, formatDateTime, formatTime, istDayKey, inIstDayRange, normalizeDayRange, istRangeToIso, istMonthStartIso, istFyStartYear, istDayDiff } from './formatting';
 
 describe('IST date formatting', () => {
   it('formats as dd/mm/yyyy', () => {
@@ -49,5 +49,27 @@ describe('inclusive IST day range', () => {
       start: '2026-10-21T18:30:00.000Z', endExclusive: '2026-10-22T18:30:00.000Z',
     });
     expect(istRangeToIso('', '')).toEqual({});
+  });
+});
+
+describe('IST month / FY / day boundaries', () => {
+  // 31 Oct 2026, 20:00 UTC = 1 Nov 2026, 01:30 IST.
+  const earlyNovIst = new Date('2026-10-31T20:00:00Z');
+
+  it('this month starts at IST midnight on the 1st', () => {
+    expect(istMonthStartIso(earlyNovIst)).toBe('2026-10-31T18:30:00.000Z');
+    expect(istMonthStartIso(new Date('2026-10-27T06:00:00Z'))).toBe('2026-09-30T18:30:00.000Z');
+  });
+
+  it('the FY follows the IST day (Apr–Mar)', () => {
+    expect(istFyStartYear('2026-10-15')).toBe(2026);
+    expect(istFyStartYear('2027-02-10')).toBe(2026);
+    // 31 Mar 2027 21:00 UTC is already 1 Apr in India → new FY.
+    expect(istFyStartYear(new Date('2027-03-31T21:00:00Z'))).toBe(2027);
+  });
+
+  it('counts IST calendar days, not UTC ones', () => {
+    expect(istDayDiff('2026-10-31', earlyNovIst)).toBe(1);
+    expect(istDayDiff('2026-10-27', '2026-10-27')).toBe(0);
   });
 });
