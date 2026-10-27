@@ -12,9 +12,10 @@ import { TablePaginationV2 as TablePagination } from '../../../components/v2';
 import { useTextFilter } from '../../../components/ui/TableSearch';
 import { TableSearch } from '../../../components/ui/TableSearch';
 import { formatDate } from '../../../lib/utils/formatting';
+import { DispatchLog } from './DispatchLog';
 
-export const BOOK_TABS = ['purchases', 'payments', 'paraffin', 'requirements', 'dispatch', 'kolkata', 'shd'] as const;
-export type BookTab = (typeof BOOK_TABS)[number];
+const BOOK_TABS = ['purchases', 'payments', 'paraffin', 'requirements', 'dispatch', 'kolkata', 'shd'] as const;
+type BookTab = (typeof BOOK_TABS)[number];
 
 type Row = Record<string, string | number | boolean | null>;
 
@@ -111,7 +112,7 @@ function dateKey(value: unknown): number {
 }
 
 /** The workbook writes dates as 22.10.2026; show them like every other screen. */
-export function bookDate(value: unknown): string {
+function bookDate(value: unknown): string {
   const m = WORKBOOK_DATE.exec(String(value ?? '').trim());
   return m ? formatDate(`${m[3]}-${m[2]}-${m[1]}`) : String(value ?? '');
 }
@@ -154,10 +155,12 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => {
+  // A new sheet starts unfiltered.
+  const changeTab = (next: BookTab) => {
     setQ('');
     setStatus('all');
-  }, [active]);
+    onTab(next);
+  };
 
   const statusLabel = (code: string) => {
     const labels: Record<string, string> = {
@@ -212,7 +215,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
       <SegmentTabs
         className="mb-4"
         value={active}
-        onChange={onTab}
+        onChange={changeTab}
         items={BOOK_TABS.map(key => ({
           key,
           label: ({
@@ -262,6 +265,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
       )}
 
       {active === 'purchases' && <BusyPurchasesCard />}
+      {active === 'dispatch' && <DispatchLog />}
 
       {active === 'payments' && (
         <div className="grid grid-cols-12 gap-4 mb-4">
