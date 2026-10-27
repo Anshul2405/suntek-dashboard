@@ -57,6 +57,8 @@ import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
 import { safeBack } from '../../../lib/backLink';
+import { itemStageOf, rollupStatusOf, vijayStepLive, useVijayStepLive, type ItemStage } from './maintenance/itemStage';
+import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
 
 type EntityNoteRow = Database['public']['Tables']['entity_notes']['Row'];
 
@@ -313,43 +315,14 @@ type TicketStatus = Tables['maintenance_tickets']['Row']['status'];
 // single status is a roll-up of the least-advanced open item, used only for the
 // timeline + table; the modal drives actions per item.
 
-type ItemStage = 'store' | 'unit_head' | 'purchase' | 'purchase_manager' | 'handover' | 'done' | 'rejected';
-
-/** Derive an item's current stage from its own fields. */
+// Stage logic lives in ./maintenance/itemStage (tested); these bind it to
+// whether migration 0038 (the Vijay ji step) is applied.
 function itemStage(r: StoreReqRow): ItemStage {
-  const decision = (r.store_decision as string | null) ?? 'pending';
-  if (r.unit_head_approval === 'rejected') return 'rejected';
-  if (!decision || decision === 'pending') return 'store';
-  if (r.unit_head_approval !== 'approved') return 'unit_head';
-  // approved:
-  if (decision === 'available') {
-    return r.handover_confirmed_at ? 'done' : 'handover';
-  }
-  // not in stock + approved → external procurement path
-  if (!r.busy_transaction_ref) return 'purchase';
-  if (!r.bill_verified) return 'purchase_manager'; // awaiting the aggregate PM bill
-  return r.handover_confirmed_at ? 'done' : 'handover';
+  return itemStageOf(r, vijayStepLive());
 }
 
-const STAGE_RANK: Record<ItemStage, number> = {
-  store: 0, unit_head: 1, purchase: 2, purchase_manager: 3, handover: 4, done: 5, rejected: 5,
-};
-const STAGE_TO_TICKET: Record<string, TicketStatus> = {
-  store: 'pending_store', unit_head: 'pending_unit_head', purchase: 'pending_purchase',
-  purchase_manager: 'pending_purchase_manager', handover: 'pending_handover',
-};
-
-/** Roll the item stages up to a single ticket status (least-advanced open item). */
 function rollupStatus(reqs: StoreReqRow[], current: TicketStatus): TicketStatus {
-  if (!reqs.length) return current;
-  const open = reqs.filter(r => { const s = itemStage(r); return s !== 'done' && s !== 'rejected'; });
-  if (!open.length) {
-    // Everything resolved. If any item was actually delivered → defective return;
-    // if all were rejected → back to the technician to re-assess.
-    return reqs.some(r => itemStage(r) === 'done') ? 'pending_defective_return' : 'open';
-  }
-  const least = open.reduce((a, r) => STAGE_RANK[itemStage(r)] < STAGE_RANK[itemStage(a)] ? r : a, open[0]);
-  return STAGE_TO_TICKET[itemStage(least)] ?? current;
+  return rollupStatusOf(reqs, current, vijayStepLive());
 }
 
 // ── Domain write helpers (use Supabase; kept local) ────────────────────────────
@@ -614,6 +587,14 @@ export function Maintenance() {
   const isStoreManager = [role, activeProfile.baseRoleId].some(id => !!id && ALL_STORE_MANAGER_IDS.includes(id));
   const showScheduleSetup = canSeeScheduleSetup(activeProfile);
   const isPurchaseManager = role === 'purchase_manager';
+  // Not-in-store parts: Unit Head → Vijay ji → purchaser (once migration 0038 is in).
+  const vijayLive = useVijayStepLive();
+  const buyers = useBuyers();
+  // Vijay ji IS management — the management role (or admin) approves the buy.
+  const isVijay = isAdmin || role === 'management' || activeProfile.baseRoleId === 'management';
+  // The purchaser Vijay ji named (or, if none was named, anyone on the list) — plus admin.
+  const onBuyerList = isListedBuyer(buyers, activeProfile.name);
+  const [buyerPick, setBuyerPick] = useState('');
   // Every role slug that does maintenance work, resolved from the live catalog so
   // role-targeted notifications reach capability-holders and not just technicians.
   const maintenanceRoleIds = useMemo(
@@ -1308,7 +1289,7 @@ export function Maintenance() {
   const emergencyGroups: Record<string, { label: string; match: (tk: TicketRow) => boolean }> = {
     'grp:open':       { label: t('maint.openTickets'), match: tk => tk.status !== 'closed' },
     'grp:store':      { label: t('maint.pendingStoreApproval'), match: tk => ['pending_store', 'pending_unit_head'].includes(tk.status) },
-    'grp:purchase':   { label: t('maint.purchaseHandover'), match: tk => ['pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(tk.status) },
+    'grp:purchase':   { label: t('maint.purchaseHandover'), match: tk => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(tk.status) },
     'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && tk.closed_at >= grpMonthStart },
   };
   const fltEmergency = emergencyTickets.filter(t =>
@@ -1386,7 +1367,7 @@ export function Maintenance() {
 
   const openEmergency = emergencyTickets.filter(t => t.status !== 'closed').length;
   const pendingStore = emergencyTickets.filter(t => ['pending_store', 'pending_unit_head'].includes(t.status)).length;
-  const pendingPurchase = emergencyTickets.filter(t => ['pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(t.status)).length;
+  const pendingPurchase = emergencyTickets.filter(t => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(t.status)).length;
   const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
 
   const dueToday = dueTodaySchedules.length;
@@ -2344,6 +2325,8 @@ export function Maintenance() {
 
     if (approved && partAvailable) {
       notify({ target_roles: ['store_manager_maint', 'warehouse_manager', ...maintenanceRoleIds], title: `Approved: hand over ${req.part_name}`, body: `Unit head approved. Store manager to hand part to technician.`, type: 'info', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
+    } else if (approved && !partAvailable && vijayLive) {
+      notify({ target_roles: ['management', 'admin'], title: `Vijay ji to approve purchase: ${req.part_name}`, body: `${selectedTicket.equipment} — not in store. Unit head approved buying it. Approve and pick the purchaser.`, type: 'warning', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
     } else if (approved && !partAvailable) {
       notify({ target_roles: ['admin', 'unit_head'], title: `Procurement approved: ${req.part_name}`, body: `${selectedTicket.equipment} — procure from market. Enter BUSY ref when done.`, type: 'warning', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
     } else {
@@ -2354,6 +2337,32 @@ export function Maintenance() {
     await notifyTicketWatchers(selectedTicket, approved ? `Approved: ${selectedTicket.equipment}` : `Item rejected: ${selectedTicket.equipment}`, `${activeProfile.name} ${approved ? 'approved' : 'rejected'} "${req.part_name}".`);
     setActingReqId(null);
     setRejectReason('');
+    await refreshAfterItemChange();
+  }
+
+  /** Vijay ji: approve buying a not-in-store part and name the purchaser, or reject it. */
+  async function vijayApprove(req: StoreReqRow, approved: boolean) {
+    if (!selectedTicket) return;
+    const buyer = buyerPick.trim();
+    if (approved && !buyer) return;
+    const reason = rejectReason.trim();
+    const { error } = await updateRows('maintenance_store_requests', {
+      vijay_approval: approved ? 'approved' : 'rejected',
+      vijay_approved_by: activeProfile.name,
+      vijay_approved_at: new Date().toISOString(),
+      buyer_name: approved ? buyer : null,
+    }).eq('id', req.id);
+    if (error) { toast.error(error.message); return; }
+    if (approved) {
+      notify({ target_roles: ['purchase_manager', 'management', 'admin'], title: `Buy: ${req.part_name} — ${buyer}`, body: `${selectedTicket.equipment} — Vijay ji approved. ${buyer} to buy it and enter the BUSY ref.`, type: 'warning', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
+    } else {
+      notify({ target_roles: [...maintenanceRoleIds, 'unit_head', 'admin'], title: `Purchase not approved: ${req.part_name}`, body: reason ? `Vijay ji rejected buying this part: ${reason}` : 'Vijay ji rejected buying this part.', type: 'warning', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
+      await auditNote(selectedTicket, `⛔ Purchase not approved by ${activeProfile.name}: "${req.part_name}"${reason ? ` — ${reason}` : ''}`);
+    }
+    await notifyTicketWatchers(selectedTicket, approved ? `Purchase approved: ${selectedTicket.equipment}` : `Purchase not approved: ${selectedTicket.equipment}`, `${activeProfile.name} ${approved ? `approved buying "${req.part_name}" — purchaser ${buyer}` : `rejected buying "${req.part_name}"`}.`);
+    setActingReqId(null);
+    setRejectReason('');
+    setBuyerPick('');
     await refreshAfterItemChange();
   }
 
@@ -2929,6 +2938,15 @@ export function Maintenance() {
           {line(t('maint.handledBy', 'Handled by'), tk.assigned_to || tk.raised_by)}{line(t('maint.unitHeadDecision', 'Unit head decision'), tk.status === 'closed' ? t('maint.verifiedClosed', 'Verified & closed') : t('maint.awaitingVerification', 'Awaiting verification'))}{photo(tk.completion_photo_url, t('maint.completionPhoto', 'Completion photo'))}
         </>;
         break;
+      case 'pending_vijay': {
+        const pr = storeReqs.find(r => r.store_decision === 'unavailable' || r.purchase_required) ?? sr;
+        if (pr) body = <>
+          {doneBy(pr.vijay_approved_by, pr.vijay_approved_at)}
+          {line(t('maint.vijayDecision', 'Vijay ji'), pr.vijay_approval === 'approved' ? t('maint.approvedPurchaseShort', 'Approved purchase') : pr.vijay_approval)}{line(t('maint.purchaserLabel', 'Purchaser'), pr.buyer_name)}
+        </>;
+        break;
+      }
+      case 'pending_buyer':
       case 'pending_purchase': {
         const pr = storeReqs.find(r => r.store_decision === 'unavailable' || r.purchase_required) ?? sr;
         if (pr) body = <>
@@ -3168,7 +3186,8 @@ export function Maintenance() {
     const STAGE_BADGE: Record<ItemStage, { label: string; bg: string; color: string }> = {
       store: { label: t('maint.badgeStoreCheck', 'Store check'), bg: '#FFF7ED', color: '#EA580C' },
       unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F1F5F9', color: '#0A1628' },
-      purchase: { label: t('maint.badgeProcure', 'Procure'), bg: '#EFF6FF', color: '#2563EB' },
+      vijay: { label: t('maint.badgeVijay', 'Vijay ji'), bg: '#EDE9FE', color: '#7C3AED' },
+      purchase: { label: vijayLive ? t('maint.badgePurchaser', 'Purchaser') : t('maint.badgeProcure', 'Procure'), bg: '#EFF6FF', color: '#2563EB' },
       purchase_manager: { label: t('maint.badgeAwaitingBill', 'Awaiting bill'), bg: '#FDF4FF', color: '#A21CAF' },
       handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#F8FAFC', color: '#9333EA' },
       done: { label: t('common.done', 'Done'), bg: '#F0FDF4', color: '#16A34A' },
@@ -3293,8 +3312,33 @@ export function Maintenance() {
                 </div>
               ) : <div style={awaitTxt}>{t('maint.awaitingUnitHeadApproval', 'Awaiting unit head approval…')}</div>)}
 
-              {/* PURCHASE (procurement) */}
-              {s === 'purchase' && ((isUnitHead || isAdmin) ? (acting ? (
+              {/* VIJAY JI — approves buying a not-in-store part and names the purchaser */}
+              {s === 'vijay' && (isVijay ? (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 12, color: '#DC2626', marginBottom: 8 }}>
+                    {t('maint.vijayApproveHint', 'Not in store. Unit head approved buying it.')}
+                  </div>
+                  <PanelField label={t('maint.purchaserRequired', 'Purchaser *')}>
+                    <select value={buyerPick} onChange={e => setBuyerPick(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #E2E8F0', borderRadius: 8, fontSize: 12.5, fontFamily: 'inherit', background: '#fff' }}>
+                      <option value="">{t('maint.pickPurchaser', 'Pick the purchaser…')}</option>
+                      {buyers.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                  </PanelField>
+                  <input
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder={t('maint.rejectReasonPlaceholder', 'Reason if rejecting (optional)')}
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid #E2E8F0', borderRadius: 8, fontSize: 12, fontFamily: 'inherit', marginBottom: 8 }}
+                  />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => vijayApprove(req, true)} disabled={!buyerPick} style={{ ...primaryBtn('#16A34A'), flex: 2, opacity: buyerPick ? 1 : 0.5 }}>{t('maint.approvePurchase', 'Approve purchase')}</button>
+                    <button onClick={() => vijayApprove(req, false)} style={{ ...primaryBtn('#DC2626'), flex: 1 }}>{t('maint.reject', 'Reject')}</button>
+                  </div>
+                </div>
+              ) : <div style={awaitTxt}>{t('maint.awaitingVijay', 'Awaiting Vijay ji…')}</div>)}
+
+              {/* PURCHASE (procurement) — the named purchaser once the Vijay step is live, else the unit head */}
+              {s === 'purchase' && ((vijayLive ? (isAdmin || (req.buyer_name ? personMatches(req.buyer_name, activeProfile.name) : onBuyerList)) : (isUnitHead || isAdmin)) ? (acting ? (
                 <div style={{ marginTop: 10 }}>
                   <PanelField label={t('maint.busyTransactionRefRequired', 'BUSY transaction reference *')}><PanelInput value={busyRef} onChange={e => setBusyRef(e.target.value)} placeholder={t('maint.busyRefPlaceholder', 'e.g. PUR/2026/04421')} /></PanelField>
                   <PanelRow>
@@ -3313,7 +3357,9 @@ export function Maintenance() {
                 </div>
               ) : (
                 <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#0A1628'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
-              )) : <div style={awaitTxt}>{t('maint.unitHeadProcuring', 'Unit head procuring…')}</div>)}
+              )) : <div style={awaitTxt}>{vijayLive
+                ? t('maint.purchaserBuying', { defaultValue: 'Purchaser {{name}} buying…', name: req.buyer_name || '' })
+                : t('maint.unitHeadProcuring', 'Unit head procuring…')}</div>)}
 
               {s === 'purchase_manager' && <div style={awaitTxt}>{t('maint.procuredAwaitingBill', { defaultValue: 'Procured ({{ref}}) · awaiting purchase bill below…', ref: req.busy_transaction_ref || t('maint.refPending', 'ref pending') })}</div>}
 
@@ -3598,12 +3644,17 @@ export function Maintenance() {
   }
 
   const anyProcured = storeReqs.some(sr => sr.store_decision === 'unavailable' || sr.purchase_required);
+  // With the Vijay step, "Purchase" becomes Vijay ji → Purchaser. A ticket still
+  // parked on the old pending_purchase keeps the old strip.
+  const procurementStages = vijayLive && selectedTicket?.status !== 'pending_purchase'
+    ? EMERGENCY_STAGES.flatMap(st => (st === 'pending_purchase' ? ['pending_vijay', 'pending_buyer'] : [st]))
+    : EMERGENCY_STAGES;
   const ticketPath = selectedTicket ? ticketDecision(selectedTicket.title, storeReqs.length > 0) : 'undecided';
   const wfStages = ticketPath === 'inhouse'
     ? INHOUSE_STAGES
     : ticketPath === 'store'
-      ? (anyProcured ? EMERGENCY_STAGES : AVAILABLE_STAGES)
-      : EMERGENCY_STAGES;
+      ? (anyProcured ? procurementStages : AVAILABLE_STAGES)
+      : procurementStages;
   const wfLabels = ticketPath === 'inhouse'
     ? trStageLabels(INHOUSE_STAGE_LABELS, INHOUSE_STAGE_LABEL_KEYS)
     : trStageLabels(STAGE_LABELS, STAGE_LABEL_KEYS);

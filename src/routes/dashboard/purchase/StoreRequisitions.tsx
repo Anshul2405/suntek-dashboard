@@ -33,6 +33,8 @@ import { useUrlFilters } from '../../../lib/urlFilters';
 import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
 import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
+import { useColumnLive } from '../../../lib/schemaProbe';
+import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
 
 // ticket_id is added by migration NN_requisition_ticket_link.sql; typed here until
 // database.types.ts is regenerated so requisitions raised from a maintenance ticket
@@ -101,6 +103,15 @@ export function StoreRequisitions() {
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   const isAdmin = isAdminProfile(activeProfile);
   const canDecideReq = canDecideStoreReq(activeProfile, isAdmin);
+  // A buy (not an in-store issue) goes Unit Head → Vijay ji → purchaser. It needs
+  // migration 0038 (buyer_name + the statuses); until then only an issue is approved.
+  const buyChainLive = useColumnLive('store_requisitions', 'buyer_name');
+  const buyers = useBuyers();
+  const roleId = activeProfile.baseRoleId || activeProfile.id;
+  const isVijay = isAdmin || roleId === 'management';
+  const canBuyRow = (row: ReqRow) => isAdmin
+    || (row.buyer_name ? personMatches(row.buyer_name, activeProfile.name) : isListedBuyer(buyers, activeProfile.name));
+  const [buyerPick, setBuyerPick] = useState('');
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const me = useMyIdentity();
   const [open, setOpen] = useState(false);
@@ -285,33 +296,50 @@ export function StoreRequisitions() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
-  async function decideReq(row: ReqRow, status: 'approved' | 'rejected' | 'dispatched') {
-    if (!canDecideReq) {
+  async function decideReq(
+    row: ReqRow,
+    status: 'approved' | 'rejected' | 'dispatched' | 'pending_vijay' | 'pending_buyer',
+    buyerName?: string,
+  ) {
+    // Who may move it depends on where it is: Vijay ji on a buy waiting for him,
+    // the named purchaser on a buy being bought, else Unit Head / Management / Admin.
+    const allowed = row.status === 'pending_vijay' ? isVijay
+      : row.status === 'pending_buyer' ? canBuyRow(row)
+      : canDecideReq;
+    if (!allowed) {
       toast.error(t('storereq.decide_forbidden', 'Only Unit Head / Admin can decide this request.'));
       return;
     }
     setDeciding(true);
     try {
       // Record who decided (approved_by is a uuid); a database without the
-      // column still takes the decision.
-      const decidedBy = status === 'dispatched' ? {} : { approved_by: me.authUserId };
-      let { error } = await updateRows('store_requisitions', { status, ...decidedBy }).eq('id', row.id);
+      // column still takes the decision. The unit head's call is the one kept.
+      const decidedBy = row.status === 'pending' && status !== 'dispatched' ? { approved_by: me.authUserId } : {};
+      const buyer = status === 'pending_buyer' ? { buyer_name: buyerName || null } : {};
+      let { error } = await updateRows('store_requisitions', { status, ...decidedBy, ...buyer }).eq('id', row.id);
       if (error && /approved_by/.test(error.message || '')) {
-        ({ error } = await updateRows('store_requisitions', { status }).eq('id', row.id));
+        ({ error } = await updateRows('store_requisitions', { status, ...buyer }).eq('id', row.id));
       }
       if (error) {
         toast.error(t('storereq.decide_failed', { message: error.message, defaultValue: 'Update failed: {{message}}' }));
         return;
       }
-      setItems(prev => prev.map(r => r.id === row.id ? { ...r, status } : r));
-      setDetailReq(prev => prev && prev.id === row.id ? { ...prev, status } : prev);
+      const patch = status === 'pending_buyer' ? { status, buyer_name: buyerName || null } : { status };
+      setItems(prev => prev.map(r => r.id === row.id ? { ...r, ...patch } : r));
+      setDetailReq(prev => prev && prev.id === row.id ? { ...prev, ...patch } : prev);
+      setBuyerPick('');
       toast.success(
+        status === 'pending_vijay' ? t('storereq.sent_vijay_ok', 'Sent to Vijay ji to approve the purchase') :
+        status === 'pending_buyer' ? t('storereq.buyer_ok', { defaultValue: 'Purchase approved — {{name}} to buy it', name: buyerName || '' }) :
+        status === 'approved' && row.status === 'pending_buyer' ? t('storereq.bought_ok', 'Marked bought — ready to dispatch') :
         status === 'approved' ? t('storereq.approved_ok', 'Request approved') :
         status === 'rejected' ? t('storereq.rejected_ok', 'Request rejected') :
         t('storereq.dispatched_ok', 'Marked dispatched'),
       );
       insertRows('notifications', {
-        target_roles: ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
+        target_roles: status === 'pending_vijay' ? ['management', 'admin']
+          : status === 'pending_buyer' ? ['purchase_manager', 'management', 'admin']
+          : ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
         title: t('storereq.decide_notif_title', {
           defaultValue: 'Store req {{status}}: {{item}}',
           status,
@@ -605,16 +633,52 @@ export function StoreRequisitions() {
                   <img src={detailReq.photo_url} alt={detailReq.item} style={{ width: '100%', maxHeight: 220, objectFit: 'cover', display: 'block' }} />
                 </button>
               )}
+              {detailReq.buyer_name && <Row k={t('storereq.col_buyer', 'Purchaser')} v={detailReq.buyer_name} />}
               {canDecideReq && detailReq.status === 'pending' && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
-                    {t('storereq.approve_btn', 'Approve')}
-                  </ButtonV2>
-                  <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
-                    {t('storereq.reject_btn', 'Reject')}
-                  </ButtonV2>
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
+                      {t('storereq.approve_issue_btn', 'Approve — issue from store')}
+                    </ButtonV2>
+                    <ButtonV2 variant="accent" disabled={deciding || !buyChainLive} onClick={() => decideReq(detailReq, 'pending_vijay')}>
+                      {t('storereq.approve_buy_btn', 'Approve — needs buying')}
+                    </ButtonV2>
+                    <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
+                      {t('storereq.reject_btn', 'Reject')}
+                    </ButtonV2>
+                  </div>
+                  <p style={{ fontSize: 11.5, color: '#64748B', marginTop: 8 }}>
+                    {buyChainLive
+                      ? t('storereq.buy_chain_hint', 'Needs buying goes to Vijay ji, then the purchaser.')
+                      : t('storereq.buy_chain_waiting', 'Needs buying waits for SQL (migration 0038). Until then only an in-store issue can be approved here.')}
+                  </p>
                 </div>
               )}
+              {detailReq.status === 'pending_vijay' && (isVijay ? (
+                <div style={{ marginTop: 16 }}>
+                  <PanelField label={t('storereq.pick_buyer', 'Purchaser *')}>
+                    <PanelSelect value={buyerPick} onChange={e => setBuyerPick(e.target.value)}>
+                      <option value="">{t('storereq.pick_buyer_ph', 'Pick the purchaser…')}</option>
+                      {buyers.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </PanelSelect>
+                  </PanelField>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <ButtonV2 variant="primary" disabled={deciding || !buyerPick} onClick={() => decideReq(detailReq, 'pending_buyer', buyerPick)}>
+                      {t('storereq.approve_purchase_btn', 'Approve purchase')}
+                    </ButtonV2>
+                    <ButtonV2 variant="ghost" disabled={deciding} onClick={() => decideReq(detailReq, 'rejected')}>
+                      {t('storereq.reject_btn', 'Reject')}
+                    </ButtonV2>
+                  </div>
+                </div>
+              ) : <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 16 }}>{t('storereq.awaiting_vijay', 'Awaiting Vijay ji…')}</p>)}
+              {detailReq.status === 'pending_buyer' && (canBuyRow(detailReq) ? (
+                <div style={{ marginTop: 16 }}>
+                  <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'approved')}>
+                    {t('storereq.mark_bought_btn', 'Mark bought')}
+                  </ButtonV2>
+                </div>
+              ) : <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 16 }}>{t('storereq.awaiting_buyer', { defaultValue: 'Purchaser {{name}} buying…', name: detailReq.buyer_name || '' })}</p>)}
               {canDecideReq && detailReq.status === 'approved' && (
                 <div style={{ marginTop: 16 }}>
                   <ButtonV2 variant="primary" disabled={deciding} onClick={() => decideReq(detailReq, 'dispatched')}>
