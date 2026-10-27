@@ -20,6 +20,7 @@ import { supabase } from '../supabase';
 import { ticketNoLabel, ticketSearchTerms, reqNoLabel } from '../ticketNo';
 import { STATUS_CFG, daysFromNow, dueDateLabel, formatDate } from '../../routes/dashboard/purchase/maintenance/shared';
 import type { AppNotification } from '../../contexts/NotificationsContext';
+import { loadBuyers, isListedBuyer, personMatches } from '../procurementPeople';
 
 export type TodoTone = 'red' | 'amber' | 'blue' | 'green' | 'purple' | 'slate';
 
@@ -137,6 +138,27 @@ type TicketRow = {
 const ticketName = (t: TicketRow) => t.equipment || t.title || 'Maintenance ticket';
 
 /** Standard ticket row (ticket / asset / raised / age / trailing badge). */
+type BuyReqRow = { id: string; item: string; qty: number | null; created_at: string | null; plant_id: string | null; buyer_name?: string | null };
+
+/** A store requisition on the buy chain (Vijay ji / purchaser), as a To-Do row. */
+function buyReqItem(ctx: TodoCtx, r: BuyReqRow, action: string): TodoItem {
+  const plant = ctx.plantName(r.plant_id);
+  return {
+    id: `sb_${r.id}`,
+    route: `/dashboard/purchase/storereq?queue=pending&req=${r.id}`,
+    title: r.item,
+    sortDate: r.created_at ?? undefined,
+    cells: {
+      ticket: reqNoLabel(r),
+      asset: `${r.item}${r.qty ? ` · qty ${r.qty}` : ''}${r.buyer_name ? ` · ${r.buyer_name}` : ''}`,
+      raised: dateCell(r.created_at),
+      age: ageCell(r.created_at),
+      status: { badge: { text: action, tone: 'purple' } },
+    },
+    search: [r.item, r.buyer_name, plant, 'store requisition'].filter(Boolean).join(' ').toLowerCase(),
+  };
+}
+
 function ticketItem(
   ctx: TodoCtx,
   t: TicketRow,
@@ -263,6 +285,63 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         { unitCol: 'unit_id' },
       ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) => ticketItem(ctx, t, { badge: { text: 'Bill & dispatch', tone: 'purple' } }));
+    },
+  },
+
+  // ── Vijay ji (management): approve buying a part that is not in store ────
+  {
+    key: 'vijay-approvals',
+    titleKey: 'todo.section.vijayApprovals',
+    icon: '🛒',
+    tone: 'purple',
+    columns: TICKET_COLS('todo.col.action'),
+    appliesTo: (ctx) => hasRole(ctx, 'management'),
+    fetch: async (ctx) => {
+      const [{ data: tk }, { data: rq }] = await Promise.all([
+        ctx.scopeQuery(
+          supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_vijay'),
+          { unitCol: 'unit_id' },
+        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>(),
+        ctx.scopeQuery(
+          supabase.from('store_requisitions').select('id,item,qty,created_at,plant_id').eq('status', 'pending_vijay'),
+          { unitCol: 'unit_id' },
+        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<BuyReqRow[]>(),
+      ]);
+      return [
+        ...(tk ?? []).map((t) => ticketItem(ctx, t, { idPrefix: 'vj_', badge: { text: 'Approve buy', tone: 'purple' } })),
+        ...(rq ?? []).map((r) => buyReqItem(ctx, r, 'Approve buy')),
+      ];
+    },
+  },
+
+  // ── Purchaser (from the purchaser list): buy what Vijay ji approved ─────────
+  {
+    key: 'buying',
+    titleKey: 'todo.section.buying',
+    icon: '🧺',
+    tone: 'purple',
+    columns: TICKET_COLS('todo.col.action'),
+    // The list is matched by name, so every login asks; non-purchasers get nothing.
+    appliesTo: () => true,
+    fetch: async (ctx) => {
+      const buyers = await loadBuyers();
+      const admin = ctx.roleSlugs.has('*');
+      if (!admin && !isListedBuyer(buyers, ctx.personName)) return [];
+      const [{ data: tk }, { data: rq }] = await Promise.all([
+        ctx.scopeQuery(
+          supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_buyer'),
+          { unitCol: 'unit_id' },
+        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>(),
+        ctx.scopeQuery(
+          supabase.from('store_requisitions').select('id,item,qty,created_at,plant_id,buyer_name').eq('status', 'pending_buyer'),
+          { unitCol: 'unit_id' },
+        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<BuyReqRow[]>(),
+      ]);
+      const mine = (rq ?? []).filter((r) => admin || !r.buyer_name || personMatches(r.buyer_name, ctx.personName));
+      return [
+        ...(tk ?? []).map((t) => ticketItem(ctx, t, { idPrefix: 'by_', badge: { text: 'Buy', tone: 'purple' } })),
+        ...mine.map((r) => buyReqItem(ctx, r, 'Buy')),
+      ];
     },
   },
 
@@ -471,7 +550,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       if (!ctx.personName) return [];
       const { data } = await ctx.scopeQuery(
         supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('raised_by', ctx.personName)
-          .in('status', ['pending_store', 'pending_unit_head', 'pending_purchase', 'pending_purchase_manager', 'pending_handover']),
+          .in('status', ['pending_store', 'pending_unit_head', 'pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover']),
         { unitCol: 'unit_id' },
       ).order('created_at', { ascending: false }).limit(ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) =>

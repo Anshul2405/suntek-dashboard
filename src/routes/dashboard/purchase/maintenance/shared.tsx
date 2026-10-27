@@ -30,8 +30,8 @@ export const STATUS_CFG: Record<string, { label: string; labelKey?: string; bg: 
   pending_store:            { label: 'Pending Store',     labelKey: 'maint.statusPendingStore',     bg: '#FEF3C7', color: '#D97706' },
   pending_unit_head:        { label: 'Pending Approval',  labelKey: 'maint.statusPendingApproval',  bg: '#EDE9FE', color: '#7C3AED' },
   pending_approval:         { label: 'Pending Approval',  labelKey: 'maint.statusPendingApproval',  bg: '#EDE9FE', color: '#7C3AED' },
-  pending_vijay:            { label: 'Pending Approver',  labelKey: 'maint.statusPendingApprover',  bg: '#EDE9FE', color: '#7C3AED' },
-  pending_buyer:            { label: 'Pending Buyer',     labelKey: 'maint.statusPendingBuyer',     bg: '#FEF3C7', color: '#D97706' },
+  pending_vijay:            { label: 'Vijay ji',          labelKey: 'maint.statusVijay',            bg: '#EDE9FE', color: '#7C3AED' },
+  pending_buyer:            { label: 'Purchaser',         labelKey: 'maint.statusPurchaser',        bg: '#FEF3C7', color: '#D97706' },
   pending_purchase:         { label: 'Purchasing',        labelKey: 'maint.statusPurchasing',       bg: '#EDE9FE', color: '#7C3AED' },
   pending_purchase_manager: { label: 'Bill & Dispatch',   labelKey: 'maint.statusBillDispatch',     bg: '#FAE8FF', color: '#A21CAF' },
   pending_handover:         { label: 'Handover',          labelKey: 'maint.statusHandover',         bg: '#F3E8FF', color: '#9333EA' },
@@ -48,14 +48,14 @@ export const EMERGENCY_STAGES = [
 
 export const STAGE_LABELS: Record<string, string> = {
   open: 'Raised', in_progress: 'Assessed', pending_store: 'Store Check',
-  pending_unit_head: 'Unit Head', pending_purchase: 'Purchase', pending_purchase_manager: 'Purchase Mgr',
+  pending_unit_head: 'Unit Head', pending_vijay: 'Vijay ji', pending_buyer: 'Purchaser', pending_purchase: 'Purchase', pending_purchase_manager: 'Purchase Mgr',
   pending_handover: 'Handover', pending_defective_return: 'Used / Return', closed: 'Closed',
 };
 
 /** i18n keys for STAGE_LABELS — translate at render with t(key, STAGE_LABELS[stage]). */
 export const STAGE_LABEL_KEYS: Record<string, string> = {
   open: 'maint.stageRaised', in_progress: 'maint.stageAssessed', pending_store: 'maint.stageStoreCheck',
-  pending_unit_head: 'maint.stageUnitHead', pending_purchase: 'maint.stagePurchase', pending_purchase_manager: 'maint.stagePurchaseMgr',
+  pending_unit_head: 'maint.stageUnitHead', pending_vijay: 'maint.stageVijay', pending_buyer: 'maint.stagePurchaser', pending_purchase: 'maint.stagePurchase', pending_purchase_manager: 'maint.stagePurchaseMgr',
   pending_handover: 'maint.stageHandover', pending_defective_return: 'maint.stageDefective', closed: 'maint.stageClosed',
 };
 

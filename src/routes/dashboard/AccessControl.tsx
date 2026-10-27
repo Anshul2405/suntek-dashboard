@@ -3,8 +3,9 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { isAdminProfile, isManagementProfile } from '../../lib/profiles';
 import {
   MODULES, backupOverdue, downloadBackup, loadAudit, loadLateRequests, reviewLateRequest,
-  saveOpsSettings, useOpsSettings, type AuditRow, type LateRequest, type ModuleKey, type OpsSettings, type PhotoKey,
+  recordAudit, saveOpsSettings, useOpsSettings, type AuditRow, type LateRequest, type ModuleKey, type OpsSettings, type PhotoKey,
 } from '../../lib/opsControls';
+import { BUYER_TYPES, saveBuyers, useBuyers, type BuyerPerson, type BuyerType } from '../../lib/procurementPeople';
 import { fetchActivePlants } from '../../lib/plants';
 import { displayLocationName } from '../../lib/plantLabels';
 import { useToast } from '../../components/ui/toast';
@@ -458,6 +459,8 @@ export function AccessControl() {
         </section>
       )}
 
+      {admin && <PurchaserList actorName={activeProfile.name} loginNames={people.map((p) => p.name)} />}
+
       <section className="card2 p-5">
         <h2 className="text-base font-bold">History</h2>
         <p className="text-xs text-slate-500 mt-1">Who did it, and when. Covers permission changes, late approvals, backups, bill uploads, batch photos, edits and deletions that write to this log.</p>
@@ -481,5 +484,74 @@ export function AccessControl() {
         {audit.length > 0 && <TablePaginationV2 controls={auditPager} label="entries" />}
       </section>
     </div>
+  );
+}
+
+/**
+ * Who buys a not-in-store part after Vijay ji approves it (tickets and store
+ * requisitions). Matched to logins by name, like the photo-hide list, so the
+ * list is edited here rather than tied to one account.
+ */
+function PurchaserList({ actorName, loginNames }: { actorName: string; loginNames: string[] }) {
+  const toast = useToast();
+  const saved = useBuyers();
+  // null = not edited: show the saved list as it loads.
+  const [edits, setEdits] = useState<BuyerPerson[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const draft = edits ?? saved;
+  const setDraft = (fn: (d: BuyerPerson[]) => BuyerPerson[]) => setEdits(fn(draft));
+
+  const setRow = (i: number, patch: Partial<BuyerPerson>) =>
+    setDraft((d) => d.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+
+  async function save() {
+    const people = draft.filter((p) => p.name.trim());
+    if (!people.length) { toast.error('Keep at least one purchaser.'); return; }
+    setSaving(true);
+    const err = await saveBuyers(people, actorName);
+    setSaving(false);
+    if (err) { toast.error(err); return; }
+    setEdits(null);
+    await recordAudit({ module: 'access', action: 'purchasers_saved', summary: `Purchaser list: ${people.map((p) => p.name).join(', ')}`, actorName });
+    toast.success('Purchaser list saved.');
+  }
+
+  return (
+    <section className="card2 p-5">
+      <h2 className="text-base font-bold">Purchasers</h2>
+      <p className="text-xs text-slate-500 mt-1">When a part is not in store: Unit Head approves, Vijay ji approves and picks one of these people, and that person buys it. A name here matches the login by name (sir / ji ignored), so “Tiwari ji” is any login named Tiwari. Admin can always act.</p>
+      <datalist id="purchaser-login-names">
+        {loginNames.map((n) => <option key={n} value={n} />)}
+      </datalist>
+      <div className="flex flex-col gap-2 mt-3 max-w-xl">
+        {draft.map((p, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <input
+              value={p.name}
+              list="purchaser-login-names"
+              onChange={(e) => setRow(i, { name: e.target.value })}
+              placeholder="Name"
+              className="flex-1 min-w-[160px] rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+            <select
+              value={p.type}
+              onChange={(e) => setRow(i, { type: e.target.value as BuyerType })}
+              className="rounded-lg border border-slate-200 px-2 py-2 text-sm"
+            >
+              {BUYER_TYPES.map((ty) => <option key={ty} value={ty}>{ty}</option>)}
+            </select>
+            <button type="button" className="text-xs font-bold text-red-600" onClick={() => setDraft((d) => d.filter((_, j) => j !== i))}>Remove</button>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-3 mt-3">
+        <button type="button" className="rounded-[10px] border border-slate-200 px-4 py-2 text-sm font-semibold" onClick={() => setDraft((d) => [...d, { name: '', type: 'Purchase' }])}>
+          Add person
+        </button>
+        <button type="button" className="btn-accent rounded-[10px] px-4 py-2 text-sm font-semibold" disabled={saving} onClick={() => void save()}>
+          {saving ? 'Saving…' : 'Save purchasers'}
+        </button>
+      </div>
+    </section>
   );
 }

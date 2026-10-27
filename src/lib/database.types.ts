@@ -1040,11 +1040,14 @@ export interface Database {
           unit_id: string | null; // FK to units — scoping key (27_plant_unit_scoping.sql)
           qty: number;
           urgency: 'low' | 'medium' | 'high' | 'plant_stopper';
-          status: 'pending' | 'approved' | 'dispatched' | 'received' | 'rejected';
+          // pending_vijay / pending_buyer: a buy goes Unit Head → Vijay ji → purchaser (0038).
+          status: 'pending' | 'pending_vijay' | 'pending_buyer' | 'approved' | 'dispatched' | 'received' | 'rejected';
           raised_by: string | null;
           approved_by: string | null;
           photo_url: string | null;
           remarks: string | null;
+          /** Purchaser Vijay ji named (0038; absent until applied). */
+          buyer_name: string | null;
           created_at: string;
         };
         Insert: OptionalNulls<Omit<Database['public']['Tables']['store_requisitions']['Row'], 'id' | 'created_at'>>;
@@ -1144,6 +1147,8 @@ export interface Database {
             | 'in_progress'
             | 'pending_store'
             | 'pending_unit_head'
+            | 'pending_vijay'  // not in store: Vijay ji approves the buy (0038_dispatch_payments_vijay.sql)
+            | 'pending_buyer'  // named purchaser buys it (0038)
             | 'pending_purchase'
             | 'pending_purchase_manager'
             | 'pending_handover'
@@ -1248,6 +1253,12 @@ export interface Database {
           procured_by: string | null;
           procured_at: string | null;
           handover_confirmed_by: string | null;
+          /** Vijay ji's decision on buying a not-in-store part (0038; absent until applied). */
+          vijay_approval: 'approved' | 'rejected' | null;
+          vijay_approved_by: string | null;
+          vijay_approved_at: string | null;
+          /** Purchaser picked from the procurement_people list (0038). */
+          buyer_name: string | null;
           created_at: string;
         };
         // reserved_qty is maintained by the issue_store_item RPC and DB-defaulted.
