@@ -54,6 +54,7 @@ const FAR             = lazy(() => import('./routes/dashboard/purchase/FAR').the
 const Maintenance     = lazy(() => import('./routes/dashboard/purchase/Maintenance').then(m => ({ default: m.Maintenance })));
 const ActivityLog     = lazy(() => import('./routes/dashboard/purchase/ActivityLog').then(m => ({ default: m.ActivityLog })));
 const PurchaseOrders  = lazy(() => import('./routes/dashboard/purchase/PurchaseOrders').then(m => ({ default: m.PurchaseOrders })));
+const PurchaseBookPage = lazy(() => import('./routes/dashboard/purchase/PurchaseBook').then(m => ({ default: m.PurchaseBookPage })));
 const MarineInsurance = lazy(() => import('./routes/dashboard/purchase/MarineInsurance').then(m => ({ default: m.MarineInsurance })));
 const Labour          = lazy(() => import('./routes/dashboard/purchase/Labour').then(m => ({ default: m.Labour })));
 const QRManagement    = lazy(() => import('./routes/dashboard/purchase/QRManagement').then(m => ({ default: m.QRManagement })));
@@ -104,6 +105,7 @@ function App() {
               <Route path="activity" element={<ActivityLog />} />
               <Route path="storereq" element={<StoreRequisitions />} />
               <Route path="purchase" element={<PurchaseOrders />} />
+              <Route path="book"     element={<PurchaseBookPage />} />
               <Route path="marine"   element={<MarineInsurance />} />
               <Route path="labour"   element={<Labour />} />
               <Route path="qr"       element={<QRManagement />} />

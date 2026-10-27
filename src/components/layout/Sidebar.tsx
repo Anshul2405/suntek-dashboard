@@ -58,6 +58,7 @@ const OPERATIONS_ITEMS: NavItem[] = [
   // route, so we tag this one with ?ctx=ops (`nav`) — the highlight logic reads
   // that marker to light up ONLY the entry the user actually opened, not both.
   { key: 'nav.purchase',        path: '/dashboard/purchase/purchase', nav: '/dashboard/purchase/purchase?ctx=ops' },
+  { key: 'nav.purchaseBook',    path: '/dashboard/purchase/book'     },
   { key: 'nav.sales',           path: '/dashboard/sales'             },
   { key: 'nav.customerHistory', path: '/dashboard/customers'         },
   { key: 'nav.cpAndStock',      path: '/dashboard/stock'             },

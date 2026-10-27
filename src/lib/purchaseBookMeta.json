@@ -1,0 +1,16 @@
+{
+  "marineBalance": 62564151.0,
+  "marineAsOf": "23.09.2026",
+  "marineCompany": "PLASTICIZER",
+  "shdSeptember": 22066250.0,
+  "shdSeptemberRows": 36,
+  "kolkataSeptember": 13426000.0,
+  "kolkataSeptemberRows": 22,
+  "shdFy": 95807250.0,
+  "kolkataFy": 186953550.4,
+  "purchaseSeptemberExChlorine": 381587371.0,
+  "paymentCounts": {
+    "updated": 417,
+    "input": 1
+  }
+}

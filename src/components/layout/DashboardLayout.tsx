@@ -144,6 +144,7 @@ const FACTORY_SUBPAGES: Record<string, { title: L; breadcrumb: readonly L[]; sub
   '/dashboard/purchase/storereq': { title: ['nav.storeRequisition', 'Store Requisition'], breadcrumb: [C_FACTORY, ['nav.storeRequisition', 'Store Requisition']], subtitle: ['nav.subStoreReq', 'Request materials, track approvals, manage stock and scrap.'] },
   '/dashboard/purchase/purchase': { title: ['nav.purchaseOrder', 'Purchase Order'],       breadcrumb: [C_FACTORY, ['nav.purchaseOrder', 'Purchase Order']],       subtitle: ['nav.subPurchaseOrder', 'Raise and track purchase orders.'] },
   '/dashboard/purchase/marine':   { title: ['nav.marineInsurance', 'Marine Insurance'],   breadcrumb: [C_FACTORY, ['nav.marineInsurance', 'Marine Insurance']] },
+  '/dashboard/purchase/book':     { title: ['nav.purchaseBook', 'Purchase book'],         breadcrumb: [C_OPERATIONS, ['nav.purchaseBook', 'Purchase book']],         subtitle: ['nav.subPurchaseBook', 'Payments, dispatch, requirements, Kolkata and SHD — the Purchase workbook plus live entries.'] },
   '/dashboard/purchase/labour':   { title: ['nav.labour', 'Labour'],                      breadcrumb: [C_FACTORY, ['nav.labour', 'Labour']] },
 };
 
@@ -185,6 +186,7 @@ const PURCHASE_TAB_PATHS = [
   '/dashboard/purchase/activity',
   '/dashboard/purchase/storereq',
   '/dashboard/purchase/purchase',
+  '/dashboard/purchase/book',
   '/dashboard/purchase/qr',
   '/dashboard/purchase/marine',
   '/dashboard/purchase/labour',
