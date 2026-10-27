@@ -55,6 +55,7 @@ const FACTORY_ITEMS: NavItem[] = [
  */
 const OPERATIONS_ITEMS: NavItem[] = [
   { key: 'nav.purchase',        path: '/dashboard/purchase/purchase', nav: '/dashboard/purchase/purchase?ctx=ops' },
+  { key: 'nav.purchaseBook',    path: '/dashboard/purchase/book'     },
   { key: 'nav.sales',           path: '/dashboard/sales'             },
   { key: 'nav.customerHistory', path: '/dashboard/customers'         },
   { key: 'nav.cpAndStock',      path: '/dashboard/stock'             },

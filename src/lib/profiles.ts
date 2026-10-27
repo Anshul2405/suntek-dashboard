@@ -343,5 +343,12 @@ export function profileCanAccess(profile: MockProfile, route: string): boolean {
   ) {
     return true;
   }
+  // Purchase book follows Purchase Orders / Marine until roles carry the route
+  // (grant is in migration 0038, not applied).
+  if (route === '/dashboard/purchase/book') {
+    return profile.allowedDashboardRoutes.includes(route)
+      || profile.allowedDashboardRoutes.includes('/dashboard/purchase/purchase')
+      || profile.allowedDashboardRoutes.includes('/dashboard/purchase/marine');
+  }
   return profile.allowedDashboardRoutes.includes(route);
 }
