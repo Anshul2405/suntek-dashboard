@@ -13,6 +13,7 @@ import { useTextFilter } from '../../../components/ui/TableSearch';
 import { TableSearch } from '../../../components/ui/TableSearch';
 import { formatDate } from '../../../lib/utils/formatting';
 import { DispatchLog } from './DispatchLog';
+import { BookPayments } from './BookPayments';
 
 const BOOK_TABS = ['purchases', 'payments', 'paraffin', 'requirements', 'dispatch', 'kolkata', 'shd'] as const;
 type BookTab = (typeof BOOK_TABS)[number];
@@ -209,7 +210,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
   return (
     <>
       <InfoBanner className="mb-4">
-        {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. Account numbers are not kept here.')}
+        {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.')}
       </InfoBanner>
 
       <SegmentTabs
@@ -266,6 +267,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
 
       {active === 'purchases' && <BusyPurchasesCard />}
       {active === 'dispatch' && <DispatchLog />}
+      {active === 'payments' && <BookPayments />}
 
       {active === 'payments' && (
         <div className="grid grid-cols-12 gap-4 mb-4">
