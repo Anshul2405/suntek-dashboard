@@ -139,6 +139,10 @@ export function DispatchLog() {
     const { error } = await updateRows('dispatch_logs', patch).eq('id', row.id);
     if (error) { toast.error(error.message); return false; }
     setRows(prev => prev.map(r => (r.id === row.id ? { ...r, ...patch } : r)));
+    // A store requisition bought and sent on this row is now received too.
+    if (isStorePart(row)) {
+      await updateRows('store_requisitions', { status: 'received' }).eq('dispatch_id', row.id).eq('status', 'in_transit');
+    }
     setReceiving(null);
     toast.success(t('dispatch.receivedOk', 'Marked received.'));
     return true;
