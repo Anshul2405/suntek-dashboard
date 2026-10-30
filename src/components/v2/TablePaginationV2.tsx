@@ -27,7 +27,7 @@ export function TablePaginationV2({
   if (!alwaysShow && total === 0) return null;
 
   const sqBtn =
-    'min-w-[32px] h-8 px-2 rounded-lg border text-[13px] inline-flex items-center justify-center transition-colors';
+    'min-w-[32px] h-8 max-sm:min-w-[44px] max-sm:h-11 px-2 rounded-lg border text-[13px] inline-flex items-center justify-center transition-colors';
 
   return (
     <div className="flex items-center justify-between flex-wrap gap-2.5 px-4 py-3 border-t border-slate-100">
@@ -85,7 +85,7 @@ export function TablePaginationV2({
             value={pageSize}
             onChange={e => setPageSize(Number(e.target.value))}
             aria-label={`${label} per page`}
-            className="appearance-none h-8 pl-3 pr-8 rounded-lg border border-slate-200 bg-white text-[12.5px] text-slate-600 cursor-pointer hover:bg-slate-50 focus:outline-none"
+            className="appearance-none h-8 max-sm:h-11 pl-3 pr-8 rounded-lg border border-slate-200 bg-white text-[12.5px] text-slate-600 cursor-pointer hover:bg-slate-50 focus:outline-none"
           >
             {PAGE_SIZE_OPTIONS.map(n => (
               <option key={n} value={n}>{n} {t('common.perPage')}</option>

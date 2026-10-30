@@ -12,6 +12,7 @@ import type { Database } from '../../../lib/database.types';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../../components/v2';
 import { formatDate } from '../../../lib/utils/formatting';
+import { displayLocationName } from '../../../lib/plantLabels';
 
 type LabourRow = Database['public']['Tables']['labour_costs']['Row'] & { plants?: { name: string | null } | null };
 
@@ -147,7 +148,7 @@ export function Labour() {
                   const tLbl   = vPct > 0 ? t('labour.varianceOver', { pct: vPct.toFixed(1) }) : vPct < 0 ? t('labour.varianceUnder', { pct: Math.abs(vPct).toFixed(1) }) : t('labour.onTarget');
                   return (
                     <tr key={c.id}>
-                      <td className="font-semibold">{c.plants?.name || '—'}</td>
+                      <td className="font-semibold">{displayLocationName(c.plants?.name) || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(c.date)}</td>
                       <td className="num text-slate-500">{c.purchased_qty ?? '—'}</td>
                       <td className="num text-slate-500">{c.sales_qty ?? '—'}</td>
@@ -174,9 +175,9 @@ export function Labour() {
 
       {/* Slide panel */}
       <SlidePanel open={open} onClose={handleClose} title={t('labour.panelTitle')} subtitle={t('labour.panelSubtitle')}>
+        {/* The app does not compute labour cost from purchase / sales; rows show as saved. */}
         <div style={{ padding: '12px 14px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, marginBottom: 20, fontSize: 12, color: '#475569', lineHeight: 1.6 }}>
-          <strong>{t('labour.currentFormulaLabel')}</strong><br />
-          {t('labour.currentFormula')}
+          {t('labour.rateNoteOnly', 'Rates entered here are sent as a note to the people you tag. They are not stored, and the cost column is not recalculated.')}
         </div>
 
         <PanelField label={t('labour.fieldBaseRate')}>
@@ -212,8 +213,8 @@ export function Labour() {
           onCancel={handleClose}
           onSave={handleSave}
           saveLabel={t('labour.saveFormula')}
-          successLabel={t('labour.formulaUpdated')}
-          successSub={t('labour.formulaUpdatedSub')}
+          successLabel={t('labour.rateNoteSent', 'Note sent')}
+          successSub={t('labour.rateNoteSentSub', 'Nothing in the labour log was changed.')}
         />
       </SlidePanel>
     </>

@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, AlertCircle, Eye, CheckCircle2, Building2, Layers } from 'lucide-react';
 import { StatCard, SectionCard, FilterBar, FilterSelect, SegmentTabs, ButtonV2, StatusPill, TablePaginationV2, type PillTone } from '../../components/v2';
+import { useUrlFilters } from '../../lib/urlFilters';
+import { useUrlTable } from '../../lib/urlTable';
 import { usePagination } from '../../components/ui/usePagination';
 import { useTable } from '../../hooks/useTable';
 import { useToast } from '../../components/ui/toast';
@@ -52,9 +54,20 @@ export function AnomalyOperationsCenter() {
     orderBy: 'created_at',
   });
 
-  const [statusFilter, setStatusFilter] = useState<'open' | 'resolved' | 'all'>('open');
-  const [plantFilter, setPlantFilter] = useState('all');
-  const [sourceFilter, setSourceFilter] = useState('all');
+  // Filters and page in the URL: "Open source" goes to another screen, and Back
+  // used to land on Open / all plants / page 1 again.
+  const f = useUrlFilters(['fstatus', 'fplant', 'fsource', 'fsev'] as const);
+  const sevFilter = f.values.fsev;
+  const statusFilter = (f.values.fstatus === 'resolved' || f.values.fstatus === 'all' ? f.values.fstatus : 'open') as 'open' | 'resolved' | 'all';
+  const setStatusFilter = (v: 'open' | 'resolved' | 'all') => f.set({ fstatus: v === 'open' ? '' : v });
+  const plantFilter = f.values.fplant || 'all';
+  const setPlantFilter = (v: string) => f.set({ fplant: v === 'all' ? '' : v });
+  const sourceFilter = f.values.fsource || 'all';
+  const setSourceFilter = (v: string) => f.set({ fsource: v === 'all' ? '' : v });
+  const findingsUrl = useUrlTable(undefined, 'f');
+  // A KPI card lists exactly what it counts: every plant and source, that
+  // status / severity only.
+  const showCounted = (patch: { fstatus?: string; fsev?: string }) => f.only(patch);
 
   // Reason capture for resolve/dismiss (the §5.4 feedback signal).
   const [reasonFor, setReasonFor] = useState<{ id: string; action: 'resolved' | 'dismissed' } | null>(null);
@@ -84,14 +97,15 @@ export function AnomalyOperationsCenter() {
       })
       .filter(r => plantFilter === 'all' || r.plant === plantFilter)
       .filter(r => sourceFilter === 'all' || r.source_app === sourceFilter)
+      .filter(r => !sevFilter || r.severity === sevFilter)
       .sort((a, b) => {
         const s = SEV_CFG[a.severity].rank - SEV_CFG[b.severity].rank;
         if (s !== 0) return s;
         return (b.created_at || '').localeCompare(a.created_at || '');
       });
-  }, [rows, statusFilter, plantFilter, sourceFilter]);
+  }, [rows, statusFilter, plantFilter, sourceFilter, sevFilter]);
   // Paged cards; page 1 again when a filter changes.
-  const { pageRows: visiblePage, controls: findingPager } = usePagination(visible, { resetKey: `${statusFilter}|${plantFilter}|${sourceFilter}` });
+  const { pageRows: visiblePage, controls: findingPager } = usePagination(visible, { resetKey: `${statusFilter}|${plantFilter}|${sourceFilter}|${sevFilter}`, ...findingsUrl.paging, ready: !isLoading });
 
   async function setStatus(id: string, status: Status, resolution_reason?: string) {
     try {
@@ -145,15 +159,19 @@ export function AnomalyOperationsCenter() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red"
           valueTone={counts.critical > 0 ? 'red' : 'default'}
-          label={t('anomalyCenter.sev_critical')} value={isLoading ? '…' : counts.critical} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_critical')} value={isLoading ? '…' : counts.critical} caption={t('anomalyCenter.open_flags')}
+          onView={() => showCounted({ fsev: 'critical' })} viewLabel={t('anomalyCenter.viewFlags', 'See these flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<AlertCircle />} tone="amber"
           valueTone={counts.warning > 0 ? 'amber' : 'default'}
-          label={t('anomalyCenter.sev_warning')} value={isLoading ? '…' : counts.warning} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_warning')} value={isLoading ? '…' : counts.warning} caption={t('anomalyCenter.open_flags')}
+          onView={() => showCounted({ fsev: 'warning' })} viewLabel={t('anomalyCenter.viewFlags', 'See these flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Eye />} tone="blue"
           valueTone={counts.watch > 0 ? 'blue' : 'default'}
-          label={t('anomalyCenter.sev_watch')} value={isLoading ? '…' : counts.watch} caption={t('anomalyCenter.open_flags')} />
+          label={t('anomalyCenter.sev_watch')} value={isLoading ? '…' : counts.watch} caption={t('anomalyCenter.open_flags')}
+          onView={() => showCounted({ fsev: 'watch' })} viewLabel={t('anomalyCenter.viewFlags', 'See these flags')} />
         <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green" valueTone="green"
-          label={t('anomalyCenter.resolved_dismissed')} value={isLoading ? '…' : counts.resolved} caption={t('anomalyCenter.cleared_total')} />
+          label={t('anomalyCenter.resolved_dismissed')} value={isLoading ? '…' : counts.resolved} caption={t('anomalyCenter.cleared_total')}
+          onView={() => showCounted({ fstatus: 'resolved' })} viewLabel={t('anomalyCenter.viewFlags', 'See these flags')} />
       </div>
 
       {/* Status view switch */}
@@ -165,12 +183,15 @@ export function AnomalyOperationsCenter() {
       />
 
       {/* Filters */}
-      <FilterBar className="mb-4">
+      <FilterBar className="mb-4" onReset={f.reset}>
         <FilterSelect icon={<Building2 />} value={plantFilter} onChange={setPlantFilter}
           options={[{ value: 'all', label: t('anomalyCenter.all_plants') }, ...plants.map(p => ({ value: p, label: p }))]} />
         <FilterSelect icon={<Layers />} value={sourceFilter} onChange={setSourceFilter}
           options={[{ value: 'all', label: t('anomalyCenter.all_sources') },
             ...sources.map(s => ({ value: s, label: t(`anomalyCenter.source_${s}`, { defaultValue: SOURCE_LABEL[s] || s }) }))]} />
+        <FilterSelect icon={<AlertTriangle />} value={sevFilter || 'all'} onChange={v => f.set({ fsev: v === 'all' ? '' : v })}
+          options={[{ value: 'all', label: t('anomalyCenter.all_severities', 'All severities') },
+            ...(['critical', 'warning', 'watch'] as const).map(sv => ({ value: sv, label: t(`anomalyCenter.sev_${sv}`) }))]} />
         <div className="flex-1" />
         <span className="text-xs text-slate-500 self-center px-1">{t('anomalyCenter.count_shown', { count: visible.length })}</span>
       </FilterBar>

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { supabase } from '../../lib/supabase';
 import { upsertRows } from '../../lib/db';
 import { useToast } from '../../components/ui/toast';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { NightDutyScheduler } from './NightDutyScheduler';
 import { MyNightDuty } from './MyNightDuty';
@@ -50,8 +51,10 @@ interface CheckInLog {
 }
 
 // OpenStreetMap/CartoDB Voyager tile layer for highly readable and premium maps
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
-const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+// OpenStreetMap's standard tiles need no API key (the CARTO tiles answered
+// with an "API key required" image).
+const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
 /**
  * Where to draw a check-in pin.
@@ -146,6 +149,9 @@ export function NightManagerBoard() {
   const { t } = useTranslation();
   const toast = useToast();
   const { can, roles } = useRoleContext();
+  // Check-ins are per plant: a plant-scoped manager sees their plants only
+  // (fail-closed — no grant, no rows; global users see all).
+  const { scopeQuery, ready: scopeReady } = usePlantScope();
   const [liveDuty, setLiveDuty] = useState<CheckInLog[]>([]);
   const [dutyLoaded, setDutyLoaded] = useState(false);
   const [deviceMappings, setDeviceMappings] = useState<DeviceMappingRow[]>([]);
@@ -174,11 +180,11 @@ export function NightManagerBoard() {
       setDeviceMappings(activeMappings);
 
       // 2. Fetch shift logs
-      const { data: logsData } = await supabase
+      const { data: logsData } = await scopeQuery(supabase
         .from('shift_logs')
         // lat/lng come through the join so a pin can fall back to its OWN
         // factory's centre — no name matching, no default-to-Rehla.
-        .select('*, profiles(name, role, phone), plants(name, lat, lng)')
+        .select('*, profiles(name, role, phone), plants(name, lat, lng)'))
         .order('submitted_at', { ascending: false })
         .returns<ShiftLogJoined[]>();
 
@@ -269,6 +275,7 @@ export function NightManagerBoard() {
   };
 
   useEffect(() => {
+    if (!scopeReady) return;
     loadAllData();
 
     // Subscribe to real-time additions of logs and mappings
@@ -292,7 +299,7 @@ export function NightManagerBoard() {
       supabase.removeChannel(logsChannel);
       supabase.removeChannel(mappingsChannel);
     };
-  }, []);
+  }, [scopeReady, scopeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sortedDuty = [...liveDuty].sort(
     (a, b) => new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
@@ -398,7 +405,7 @@ export function NightManagerBoard() {
               
               {sortedDuty.map((d, i) => (
                 <Marker
-                  key={i}
+                  key={d.id ?? `${d.name}-${i}`}
                   position={d.coords}
                   icon={createCustomIcon(d.initial, d.status)}
                   eventHandlers={{
@@ -491,7 +498,7 @@ export function NightManagerBoard() {
               
               return (
                 <div
-                  key={i}
+                  key={d.id ?? `${d.name}-${i}`}
                   onClick={() => {
                     setMapCenter(d.coords);
                     setMapZoom(13);

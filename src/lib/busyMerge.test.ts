@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { mergeCompanyPayloads } from './busyMerge';
+import { mergeCompanyPayloads, movementTime, sortMovements } from './busyMerge';
 
 describe('mergeCompanyPayloads', () => {
   it('adds sales across companies and keeps a margin as a weighted rate', () => {
@@ -54,4 +54,128 @@ describe('mergeCompanyPayloads', () => {
 
     expect(merged).toEqual([{ month: 'Oct', revenue: 14, invoiceCount: 3 }]);
   });
+
+  it('merges movements from two companies newest first (26 Oct above 24 Oct)', () => {
+    const now = Date.parse('2026-10-27T06:00:00Z');
+    const mv = (title: string, when: string) => ({ type: 'sales', title, sub: 'V1', amt: '+₹1', col: '#000', when });
+    const merged = mergeCompanyPayloads('/api/movements/recent?days=3', [
+      { code: '0007', data: [mv('Sales Invoice · A', '26 Oct'), mv('Sales Invoice · B', '24 Oct')] },
+      { code: '0009', data: [mv('Sales Invoice · C', '26 Oct'), mv('Sales Invoice · D', '25 Oct')] },
+    ]) as { title: string; when: string }[];
+    expect(sortMovements(merged, now).map(m => m.when)).toEqual(['26 Oct', '26 Oct', '25 Oct', '24 Oct']);
+    // The plain merge (real clock) keeps the same order.
+    expect(merged.map(m => m.when)).toEqual(['26 Oct', '26 Oct', '25 Oct', '24 Oct']);
+  });
+
+  it('sorts on the voucher date and entry time when the feed sends them', () => {
+    const rows = [
+      { when: '24 Oct', date: '2026-10-24', at: '2026-10-26T10:00:00Z' },
+      { when: '26 Oct', date: '2026-10-26', at: '2026-10-26T04:00:00Z' },
+      { when: '26 Oct', date: '2026-10-26', at: '2026-10-26T09:00:00Z' },
+    ];
+    expect(sortMovements(rows).map(r => r.at)).toEqual(['2026-10-26T09:00:00Z', '2026-10-26T04:00:00Z', '2026-10-26T10:00:00Z']);
+  });
+
+  it('reads a label year-less date as the latest one not in the future', () => {
+    const jan = Date.parse('2027-01-03T06:00:00Z');
+    const dec = movementTime({ when: '30 Dec' }, jan).day;
+    const jan2 = movementTime({ when: '02 Jan' }, jan).day;
+    expect(new Date(dec + 5.5 * 3600_000).toISOString().slice(0, 10)).toBe('2026-12-30');
+    expect(jan2).toBeGreaterThan(dec);
+    expect(movementTime({ when: '35 min ago' }, jan).day).toBeGreaterThanOrEqual(jan2);
+  });
 });
+
+describe('merged Busy lists keep a real order', () => {
+  it('ranks the combined customer list and contracts, not company by company', () => {
+    const list = mergeCompanyPayloads('/api/customers/list', [
+      { code: '0007', data: [{ name: 'A', fyRevenue: 50 }, { name: 'B', fyRevenue: 10 }] },
+      { code: '0009', data: [{ name: 'C', fyRevenue: 30 }] },
+    ]) as { fyRevenue: number }[];
+    expect(list.map(r => r.fyRevenue)).toEqual([50, 30, 10]);
+    const contracts = mergeCompanyPayloads('/api/sales/contracts', [
+      { code: '0007', data: [{ customer: 'A', totalSales: 5 }] },
+      { code: '0009', data: [{ customer: 'C', totalSales: 9 }] },
+    ]) as { totalSales: number }[];
+    expect(contracts.map(r => r.totalSales)).toEqual([9, 5]);
+  });
+
+  it('keeps months in calendar order when one company lacks a month', () => {
+    const trend = mergeCompanyPayloads('/api/kpis/revenue-trend', [
+      { code: '0007', data: [{ month: 'Sep 2026', revenue: 1 }, { month: 'Oct 2026', revenue: 1 }] },
+      { code: '0009', data: [{ month: 'Aug 2026', revenue: 1 }, { month: 'Sep 2026', revenue: 1 }] },
+    ]) as { month: string }[];
+    expect(trend.map(r => r.month)).toEqual(['Aug 2026', 'Sep 2026', 'Oct 2026']);
+  });
+
+  it('orders a merged series by its period', () => {
+    const series = mergeCompanyPayloads('/api/anomaly/timeseries', [
+      { code: '0007', data: { meta: { unit: 'inr' }, points: [{ period: '2026-10-20', value: 1 }] } },
+      { code: '0009', data: { meta: { unit: 'inr' }, points: [{ period: '2026-10-13', value: 2 }, { period: '2026-10-20', value: 3 }] } },
+    ]) as { points: { period: string; value: number }[] };
+    expect(series.points.map(p => [p.period, p.value])).toEqual([['2026-10-13', 2], ['2026-10-20', 4]]);
+  });
+});
+
+describe('combined top-5 shares', () => {
+  it('shares are of all FY sales, not of the five shown', () => {
+    // Company A: FY 1000, top customer 300 (30%). Company B: FY 1000, top 100 (10%).
+    const merged = mergeCompanyPayloads('/api/analytics/kpis', [
+      { code: '0007', data: { top5ConcentrationPct: 30, top5: [{ name: 'A1', fyRevenue: 300, sharePct: 30 }] } },
+      { code: '0009', data: { top5ConcentrationPct: 10, top5: [{ name: 'B1', fyRevenue: 100, sharePct: 10 }] } },
+    ]) as { top5: { sharePct: number }[]; top5ConcentrationPct: number };
+    expect(merged.top5.map(r => r.sharePct)).toEqual([15, 5]);
+    expect(merged.top5ConcentrationPct).toBe(20);
+  });
+});
+
+describe('combined ratios', () => {
+  it('weights a rate by each company’s FY sales when the payload only has top-5', () => {
+    const merged = mergeCompanyPayloads('/api/analytics/kpis', [
+      { code: '0007', data: { grossMarginPct: 20, top5ConcentrationPct: 10, top5: [{ name: 'A', fyRevenue: 90 }] } },  // FY 900
+      { code: '0010', data: { grossMarginPct: -10, top5ConcentrationPct: 50, top5: [{ name: 'B', fyRevenue: 50 }] } }, // FY 100
+    ]) as { grossMarginPct: number };
+    expect(merged.grossMarginPct).toBe(17); // (20×900 − 10×100) / 1000, not the plain average 5
+  });
+});
+
+describe('merged anomaly feeds', () => {
+  it('ranks findings across companies by level then score', () => {
+    const scan = mergeCompanyPayloads('/api/anomaly/scan', [
+      { code: '0007', data: { findings: [{ id: 'a', title: 'A', level: 'mild', score: 0.9 }] } },
+      { code: '0009', data: { findings: [{ id: 'b', title: 'B', level: 'extreme', score: 0.5 }, { id: 'c', title: 'C', level: 'extreme', score: 0.8 }] } },
+    ]) as { findings: { id: string }[] };
+    expect(scan.findings.map(f => f.id)).toEqual(['0009:c', '0009:b', '0007:a']);
+  });
+
+  it('adds every company’s weekly anomaly timeline', () => {
+    const a = mergeCompanyPayloads('/api/anomaly/analytics', [
+      { code: '0007', data: { timeline: [{ key: '2026-10-19', label: '19 Oct', mild: 1, moderate: 0, heavy: 0, extreme: 0, total: 1 }] } },
+      { code: '0009', data: { timeline: [{ key: '2026-10-12', label: '12 Oct', mild: 0, moderate: 2, heavy: 0, extreme: 0, total: 2 }, { key: '2026-10-19', label: '19 Oct', mild: 1, moderate: 0, heavy: 0, extreme: 1, total: 2 }] } },
+    ]) as { timeline: { key: string; total: number }[] };
+    expect(a.timeline.map(t => [t.key, t.total])).toEqual([['2026-10-12', 2], ['2026-10-19', 3]]);
+  });
+});
+
+describe('Busy manufacturing vouchers (/api/batches/recent)', () => {
+  it('merges companies newest first and tags the party with its company', () => {
+    const merged = mergeCompanyPayloads('/api/batches/recent', [
+      { code: '0007', data: [{ batchNo: '014/26-27', date: '2026-10-06', amount: 10, party: 'Party A' }, { batchNo: '013/26-27', date: '2026-09-30', amount: 5, party: 'Party B' }] },
+      { code: '0009', data: [{ batchNo: 'CSP/3/26-27', date: '2026-09-13', amount: 7, party: 'Party C' }] },
+      { code: '0012', data: [{ batchNo: 'M1-005/26-27', date: '2026-10-10', amount: 3, party: 'Party D' }] },
+    ]) as { batchNo: string; party: string; company: string }[];
+    expect(merged.map(r => r.batchNo)).toEqual(['M1-005/26-27', '014/26-27', '013/26-27', 'CSP/3/26-27']);
+    expect(merged[0]).toMatchObject({ party: 'Party D · Madan', company: 'Madan' });
+    expect(merged[3]).toMatchObject({ party: 'Party C · Plasticizer', company: 'Plasticizer' });
+  });
+
+  it('an empty company (NKG) adds nothing and breaks nothing', () => {
+    const merged = mergeCompanyPayloads('/api/batches/recent', [
+      { code: '0007', data: [{ batchNo: '014/26-27', date: '2026-10-06', amount: 10, party: 'Party A' }] },
+      { code: '0010', data: [] },
+    ]) as unknown[];
+    expect(merged).toHaveLength(1);
+    expect(mergeCompanyPayloads('/api/batches/recent', [{ code: '0010', data: [] }])).toEqual([]);
+  });
+});
+

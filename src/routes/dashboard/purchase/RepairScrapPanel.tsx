@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatDate } from '../../../lib/utils/formatting';
 import { useNavigate } from 'react-router-dom';
+import { useUrlFilters } from '../../../lib/urlFilters';
+import { useUrlTable } from '../../../lib/urlTable';
+import { hereNow, withBack } from '../../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import { Wrench, Trash2, PackageCheck } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
@@ -23,6 +26,7 @@ import { statusText } from './maintenance/statusText';
 import { repairPending } from '../../../lib/store/repairReturn';
 import { cleanPartName } from '../../../lib/store/defectiveSplit';
 import type { Database } from '../../../lib/database.types';
+import { displayLocationName } from '../../../lib/plantLabels';
 
 type TicketRow = Database['public']['Tables']['maintenance_tickets']['Row'] & { plants?: { name: string | null } | null };
 type DefectivePartRow = Database['public']['Tables']['maintenance_defective_parts']['Row'];
@@ -65,7 +69,10 @@ export function RepairScrapPanel() {
   const [receipts, setReceipts] = useState<ReceiptRow[]>([]);
   const [allocs, setAllocs] = useState<AllocRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  // Search lives in the URL (?rsq=) so opening a ticket and coming back keeps it.
+  const urlSearch = useUrlFilters(['rsq'] as const);
+  const search = urlSearch.values.rsq;
+  const setSearch = (rsq: string) => urlSearch.set({ rsq });
   const [lightbox, setLightbox] = useState<LightboxImage[] | null>(null);
   const [returnItem, setReturnItem] = useState<PartItem | null>(null);
 
@@ -167,23 +174,26 @@ export function RepairScrapPanel() {
     );
   }
 
+  // Closing the ticket returns here (same tab, search and page).
+  const openTicket = (id: string) => navigate(withBack(`/dashboard/purchase/maint?ticket=${id}`, hereNow()));
+
   return (
     <div className="card2 p-6" style={{ marginTop: 20, position: 'relative' }}>
       <div className="text-base font-bold font-heading">{t('repairScrap.title', 'Repair & scrap tracking')}</div>
       <div className="text-xs text-slate-500 mb-3">{t('repairScrap.subtitle', 'Assets sent for repair or scrapped at the end of a maintenance job — with photo proof and a link to the ticket.')}</div>
       <TableSearch value={search} onChange={setSearch} placeholder={t('repairScrap.searchPh', 'Search equipment, plant, ticket…')} />
-      <RepairScrapTable variant="repair" title={t('repairScrap.repairItems', 'Repair items')} tone="amber" icon={<Wrench size={14} />} rows={repair}
+      <RepairScrapTable variant="repair" title={t('repairScrap.repairItems', 'Repair items')} tone="amber" icon={<Wrench size={14} />} rows={repair} urlPrefix="rp" ready={!loading} resetKey={search}
         canReturn={canReturn} onReturn={setReturnItem}
-        onOpenTicket={id => navigate(`/dashboard/purchase/maint?ticket=${id}`)} onPhoto={setLightbox} />
+        onOpenTicket={openTicket} onPhoto={setLightbox} />
       <div style={{ height: 20 }} />
-      <RepairScrapTable variant="scrap" title={t('repairScrap.scrapItems', 'Scrap items')} tone="red" icon={<Trash2 size={14} />} rows={scrap}
+      <RepairScrapTable variant="scrap" title={t('repairScrap.scrapItems', 'Scrap items')} tone="red" icon={<Trash2 size={14} />} rows={scrap} urlPrefix="sc" ready={!loading} resetKey={search}
         canReturn={false} onReturn={() => {}}
-        onOpenTicket={id => navigate(`/dashboard/purchase/maint?ticket=${id}`)} onPhoto={setLightbox} />
+        onOpenTicket={openTicket} onPhoto={setLightbox} />
       {receipts.length > 0 && (
         <>
           <div style={{ height: 20 }} />
           <ReturnHistory receipts={receipts} allocs={allocs} canReverse={canReverse}
-            onReversed={() => { load(); }} onOpenTicket={id => navigate(`/dashboard/purchase/maint?ticket=${id}`)}
+            onReversed={() => { load(); }} onOpenTicket={openTicket}
             toastError={m => toast.error(m)} toastOk={m => toast.success(m)} />
         </>
       )}
@@ -194,8 +204,13 @@ export function RepairScrapPanel() {
   );
 }
 
-function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onReturn, onOpenTicket, onPhoto }: {
+function RepairScrapTable({ variant, title, tone, icon, rows, urlPrefix, ready, resetKey, canReturn, onReturn, onOpenTicket, onPhoto }: {
   variant: 'repair' | 'scrap';
+  /** Keeps this table's page / sort in the URL apart from the other table's. */
+  urlPrefix: string;
+  ready: boolean;
+  /** The panel's search: a new search goes back to page 1 (a reload does not). */
+  resetKey: string;
   title: string;
   tone: 'amber' | 'red';
   icon: React.ReactNode;
@@ -207,6 +222,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
 }) {
   const { t } = useTranslation();
   const isRepair = variant === 'repair';
+  const url = useUrlTable({ key: 'closed', dir: 'desc' }, urlPrefix);
   const s = useSortable(rows, {
     part: i => i.part.part_name,
     equipment: i => i.ticket.equipment,
@@ -216,9 +232,11 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
     status: i => i.ticket.status,
     qty: i => (isRepair ? Number(i.part.repair_qty) : Number(i.part.scrap_qty)),
     ...(isRepair ? { pending: (i: PartItem) => partPending(i.part) } : {}),
-  }, { key: 'closed', dir: 'desc' });
-  // Rows arrive already filtered by the panel's search — a new row set goes back to page 1.
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${rows.length}|${s.sort.key}|${s.sort.dir}` });
+  }, url.sort, url.onSort);
+  // Rows arrive already filtered by the panel's search — a new search goes back
+  // to page 1. Keyed on the search, not rows.length: a reload after a return
+  // changed the length and threw the user off their page.
+  const { pageRows, controls } = usePagination(s.sorted, { resetKey: `${resetKey}|${s.sort.key}|${s.sort.dir}`, ...url.paging, ready });
   const iconSq = tone === 'amber' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600';
   const cols = isRepair ? 10 : 7;
   return (
@@ -257,7 +275,7 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                   <tr key={p.id} onClick={() => onOpenTicket(r.id)} style={{ cursor: 'pointer' }} title={t('repairScrap.openTicket', 'Open maintenance ticket')}>
                     <td className="font-semibold">{p.part_name}</td>
                     <td className="text-slate-500">{r.equipment}</td>
-                    <td className="text-slate-500">{r.plants?.name || '—'}</td>
+                    <td className="text-slate-500">{displayLocationName(r.plants?.name) || '—'}</td>
                     <td><span className="num text-xs text-blue-600 font-semibold">#{ticketNoLabel(r)}</span></td>
                     <td className="text-slate-500">{fmtDate(r.closed_at)}</td>
                     {!isRepair && <td className="num font-bold" style={{ color: '#DC2626' }}>{Number(p.scrap_qty)}</td>}
@@ -273,7 +291,10 @@ function RepairScrapTable({ variant, title, tone, icon, rows, canReturn, onRetur
                           label={t(`repairScrap.return_${rs}`, rs)} />
                       </td>
                     )}
-                    <td><StatusPill tone={r.status === 'closed' ? 'green' : 'slate'} label={statusText(r.status, t)} /></td>
+                    {/* A repair ticket is not "Closed" while repaired parts are still out. */}
+                    <td>{isRepair && r.status === 'closed' && pending > 0
+                      ? <StatusPill tone="amber" label={t('repairScrap.closedReturnPending', 'Closed · return pending')} />
+                      : <StatusPill tone={r.status === 'closed' ? 'green' : 'slate'} label={statusText(r.status, t)} />}</td>
                     <td>
                       {(p.photo_url || r.defective_part_photo_url) ? (
                         <button
@@ -324,7 +345,10 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
   toastOk: (m: string) => void;
 }) {
   const { t } = useTranslation();
-  const [search, setSearch] = useState('');
+  const urlSearch = useUrlFilters(['rhq'] as const);
+  const search = urlSearch.values.rhq;
+  const setSearch = (rhq: string) => urlSearch.set({ rhq });
+  const url = useUrlTable({ key: 'date', dir: 'desc' }, 'rh');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [reverseFor, setReverseFor] = useState<string | null>(null);
   const [reason, setReason] = useState('');
@@ -349,8 +373,8 @@ function ReturnHistory({ receipts, allocs, canReverse, onReversed, onOpenTicket,
     qty: r => (byReceipt.get(r.id) || []).reduce((sum, a) => sum + Number(a.qty), 0),
     by: r => r.actor_name,
     status: r => r.status,
-  }, { key: 'date', dir: 'desc' });
-  const { pageRows, controls } = usePagination(s.sorted, { initialPageSize: 10, resetKey: `${search}|${s.sort.key}|${s.sort.dir}` });
+  }, url.sort, url.onSort);
+  const { pageRows, controls } = usePagination(s.sorted, { resetKey: `${search}|${s.sort.key}|${s.sort.dir}`, ...url.paging });
 
   async function doReverse(receiptId: string) {
     if (!reason.trim()) { toastError(t('repairReturn.errReason', 'A reason is required to reverse a return.')); return; }

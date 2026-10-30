@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ShieldCheck, RefreshCw, Activity, Download, Cpu, Sparkles, Database, Check, Info, AlertCircle, AlertTriangle, Flame } from 'lucide-react';
 import { WorkCard, SectionCard, ButtonV2 } from '../../components/v2';
 import { SlidePanel } from '../../components/SlidePanel';
-import { useAnomalies } from '../../contexts/AnomalyContext';
+import { useAnomalyFindings } from '../../lib/anomaly/useAnomalyFindings';
 import { useExportFeatures } from '../../lib/anomaly/useAnomalies';
 import { AnomalyCard } from '../../components/anomaly/AnomalyCard';
 import { ProblemKpiGrid } from '../../components/anomaly/ProblemKpiGrid';
@@ -32,7 +32,8 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 export function AnomalyDashboard() {
   const { t } = useTranslation();
-  const { scan, findings, loading, error, refetch } = useAnomalies();
+  // This page shows the company picker, so it follows the picked company.
+  const { scan, findings, loading, error, refetch } = useAnomalyFindings();
   const exporter = useExportFeatures();
   const [selected, setSelected] = useState<AnomalyFinding | null>(null);
   const [tierModal, setTierModal] = useState<Level | null>(null);

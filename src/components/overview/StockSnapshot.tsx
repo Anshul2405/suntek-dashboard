@@ -32,7 +32,7 @@ export function StockSnapshot({ densities, locations, matrix, tanks, loaded, onO
             <div className="text-xs text-slate-500">{t('overview.cpmMatrixSub', 'Drums on hand, live · cell shading shows relative volume')}</div>
           </div>
           <button className="btn-outline pill px-3 py-2 text-xs font-semibold" onClick={onOpenStock}>
-            {t('overview.openStock', 'Open Stock')} →
+            {t('overview.openStock', 'Open CP drum stock')} →
           </button>
         </div>
         <div className="overflow-x-auto scroll-x">
@@ -83,7 +83,7 @@ export function StockSnapshot({ densities, locations, matrix, tanks, loaded, onO
       <div className="col-span-12 lg:col-span-5 card2 p-6" style={{ position: 'relative' }}>
         <KpiInfoButton info={{ title: 'Tank Levels', what: 'Current fill level of each raw material / output tank at port and factory locations. Red = low alert, orange = 30-70%, green = above 70%. Click any tank to open the full stock view.', source: 'Supabase', note: 'Live from the tanks table (migration 0002).' }} />
         <div className="text-base font-bold font-heading">{t('overview.tankLevelsTitle', 'Tank levels · port + factory')}</div>
-        <div className="text-xs text-slate-500 mb-4">{t('overview.tankLevelsSub', 'Click any tank to open full stock view')}</div>
+        <div className="text-xs text-slate-500 mb-4">{t('overview.tankLevelsSub', 'Click a tank to open CP drum stock')}</div>
         <div className="space-y-2.5">
           {tanks.map(tk => {
             const color = tk.alert ? '#DC2626' : tk.level_pct > 70 ? '#16A34A' : tk.level_pct > 30 ? '#F47651' : '#D97706';

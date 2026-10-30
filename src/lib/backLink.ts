@@ -12,6 +12,15 @@ export function hereForBack(loc: { pathname: string; search: string }): string {
   return loc.pathname + loc.search;
 }
 
+/**
+ * The screen as it is RIGHT NOW (live window URL). A list writes ?p= / ?sort=
+ * with replace; React's location from the last render can still be page 1 if
+ * the user clicks a row right after paging, so row clicks use this.
+ */
+export function hereNow(): string {
+  return window.location.pathname + window.location.search;
+}
+
 /** `route` with `back=<here>` appended. */
 export function withBack(route: string, here: string): string {
   return `${route}${route.includes('?') ? '&' : '?'}back=${encodeURIComponent(here)}`;

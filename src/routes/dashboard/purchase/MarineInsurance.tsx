@@ -4,7 +4,7 @@ import { supabase } from '../../../lib/supabase';
 import { insertRows } from '../../../lib/db';
 import { useMentionNotifier } from '../../../lib/mentions';
 import { useBlacklistGuard } from '../../../lib/blacklist/guard';
-import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
+import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter, PanelDateInput } from '../../../components/SlidePanel';
 import { KpiInfoButton } from '../../../components/KpiInfoButton';
 import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
@@ -14,7 +14,7 @@ import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../../components/v2';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday, istFyStartYear } from '../../../lib/utils/formatting';
 
 type Panel = 'topup' | 'ledger' | null;
 type LedgerRow = Database['public']['Tables']['marine_insurance']['Row'];
@@ -31,13 +31,15 @@ export function MarineInsurance() {
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({ amount: '', reference: '', date: today, mode: 'NEFT', notes: '' });
 
   async function load() {
     try {
       const { data, error } = await scopeQuery(supabase.from('marine_insurance').select('*'))
         .order('date', { ascending: false })
+        // Same-day entries: the last one entered carries the running balance.
+        .order('created_at', { ascending: false })
         .returns<LedgerRow[]>();
       if (error) throw error;
       setLedger(data || []);
@@ -53,6 +55,14 @@ export function MarineInsurance() {
   useEffect(() => { load(); }, [scopeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentBalance = ledger.length > 0 ? ledger[0].balance : 0;
+  // Every figure on the cards comes from the ledger (nothing typed into the page).
+  const fyStart = `${istFyStartYear(istToday())}-04-01`;
+  const monthStart = `${istToday().slice(0, 7)}-01`;
+  const topUpsFy = ledger.filter(l => l.type === 'top_up' && l.date >= fyStart);
+  const lastTopUp = topUpsFy.reduce<string | null>((d, l) => (!d || l.date > d ? l.date : d), null);
+  const deductionsMtd = ledger.filter(l => l.type === 'deduction' && l.date >= monthStart);
+  const avgDeduction = deductionsMtd.length ? deductionsMtd.reduce((sum, l) => sum + Math.abs(Number(l.amount)), 0) / deductionsMtd.length : null;
+  const belowThreshold = ledger.length > 0 && currentBalance < 1;
 
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -119,8 +129,7 @@ export function MarineInsurance() {
             <div>
               <div className="text-xs text-slate-500 mb-1">{t('marine.balanceLabel')}</div>
               <div className="text-3xl font-extrabold num">
-                ₹ {currentBalance.toFixed(2)} Cr{' '}
-                <span className="text-base font-medium text-slate-400">/ ₹10 Cr</span>
+                {ledger.length ? `₹ ${currentBalance.toFixed(2)} Cr` : '—'}
               </div>
             </div>
             <div className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center">
@@ -129,10 +138,12 @@ export function MarineInsurance() {
               </svg>
             </div>
           </div>
-          <div className="progress mt-3 mb-1"><div style={{ width: '95%' }}></div></div>
-          <div className="flex items-center justify-between text-xs text-slate-500 mb-3">
+          <div className="flex items-center justify-between text-xs text-slate-500 mt-3 mb-3">
             <span>{t('marine.threshold')} ₹1 Cr</span>
-            <span className="font-semibold text-slate-700">95% {t('marine.remaining')}</span>
+            <span className={`font-semibold ${belowThreshold ? 'text-red-600' : 'text-slate-700'}`}>
+              {!ledger.length ? t('marine.noLedgerYet', 'No ledger entries yet')
+                : belowThreshold ? t('marine.belowThreshold', 'Below the ₹1 Cr top-up line') : t('marine.aboveThreshold', 'Above the ₹1 Cr top-up line')}
+            </span>
           </div>
           <div className="font-semibold text-sm">{t('marine.autoDeductLive')}</div>
           <div className="text-xs text-slate-500 mb-3">
@@ -150,14 +161,14 @@ export function MarineInsurance() {
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Marine Insurance Top-ups FY', what: 'Number of times the marine insurance prepaid balance has been topped up during the current financial year. Frequent top-ups may indicate high dispatch volume or underestimated policy size.', source: 'Form entry', formLabel: 'Top-up form', formPath: '/dashboard/purchase/marine' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('marine.topUpsThisFy')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">2</div>
-          <div className="text-[11px] text-slate-500 mt-1">{t('marine.lastOn')} 18 Mar</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : topUpsFy.length}</div>
+          <div className="text-[11px] text-slate-500 mt-1">{lastTopUp ? `${t('marine.lastOn')} ${formatDate(lastTopUp)}` : t('marine.noTopUpsFy', 'No top-ups this FY')}</div>
         </div>
         <div className="col-span-12 lg:col-span-3 card p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Avg Deduction per Dispatch', what: 'Average marine insurance amount deducted for each supplier dispatch this month. Calculated from total MTD deductions divided by dispatch count. Reflects average shipment insured value.', source: 'Form entry', formLabel: 'Dispatch log (auto-deduct)', formPath: '/dashboard/purchase/marine', note: 'Deductions come from MARINE_LEDGER entries with type "deduct".' }} />
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('marine.avgDeductionDispatch')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num">₹ 16 L</div>
-          <div className="text-[11px] text-slate-500 mt-1">{t('marine.dispatchesMtd', { count: 31 })}</div>
+          <div className="text-[28px] font-extrabold mt-1 num">{loading ? '…' : avgDeduction != null ? `₹ ${avgDeduction.toFixed(2)} Cr` : '—'}</div>
+          <div className="text-[11px] text-slate-500 mt-1">{deductionsMtd.length ? t('marine.dispatchesMtd', { count: deductionsMtd.length }) : t('marine.noDeductionsMtd', 'No deductions this month')}</div>
         </div>
       </div>
 
@@ -235,7 +246,7 @@ export function MarineInsurance() {
         </PanelRow>
 
         <PanelField label={t('marine.dateLabel')}>
-          <PanelInput type="date" value={form.date} onChange={e => set('date', e.target.value)} />
+          <PanelDateInput value={form.date} onChange={e => set('date', e.target.value)} />
         </PanelField>
 
         <PanelField label={t('marine.notesLabel')}>

@@ -746,7 +746,7 @@
 
   .ops-kpi-rail {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0;
     background: #fff;
     border: 1px solid var(--border);
@@ -858,6 +858,8 @@
   table.dt2 tbody tr:is([style*="cursor: pointer"], .cursor-pointer, [data-clickable]):hover { background: #F1F5F9; }
   table.dt2 tbody tr:last-child td { border-bottom: none; }
   table.dt2 .num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* A dense money table (Payments): one line per row on a laptop. */
+  table.dt2.dt2-tight thead th, table.dt2.dt2-tight tbody td { padding: 10px 8px; }
 
   /* ── App shell — wires the (previously dead) --sidebar-width var.
      The collapsed value only applies md+; below md the sidebar is a
@@ -947,4 +949,74 @@ html[lang="hi"] .sidebar-v2 .nav-link { line-height: 1.45; }
     outline: 2px solid #EA580C;
     outline-offset: 1px;
   }
+}
+
+/* ── User Management only: Busy's Modify User look (dense, boxed, tree, Y/N, Save/Quit).
+      Our slate / navy palette — not Busy purple, not a new theme for the ERP. ── */
+.bz { font-size: 12.5px; color: #0F172A; }
+.bz-box { background: #fff; border: 1px solid #94A3B8; border-radius: 3px; min-width: 0; }
+.bz-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 5px 8px; background: #DDE5EE; border-bottom: 1px solid #94A3B8;
+  font-weight: 700; font-size: 12px; letter-spacing: .01em;
+}
+.bz-title { background: #0F172A; color: #fff; padding: 6px 10px; font-weight: 700; font-size: 13px; border-radius: 3px 3px 0 0; }
+.bz-body { padding: 6px 8px; }
+.bz-field { display: grid; grid-template-columns: 128px minmax(0, 1fr); align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px dotted #CBD5E1; }
+.bz-field > span:first-child { color: #334155; font-weight: 600; }
+.bz-in {
+  height: 26px; width: 100%; min-width: 0; border: 1px solid #94A3B8; border-radius: 2px;
+  padding: 0 6px; font-size: 12.5px; background: #fff; font-family: inherit;
+}
+.bz-in:focus { outline: none; background: #FEF9C3; border-color: #0F172A; }
+.bz-in:disabled { background: #F1F5F9; color: #94A3B8; }
+textarea.bz-in { height: 46px; padding: 4px 6px; resize: vertical; }
+.bz-yn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; }
+.bz-yn-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; border-bottom: 1px dotted #CBD5E1; min-width: 0; }
+.bz-yn-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bz-yn {
+  flex: none; width: 30px; height: 22px; border: 1px solid #94A3B8; border-radius: 2px; background: #fff;
+  font-weight: 800; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.bz-yn[aria-checked="true"] { color: #15803D; }
+.bz-yn[aria-checked="false"] { color: #B91C1C; }
+.bz-yn:disabled { cursor: default; background: #F1F5F9; }
+.bz-btn {
+  height: 28px; padding: 0 14px; border: 1px solid #475569; border-radius: 3px; background: #F1F5F9;
+  font-weight: 700; font-size: 12.5px; cursor: pointer; font-family: inherit; color: #0F172A; white-space: nowrap;
+}
+.bz-btn:hover { background: #E2E8F0; }
+.bz-btn:disabled { opacity: .5; cursor: not-allowed; }
+.bz-btn-primary { background: #0F172A; color: #fff; border-color: #0F172A; }
+.bz-btn-primary:hover { background: #1E293B; }
+.bz-btn-danger { color: #B91C1C; border-color: #FCA5A5; background: #FEF2F2; }
+.bz-tag { font-size: 10px; font-weight: 800; padding: 0 4px; border-radius: 2px; border: 1px solid currentColor; line-height: 14px; }
+.bz-list { width: 100%; border-collapse: collapse; }
+.bz-list th { background: #DDE5EE; border: 1px solid #94A3B8; padding: 4px 6px; text-align: left; font-size: 11.5px; white-space: nowrap; }
+.bz-list td { border: 1px solid #CBD5E1; padding: 4px 6px; white-space: nowrap; }
+.bz-list tbody tr { cursor: pointer; }
+.bz-list tbody tr:hover td { background: #FEF9C3; }
+.bz-tree { list-style: none; margin: 0; padding: 0; }
+.bz-tree ul { list-style: none; margin: 0; padding-left: 18px; border-left: 1px dotted #94A3B8; margin-left: 6px; }
+.bz-tree-row { display: flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 2px; }
+.bz-tree-row:hover { background: #F1F5F9; }
+.bz-tree-row input[type="checkbox"] { width: 14px; height: 14px; margin: 0; flex: none; accent-color: #0F172A; }
+.bz-pm {
+  flex: none; width: 13px; height: 13px; border: 1px solid #64748B; background: #fff; border-radius: 1px;
+  font-size: 11px; line-height: 10px; font-weight: 700; padding: 0; cursor: pointer; color: #0F172A; font-family: inherit;
+}
+.bz-pm-sp { flex: none; width: 13px; }
+@media (max-width: 640px) {
+  .bz { font-size: 14px; }
+  .bz-field { grid-template-columns: 1fr; gap: 2px; padding: 6px 0; }
+  .bz-in { height: 44px; font-size: 16px; }
+  .bz-yn-grid { grid-template-columns: 1fr; }
+  .bz-yn-row { min-height: 44px; }
+  .bz-yn { width: 52px; height: 40px; font-size: 15px; }
+  .bz-btn { min-height: 44px; }
+  .bz-tree-row { min-height: 44px; }
+  .bz-tree-row input[type="checkbox"] { width: 22px; height: 22px; }
+  .bz-pm { width: 30px; height: 30px; font-size: 16px; line-height: 26px; }
+  .bz-pm-sp { width: 30px; }
+  .bz-list td, .bz-list th { padding: 10px 6px; }
 }

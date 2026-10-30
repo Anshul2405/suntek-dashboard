@@ -9,14 +9,15 @@ import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { ensureLateApproval, useOpsSettings, loadMyLateRequests, type LateRequest } from '../../../lib/opsControls';
-import { billBufferDays } from '../../../lib/datePolicy';
+import { backDaysFor } from '../../../lib/access/rights';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { normalizeUnit, UNIT_OPTIONS } from '../../../lib/store/parseStockFile';
 import { parseBill, matchCandidates, type ParsedBill, type StockLite } from '../../../lib/store/purchaseParse';
 import { reconcileBillAmount } from '../../../lib/nvidiaOcr';
 import { normalizeGstin, isValidGstin } from '../../../lib/utils/gst';
 import { ProgressBar, useFakeProgress } from '../../../components/ui/ProgressBar';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday } from '../../../lib/utils/formatting';
+import { DateInput } from '../../../components/ui/DateInput';
 
 type StockItem = StockLite & { plant_id: string | null };
 type Plant = { id: string; name: string };
@@ -32,12 +33,6 @@ interface Line {
 
 let seq = 0;
 const nextKey = () => `l${++seq}`;
-
-/** Local calendar date as YYYY-MM-DD (never toISOString — that shifts IST past midnight). */
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 /** Self-contained purchase → stock modal. Drops into any tab; loads its own
  *  plants + stock (plant-scoped) so callers only wire open/onClose/onApplied.
@@ -77,7 +72,7 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
   const [amount, setAmount] = useState('');           // total bill amount (₹)
   const [gstNo, setGstNo] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
-  const [purchaseDate, setPurchaseDate] = useState(localToday());
+  const [purchaseDate, setPurchaseDate] = useState(istToday());
   const [notes, setNotes] = useState('');
   const [knownVendors, setKnownVendors] = useState<string[]>([]);
   const [dupInvoice, setDupInvoice] = useState(false);
@@ -143,7 +138,7 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
     setMode('choose'); setStage('choose'); setLines([]); setBill(null);
     setCloudUrl(null); setFileName(''); setErr(null); setFieldErr(null); setAppliedCount(0);
     setVendor(''); setAmount(''); setGstNo(''); setInvoiceNo(''); setNotes('');
-    setPurchaseDate(localToday()); setDupInvoice(false);
+    setPurchaseDate(istToday()); setDupInvoice(false);
     setReceiptId(crypto.randomUUID());
   }
   function close() { reset(); onClose(); }
@@ -238,7 +233,8 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
       module: 'purchase',
       entryDate: purchaseDate,
       profile: activeProfile,
-      bufferDays: billBufferDays([plantId], ops.bufferDaysByPlant, ops.bufferDays),
+      // Back-date limit for purchases (User Management), plant number on top.
+      bufferDays: backDaysFor(ops, 'purchase', [plantId]),
     });
     if (!allowed) {
       setFieldErr(t('addPurchase.lateBlocked', 'Not saved. This bill date is older than allowed. A request has gone to Management; once approved, open Add purchase again and use the same date.'));
@@ -406,7 +402,7 @@ export function AddPurchaseModal({ open, onClose, onApplied, initialPlantId }: {
                 </div>
                 <div>
                   <div style={label}>{t('addPurchase.date', 'Purchase date')}</div>
-                  <input type="date" value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)} style={{ ...inputStyle, width: '100%' }} />
+                  <DateInput block value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)} style={{ ...inputStyle, width: '100%' }} />
                 </div>
                 <div>
                   <div style={label}>{t('addPurchase.notes', 'Notes (optional)')}</div>

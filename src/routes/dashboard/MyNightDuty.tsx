@@ -9,7 +9,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { uploadCheckinPhoto } from '../../lib/cloudinary';
 import { validateGeofence } from '../../lib/algorithms/geofencing';
 import { CameraCapture } from '../../components/CameraCapture';
-import { formatDate, formatTime } from '../../lib/utils/formatting';
+import { formatDate, formatTime, istToday, istDayKey } from '../../lib/utils/formatting';
 
 /**
  * The technician's own night-duty view + check-in. Shows the duties assigned to
@@ -72,10 +72,11 @@ export function MyNightDuty({ showEmpty = false }: { showEmpty?: boolean }) {
       acctId = me?.[0]?.id ?? null;
     }
     setMyAccountId(acctId);
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    // IST yesterday — the browser's own date could be a day off.
+    const yesterdayKey = istDayKey(new Date(Date.now() - 86_400_000));
     const [{ data: dutyRows }, { data: plantRows }] = await Promise.all([
       acctId
-        ? supabase.from('night_duty').select('id, duty_date, status, plant_id, assigned_by, checked_in_at, shift_log_id').eq('technician_id', acctId).gte('duty_date', iso(yesterday)).order('duty_date').returns<Duty[]>()
+        ? supabase.from('night_duty').select('id, duty_date, status, plant_id, assigned_by, checked_in_at, shift_log_id').eq('technician_id', acctId).gte('duty_date', yesterdayKey).order('duty_date').returns<Duty[]>()
         : Promise.resolve({ data: [] as Duty[] }),
       fetchActivePlants<Plant>('id, name, lat, lng, geofence_radius_m'),
     ]);
@@ -136,7 +137,7 @@ export function MyNightDuty({ showEmpty = false }: { showEmpty?: boolean }) {
     } finally { setBusy(null); }
   }
 
-  const today = iso(new Date());
+  const today = istToday(); // IST day, not the browser's
   const visible = useMemo(() => duties.filter(d => d.duty_date >= today || d.status === 'checked_in'), [duties, today]);
   const bookedByDate = useMemo(() => Object.fromEntries(duties.map(d => [d.duty_date, d])), [duties]);
   const monthGrid = useMemo(() => {

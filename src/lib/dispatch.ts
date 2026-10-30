@@ -12,6 +12,8 @@
  * never written here — they are followed on their ticket.
  */
 import type { Database } from './database.types';
+import { isValidIfsc } from './validate/ifsc';
+import { vehicleNoForSave } from './validate/vehicleNo';
 
 export type DispatchRow = Database['public']['Tables']['dispatch_logs']['Row'];
 
@@ -66,4 +68,63 @@ export function placesOrFilter(places: string[]): string {
 export function canReceive(row: Pick<DispatchRow, 'destination' | 'receive_date'>, myPlaces: Set<string>, admin: boolean): boolean {
   if (!isInTransit(row)) return false;
   return admin || (!!row.destination && myPlaces.has(row.destination));
+}
+
+/** Purchaser bill URL kept in remarks until a dedicated column exists. */
+export function billUrlFromRemarks(remarks: string | null | undefined): string | null {
+  const m = /(https?:\/\/[^\s]+)/i.exec(remarks || '');
+  return m?.[1] ?? null;
+}
+
+export function withBillRemark(remarks: string, url: string): string {
+  const base = remarks.trim();
+  return base ? `${base} · bill ${url}` : `bill ${url}`;
+}
+
+// ── New dispatch form (pure, so the rules are tested without a browser) ──────
+
+/** The fields of New dispatch that matter for order and saving. */
+export interface DispatchFormInput {
+  kind: 'item' | 'part';
+  company: string;
+  payee: string;
+  manual: boolean;
+  exceptionReason: string;
+  ifsc: string;
+  destination: string;
+  date: string;
+  item: string;
+  sender: string;
+  from: string;
+  vehicle_no: string;
+  supplier: string;
+}
+
+/**
+ * The order the form asks for things. Busy company + payee only once migration
+ * 0042 is applied (payeeLive); before that the form is today's.
+ */
+export function dispatchFieldOrder(payeeLive: boolean): string[] {
+  return payeeLive
+    ? ['company', 'from', 'destination', 'payee', 'date', 'item', 'vehicle', 'sender', 'receiver', 'remarks']
+    : ['from', 'destination', 'date', 'item', 'vehicle', 'sender', 'receiver', 'remarks'];
+}
+
+/** Why New dispatch cannot be saved yet ([] = it can). Future dates are fine. */
+export function dispatchSaveProblems(f: DispatchFormInput, opts: { payeeLive: boolean; hasBill: boolean }): string[] {
+  const out: string[] = [];
+  if (opts.payeeLive) {
+    if (!f.company) out.push('company');
+    if (!f.payee.trim()) out.push('payee');
+    if (f.manual && !f.exceptionReason.trim()) out.push('exceptionReason');
+    if (f.ifsc.trim() && !isValidIfsc(f.ifsc)) out.push('ifsc');
+  }
+  if (vehicleNoForSave(f.vehicle_no) === null) out.push('vehicle');
+  if (!f.from) out.push('from');
+  if (!f.destination || f.destination === f.from) out.push('destination');
+  if (!f.date) out.push('date');
+  if (!f.item.trim()) out.push('item');
+  if (!f.sender.trim()) out.push('sender');
+  if (f.kind === 'part' && (!f.supplier.trim() || !opts.hasBill)) out.push('supplier');
+  return out;
 }

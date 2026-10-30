@@ -46,6 +46,8 @@ export interface MockProfile {
   homeRoute: string;
   /** Exact dashboard routes this profile can access. ['*'] = all. */
   allowedDashboardRoutes: string[];
+  /** Every role this person holds (multi-role), for role ticks in Access rights. */
+  roleIds?: string[];
   /** True = no dashboard at all, uses a standalone app */
   standaloneOnly: boolean;
   accessNote?: string;

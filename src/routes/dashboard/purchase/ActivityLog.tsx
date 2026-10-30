@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { patchUrlParams } from '../../../lib/urlParams';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { hereNow, withBack } from '../../../lib/backLink';
+import { displayEquipName, searchFold } from '../../../lib/far/equipName';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
 import { insertRows, updateRows } from '../../../lib/db';
-import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
+import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, OcrUpload, PanelFooter, PanelDateInput } from '../../../components/SlidePanel';
 import { KpiInfoButton } from '../../../components/KpiInfoButton';
 import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState, EmptyState } from '../../../components/ui/states';
@@ -26,10 +28,14 @@ import type { Database } from '../../../lib/database.types';
 import { ticketNoLabel } from '../../../lib/ticketNo';
 import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
 import { Building2, Factory, Layers, MapPin, Plus } from 'lucide-react';
-import { formatDate, inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange, istToday } from '../../../lib/utils/formatting';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
+import { activityTarget, matchStockReceipt, type StockReceiptHint } from '../../../lib/activityLinks';
+import { profileCanAccess } from '../../../lib/profiles';
+import { useRights } from '../../../lib/access/useRights';
+import { ensureLateApproval } from '../../../lib/opsControls';
 
 type Tables = Database['public']['Tables'];
 type PlantRel = { plants?: { name: string | null } | null };
@@ -48,6 +54,10 @@ const STORE_REQ_FEED_SELECT = 'id, ticket_id, part_name, supplier_name, busy_tra
 type UnifiedRow = {
   key: string;
   equipment: string;
+  /** Free-text note saved with the row (+ Log activity notes, stock "old → new"). */
+  note?: string | null;
+  /** Sort instant for the Date column; manual entries sit at the end of their day. */
+  sortAt?: number;
   type: string;            // event kind / activity type
   date: string;            // ISO or YYYY-MM-DD
   doneBy: string | null;
@@ -60,6 +70,14 @@ type UnifiedRow = {
   ticketId?: string | null;
   /** A deletion / reversal kept in the log: shaded and labelled, never hidden. */
   deleted?: boolean;
+  /** Raw activity_logs type (stock_purchase, regular…) for the click target. */
+  kind?: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  /** Purchase receipt saved in the same transaction as a stock_purchase row. */
+  receiptId?: string | null;
+  /** Ticket of the defective parts decided in the same transaction. */
+  defectiveTicketId?: string | null;
 };
 
 const MANUAL_TYPE_KEYS: Record<string, string> = {
@@ -71,18 +89,33 @@ const MANUAL_TYPE_KEYS: Record<string, string> = {
  *  deletions/reversals marked. */
 const SYSTEM_TYPE_KEYS: Record<string, [string, string]> = {
   stock_purchase: ['activity.sysStockPurchase', 'Stock purchase added'],
+  dispatch: ['activity.sysDispatch', 'Dispatch saved'],
+  payment: ['activity.sysPayment', 'Payment entered'],
   stock_anomaly: ['activity.sysStockAnomaly', 'Stock anomaly resolved'],
   repair_return: ['activity.sysRepairReturn', 'Repaired part returned'],
   repair_return_reversed: ['activity.sysRepairReturnReversed', 'Repair return reversed (deleted)'],
   defective_disposition: ['activity.sysDefective', 'Defective part decided'],
   import_deleted: ['activity.sysImportDeleted', 'Upload deleted'],
-};
-/** Labels only for other app-written types, so the feed never shows a slug.
- *  Kept out of SYSTEM_TYPE_KEYS: that map also decides source/verification. */
-const OTHER_TYPE_LABELS: Record<string, [string, string]> = {
+  // Written by the app, not typed by a person: never asks for verification.
   stock_edit: ['activity.typeStockEdit', 'Stock item edited'],
   stock_delete: ['activity.typeStockDelete', 'Stock item deleted'],
   stock_check_override: ['activity.typeStockCheckOverride', 'Store check overridden'],
+  ticket_deleted: ['activity.sysTicketDeleted', 'Maintenance ticket deleted'],
+  batch_sheet_deleted: ['activity.sysBatchSheetDeleted', 'Batch sheet deleted'],
+};
+/** Labels only for other app-written types, so the feed never shows a slug.
+ *  Kept out of SYSTEM_TYPE_KEYS: that map also decides source/verification. */
+const OTHER_TYPE_LABELS: Record<string, [string, string]> = {};
+/** An unknown type still reads as words, never as a slug. */
+const humanizeType = (s: string | null | undefined) =>
+  (s || '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+/** End of the IST day of a yyyy-mm-dd, plus a sub-millisecond nudge by entry
+ *  time, so a + Log activity row stays above that day's timed events and the
+ *  newest manual entry is first — after a refresh too. */
+const manualSortAt = (day: string, createdAt: string | null | undefined) => {
+  const start = Date.parse(`${(day || '').slice(0, 10)}T00:00:00+05:30`);
+  if (!Number.isFinite(start)) return toMs(createdAt);
+  return start + 86_399_000 + (createdAt ? Date.parse(createdAt) / 1e12 : 0);
 };
 const ticketRef = (tk: { id: string; ticket_no?: string | number | null }) => ticketNoLabel(tk);
 /** Build a lightbox image list from [url, label] pairs, dropping empties. */
@@ -111,7 +144,7 @@ function PicBadge({ photos, onOpen }: { photos: LightboxImage[]; onOpen: () => v
       type="button"
       className="pic-badge"
       title={t('activity.viewNPhotos', { defaultValue: 'View {{count}} photo(s)', count: photos.length })}
-      onClick={onOpen}
+      onClick={e => { e.stopPropagation(); onOpen(); }}
       style={{ cursor: 'pointer', border: 'none', background: 'none', padding: 0, color: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 2 }}
     >
       <CameraSvg />
@@ -341,7 +374,6 @@ function ActivityRoleAccessCard() {
 export function ActivityLog() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const location = useLocation();
   // The entry just saved through + Log activity: pinned to the top and
   // highlighted until the page is left (its date may sort it lower otherwise).
   const [justAdded, setJustAdded] = useState<string | null>(null);
@@ -349,6 +381,8 @@ export function ActivityLog() {
   const toast = useToast();
   const people = useDirectory();
   const { activeProfile } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks (and Purchase-book tabs).
+  const rights = useRights();
   const { scopeQuery, allowedPlants, ready: scopeReady, locations, allowedUnits } = usePlantScope();
   const { addNotification } = useNotifications();
   const screenBlacklist = useBlacklistGuard();
@@ -377,23 +411,47 @@ export function ActivityLog() {
   }
   const setSearch = (v: string) => patchParams({ q: v });
   const setPlantFilter = (v: string) => patchParams({ plant: v });
-  const setKpi = (v: 'all' | 'verified' | 'pending' | 'photo' | 'maint') => patchParams({ kpi: v === 'all' ? '' : v });
+  // A KPI card counts every row (no search / place / date filter), so clicking
+  // it clears those too — the list then holds exactly the number on the card.
+  const setKpi = (v: 'all' | 'verified' | 'pending' | 'photo' | 'maint') =>
+    patchParams({ kpi: v === 'all' ? '' : v, q: '', plant: '', src: '', state: '', unit: '', from: '', to: '', p: '' });
   const setFromTo = (from: string, to: string) => patchParams({ from, to });
+  const [incidentsError, setIncidentsError] = useState<string | null>(null);
+  // Purchase receipts: invoice · vendor in the log note, else nearest at that plant.
+  const [receipts, setReceipts] = useState<StockReceiptHint[]>([]);
+  // Defective parts by created_at → their ticket (same transaction as the row).
+  const [defectAt, setDefectAt] = useState<Map<number, string>>(new Map());
+  const [detail, setDetail] = useState<UnifiedRow | null>(null);
   const [incidents, setIncidents] = useState<{ id: string; what_text: string; who_text: string | null; occurred_at: string; reported_by: string | null; plants?: { name: string } | null }[]>([]);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({ equipment: '', type: 'Regular', date: today, doneBy: '', verifiedBy: '', plant: '', notes: '' });
 
   async function load() {
     // Paint on the manual log + the first 1000 tickets; later ticket pages, the
     // parts milestones (store requests) and incidents fill in after. KPI totals
     // show … until everything is in (complete), so they never show a partial sum.
+    // A reload (scope settled, + Log saved) refills the list from the start, so
+    // the restored page must not be clamped against the half-filled set again.
+    setComplete(false);
     let logsIn = false;
     let firstTicketsIn = false;
     const paintIfReady = () => { if (logsIn && firstTicketsIn) setLoading(false); };
     try {
       const db = supabase as unknown as { from: (table: string) => any };
-      const incidentsP = Promise.resolve(scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plants(name)')).order('occurred_at', { ascending: false }))
-        .then(({ data }: { data: typeof incidents | null }) => setIncidents(data || []), () => setIncidents([]));
+      // Incidents: plant-scoped like everything else (an incident saved with no
+      // plant is visible to all-plants users only). A failed read is shown, not
+      // swallowed into an empty list.
+      const incidentsP = withEmbedFallback(
+        scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plant_id, plants(name)')).order('occurred_at', { ascending: false }),
+        () => scopeQuery(db.from('incident_reports').select('id, what_text, who_text, occurred_at, reported_by, plant_id')).order('occurred_at', { ascending: false }),
+        'ActivityLog.incidents',
+      ).then(
+        ({ data, error }) => {
+          setIncidents((data as typeof incidents | null) || []);
+          setIncidentsError(error ? (error.message || 'error') : null);
+        },
+        (e: unknown) => { setIncidents([]); setIncidentsError(e instanceof Error ? e.message : String(e)); },
+      );
       const logsP = withEmbedFallback(
         scopeQuery(supabase.from('activity_logs').select('*, plants(name)')).order('date', { ascending: false }).returns<ActivityRow[]>(),
         () => scopeQuery(supabase.from('activity_logs').select('*')).order('date', { ascending: false }).returns<ActivityRow[]>(),
@@ -430,6 +488,12 @@ export function ActivityLog() {
         setStoreReqs([]);
       }
       await incidentsP;
+      const rc = await fetchAllRows<StockReceiptHint>((from, to) =>
+        scopeQuery(db.from('stock_purchase_receipts').select('id, plant_id, created_at, invoice_no, vendor_name')).order('created_at', { ascending: false }).range(from, to));
+      setReceipts(rc.data || []);
+      const dp = await fetchAllRows<{ ticket_id: string | null; created_at: string }>((from, to) =>
+        db.from('maintenance_defective_parts').select('ticket_id, created_at').order('created_at', { ascending: false }).range(from, to));
+      setDefectAt(new Map((dp.data || []).filter(d => d.ticket_id).map(d => [toMs(d.created_at), d.ticket_id as string] as const)));
       setLoadError(false);
     } catch (err) {
       console.error('[ActivityLog] load failed', err);
@@ -451,8 +515,10 @@ export function ActivityLog() {
       key: a.id || `manual-${i}`,
       equipment: a.equipment || '—',
       // Saved lower-case ('regular'); show the same label the form offers.
-      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : OTHER_TYPE_LABELS[kind] ? t(OTHER_TYPE_LABELS[kind][0], OTHER_TYPE_LABELS[kind][1]) : a.type,
+      type: sys ? t(sys[0], sys[1]) : MANUAL_TYPE_KEYS[kind] ? t(MANUAL_TYPE_KEYS[kind]) : OTHER_TYPE_LABELS[kind] ? t(OTHER_TYPE_LABELS[kind][0], OTHER_TYPE_LABELS[kind][1]) : humanizeType(a.type),
       date: a.date,
+      note: a.note ?? null,
+      sortAt: sys ? toMs(a.created_at || a.date) : manualSortAt(a.date, a.created_at),
       doneBy: a.done_by,
       verifiedBy: sys ? null : a.verified_by,
       plant: a.plants?.name ?? null,
@@ -462,6 +528,13 @@ export function ActivityLog() {
       ticketId: null,
       source: sys ? 'system' as const : 'manual' as const,
       deleted: kind === 'import_deleted' || kind === 'repair_return_reversed' || /delet/.test(kind),
+      kind,
+      entityType: a.entity_type ?? null,
+      entityId: a.entity_id ?? null,
+      receiptId: kind === 'stock_purchase'
+        ? (a.entity_type === 'stock_receipt' && a.entity_id ? a.entity_id : matchStockReceipt(a.plant_id, a.created_at, a.note, receipts))
+        : null,
+      defectiveTicketId: kind === 'defective_disposition' ? defectAt.get(toMs(a.created_at)) ?? null : null,
       };
     });
     const derived = deriveMaintenanceEvents(tickets, storeReqs, t);
@@ -485,7 +558,7 @@ export function ActivityLog() {
       if (b.source === 'manual' && a.source !== 'manual') return 1;
       return toMs(b.date) - toMs(a.date);
     });
-  }, [logs, tickets, storeReqs, incidents, showManualOnly, t]);
+  }, [logs, tickets, storeReqs, incidents, showManualOnly, t, receipts, defectAt]);
 
   const fromMaintenance = rows.filter(r => r.source === 'maintenance').length;
   const verified = rows.filter(r => r.source === 'manual' && r.verifiedBy).length;
@@ -521,7 +594,7 @@ export function ActivityLog() {
 
   // Search + plant filter, then paginate — Activity Log grows unbounded over time.
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = searchFold(search.trim());
     return rows.filter(r =>
       (!plantFilter || r.plant === plantFilter) &&
       (!srcFilter || r.source === srcFilter) &&
@@ -533,14 +606,14 @@ export function ActivityLog() {
         || (kpi === 'pending' && r.source === 'manual' && !r.verifiedBy)
         || (kpi === 'photo' && r.hasPhoto)
         || (kpi === 'maint' && r.source === 'maintenance')) &&
-      (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef].some(f => (f || '').toLowerCase().includes(q))),
+      (!q || [r.equipment, r.type, r.doneBy, r.verifiedBy, r.plant, r.ticketRef].some(f => searchFold(f).includes(q))),
     );
   }, [rows, search, plantFilter, fromDate, toDate, kpi, srcFilter, stateFilter, unitFilter, stateOfPlant, unitByTicket]);
   const actSort = useSortable(filtered, {
     equipment: r => r.equipment,
     activity: r => r.type,
     ticket: r => r.ticketRef,
-    date: r => new Date(r.date),
+    date: r => r.sortAt ?? toMs(r.date),
     doneBy: r => r.doneBy,
     verifiedBy: r => r.verifiedBy,
     plant: r => r.plant,
@@ -565,6 +638,8 @@ export function ActivityLog() {
     // Page and page size survive Back/Cancel through the URL (?p=&ps=).
     initialPage: Number(searchParams.get('p')) || 1,
     initialPageSize: Number(searchParams.get('ps')) || 10,
+    // Manuals paint first; clamping against that short list dumped page 3 to 1.
+    ready: complete,
     onChange: (page, size) => {
       const p = page > 1 ? String(page) : '';
       const ps = size !== 10 ? String(size) : '';
@@ -575,8 +650,15 @@ export function ActivityLog() {
   function set(k: string, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   async function handleSave() {
-    if (!form.equipment.trim() || !form.doneBy.trim()) return;
+    // A red / empty date box blocks the save (never the previous day behind it).
+    if (!form.equipment.trim() || !form.doneBy.trim() || !form.date) return;
     const plant = plantOptions.find(p => p.id === form.plant) || allowedPlants.find(p => p.id === form.plant);
+    // Back-date limit (User Management → Back-date limits). A future date is fine.
+    const allowedDate = await ensureLateApproval({
+      module: 'activity', entryDate: form.date, profile: activeProfile,
+      bufferDays: rights.backDays('activity', [plant?.id]),
+    });
+    if (!allowedDate) { toast.error(t('common.lateBlocked', 'Not saved: this date is further back than allowed. A request has gone to Management; once approved, save again with the same date.')); return; }
     const { data, error } = await insertRows('activity_logs', {
       equipment: form.equipment,
       type: form.type.toLowerCase(),
@@ -584,6 +666,7 @@ export function ActivityLog() {
       done_by: form.doneBy,
       verified_by: form.verifiedBy || null,
       plant_id: plant?.id || null,
+      note: form.notes.trim() || null,
     }).select('*, plants(name)').single();
 
     if (error) {
@@ -629,6 +712,36 @@ export function ActivityLog() {
 
   function handleClose() { setOpen(false); setSaved(false); }
 
+  // Every row opens something: the real entry (ticket, incident, receipt, stock
+  // item, dispatch, payment, …), its own panel (a hand-typed row, or one whose
+  // screen this login cannot open), or — when the entry is gone — a message.
+  const targetOf = (a: UnifiedRow) => {
+    const tg = activityTarget({
+      type: a.kind ?? a.type, source: a.source, equipment: a.equipment, note: a.note,
+      entityType: a.entityType, entityId: a.entityId, ticketId: a.ticketId,
+      incidentId: a.source === 'incident' ? a.key.replace('incident-', '') : null, receiptId: a.receiptId,
+      defectiveTicketId: a.defectiveTicketId,
+    });
+    if (tg.kind === 'route' && !profileCanAccess(activeProfile, tg.to.split('?')[0])) return { kind: 'panel' as const };
+    return tg;
+  };
+  function openRow(a: UnifiedRow) {
+    const tg = targetOf(a);
+    // The live URL (?p= written with replace) — React's location can still be
+    // page 1 if the user clicked a row right after paging.
+    if (tg.kind === 'route') navigate(withBack(tg.to, hereNow()));
+    else if (tg.kind === 'deleted') toast.info(t('activity.entryDeleted', 'That entry was deleted — this line is its record.'));
+    else if (tg.kind === 'needs0042') toast.info(t('activity.needs0042', 'This line can open its dispatch / payment once migration 0042 is applied. Until then find it on Purchase book.'));
+    else setDetail(a);
+  }
+  const titleFor = (a: UnifiedRow) => {
+    const tg = targetOf(a);
+    return tg.kind === 'route' ? t('activity.openEntry', 'Open the entry')
+      : tg.kind === 'deleted' ? t('activity.entryDeletedShort', 'Deleted')
+      : tg.kind === 'needs0042' ? t('activity.needs0042Short', 'Opens after migration 0042')
+      : t('activity.openDetails', 'Open details');
+  };
+
   return (
     <>
       <ActivityRoleAccessCard />
@@ -646,14 +759,14 @@ export function ActivityLog() {
           <KpiInfoButton info={{ title: 'Verified', what: 'Activity events that carry a verifier (supervisor / unit head sign-off, or the raising role on a completed maintenance ticket).', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'verified' ? 'all' : 'verified')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiVerified')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num text-green-600">{loading ? '…' : verified}</div>
+          <div className="text-[28px] font-extrabold mt-1 num text-green-600">{complete ? verified : '…'}</div>
           </button>
         </div>
         <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
           <KpiInfoButton info={{ title: 'Pending verification', what: 'Events with no verifier yet. These need supervisor sign-off.', source: 'Derived' }} />
           <button type="button" className="text-left w-full" onClick={() => setKpi(kpi === 'pending' ? 'all' : 'pending')}>
           <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('activity.kpiPending')}</div>
-          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{loading ? '…' : pendingVerify}</div>
+          <div className="text-[28px] font-extrabold mt-1 num text-amber-600">{complete ? pendingVerify : '…'}</div>
           </button>
         </div>
         <div className="col-span-6 lg:col-span-3 card p-4 sm:p-5" style={{ position: 'relative' }}>
@@ -675,13 +788,15 @@ export function ActivityLog() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* Create action lives in the list header, like Store Req / FAR / Night duty. */}
-            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
-              {t('activity.logActivityBtn')}
-            </ButtonV2>
+            {rights.can('activity', 'add') && (
+              <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
+                {t('activity.logActivityBtn')}
+              </ButtonV2>
+            )}
             <button
-              className="pill px-3 py-2 text-xs font-semibold btn-ghost"
+              className="pill px-3 py-2 text-xs font-semibold btn-ghost max-sm:min-h-[44px]"
               style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#475569' }}
-              onClick={() => setShowManualOnly(v => !v)}
+              onClick={() => { const next = !showManualOnly; setShowManualOnly(next); patchParams({ manual: next ? '1' : '' }); }}
               title={t('activity.toggleFeedTitle')}
             >
               {showManualOnly ? t('activity.showMaintenanceFeed') : t('activity.manualOnly')}
@@ -733,6 +848,11 @@ export function ActivityLog() {
           )}
           <DateRangeFilter from={fromDate} to={toDate} onChange={({ from, to }) => setFromTo(from, to)} />
         </FilterBar>
+        {incidentsError && !loadError && (
+          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {t('activity.incidentsLoadFailed', { defaultValue: 'Incidents could not be loaded, so they are missing from this list: {{msg}}', msg: incidentsError })}
+          </div>
+        )}
         {loadError ? (
           <ErrorState title={t('activity.errorTitle')} message={t('activity.errorMessage')}
             onRetry={() => { setLoading(true); setLoadError(false); load(); }} />
@@ -753,13 +873,12 @@ export function ActivityLog() {
             </thead>
             <tbody>
               {pageRows.map((a) => (
-                <tr key={a.key} style={{ cursor: (a.ticketId || a.source === 'incident' || a.photos.length) ? 'pointer' : 'default', background: a.key === justAdded ? '#FFF7ED' : a.deleted || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined, boxShadow: a.key === justAdded ? 'inset 3px 0 0 #EA580C' : undefined }} onClick={() => {
-                  const back = encodeURIComponent(location.pathname + location.search);
-                  if (a.source === 'maintenance' && a.ticketId) navigate(`/dashboard/purchase/maint?ticket=${a.ticketId}&back=${back}`);
-                  else if (a.source === 'incident') navigate(`/dashboard/purchase/maint?tab=incidents&incident=${a.key.replace('incident-', '')}&back=${back}`);
-                  else if (a.photos.length) setLightbox(a.photos);
-                }} title={a.ticketId ? t('activity.openTicket', 'Open ticket') : undefined}>
-                  <td className="font-semibold">{a.equipment || '—'}</td>
+                <tr key={a.key} style={{ cursor: 'pointer', background: a.key === justAdded ? '#FFF7ED' : a.deleted || /delet/i.test(a.equipment) ? '#FEF2F2' : undefined, boxShadow: a.key === justAdded ? 'inset 3px 0 0 #EA580C' : undefined }}
+                  onClick={() => openRow(a)} title={titleFor(a)}>
+                  <td className="font-semibold">
+                    {displayEquipName(a.equipment) || '—'}
+                    {a.note && <div className="text-xs font-normal text-slate-500 whitespace-normal max-w-[360px]">{a.note}</div>}
+                  </td>
                   <td className="text-slate-600">
                     {a.type}
                     {a.deleted && (
@@ -810,7 +929,7 @@ export function ActivityLog() {
 
         <PanelRow>
           <PanelField label={t('activity.fieldDate')}>
-            <PanelInput type="date" value={form.date} onChange={e => set('date', e.target.value)} />
+            <PanelDateInput value={form.date} onChange={e => set('date', e.target.value)} />
           </PanelField>
           <PanelField label={t('activity.fieldDoneBy')}>
             <PanelInput placeholder={t('activity.phDoneBy')} value={form.doneBy} onChange={e => set('doneBy', e.target.value)} />
@@ -855,6 +974,23 @@ export function ActivityLog() {
       </SlidePanel>
 
       <ImageLightbox images={lightbox || []} open={!!lightbox} onClose={() => setLightbox(null)} />
+      <SlidePanel open={!!detail} onClose={() => setDetail(null)} title={detail ? (displayEquipName(detail.equipment) || '—') : ''} subtitle={detail?.type}>
+        {detail && (
+          <dl style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '10px 12px', fontSize: 13, margin: 0 }}>
+            <dt className="text-slate-500">{t('activity.colActivity')}</dt><dd style={{ margin: 0 }}>{detail.type}{detail.deleted ? ` · ${t('activity.deletedBadge', 'Deleted')}` : ''}</dd>
+            <dt className="text-slate-500">{t('activity.colDate')}</dt><dd style={{ margin: 0 }}>{fmtDate(detail.date)}</dd>
+            <dt className="text-slate-500">{t('activity.colDoneBy')}</dt><dd style={{ margin: 0 }}>{detail.doneBy || '—'}</dd>
+            <dt className="text-slate-500">{t('activity.colVerifiedBy')}</dt><dd style={{ margin: 0 }}>{detail.verifiedBy || '—'}</dd>
+            <dt className="text-slate-500">{t('activity.colPlant')}</dt><dd style={{ margin: 0 }}>{displayLocationName(detail.plant) || '—'}</dd>
+            {detail.note && (<><dt className="text-slate-500">{t('activity.fieldNotes', 'Notes')}</dt><dd style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{detail.note}</dd></>)}
+            {detail.photos.length > 0 && (
+              <><dt className="text-slate-500">{t('activity.colPic')}</dt>
+                <dd style={{ margin: 0 }}><button type="button" className="text-sm font-semibold text-sky-700 underline" onClick={() => setLightbox(detail.photos)}>
+                  {t('activity.viewNPhotos', { defaultValue: 'View {{count}} photo(s)', count: detail.photos.length })}</button></dd></>
+            )}
+          </dl>
+        )}
+      </SlidePanel>
     </>
   );
 }

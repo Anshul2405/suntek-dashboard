@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { formatDate, inIstDayRange, istDayKey } from '../../../lib/utils/formatting';
+import { formatDate, inIstDayRange, istDayKey, istToday } from '../../../lib/utils/formatting';
 import { useUrlFilters } from '../../../lib/urlFilters';
+import { useUrlTable } from '../../../lib/urlTable';
+import { hereNow, withBack } from '../../../lib/backLink';
 import { DateRangeFilter, FilterBar, FilterSelect } from '../../../components/v2';
 import { Activity, Warehouse } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -19,6 +21,7 @@ import { ThV2 as Th } from '../../../components/v2';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { isAdminProfile, profileHasCapability } from '../../../lib/profiles';
+import { canDeleteModule, canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { uploadWorkflowFile } from '../../../lib/cloudinary';
 import { parseStockFile, reconcile, reconcileAll, labelForPeriod, normalizeUnit, UNIT_OPTIONS, type StockParseResult, type MonthParse, type MonthItem, type Anomaly } from '../../../lib/store/parseStockFile';
 import { indexResolutions, joinAnomalies, type AnomalyResolutionRow, type ReviewedAnomaly } from '../../../lib/store/anomalyKeys';
@@ -31,6 +34,8 @@ import { AddPurchaseModal } from './AddPurchaseModal';
 import { AnomalyReviewModal } from './AnomalyReviewModal';
 import { StoreReconciliation } from './StoreReconciliation';
 import type { Database } from '../../../lib/database.types';
+import { logActivity } from '../../../lib/activityWrite';
+import { useRights } from '../../../lib/access/useRights';
 
 type StockItem = Database['public']['Tables']['store_items']['Row'];
 type StockMonthRow = Database['public']['Tables']['store_stock_months']['Row'];
@@ -172,7 +177,9 @@ export function StockRegister() {
   const navigate = useNavigate();
   const toast = useToast();
   const { storeQuery, allowedPlants, stores, allowedStores, storeIdFor } = usePlantScope();
-  const { activeProfile } = useRoleContext();
+  const { activeProfile, activePersonId } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks.
+  const rights = useRights();
 
   const [items, setItems] = useState<RegisterItem[]>([]);
   const [months, setMonths] = useState<StockMonthRow[]>([]);
@@ -180,6 +187,31 @@ export function StockRegister() {
   const [loading, setLoading] = useState(true);
   // Register filters live in the URL (q, store, status, from, to) — refresh / back= keep them.
   const filters = useUrlFilters(['q', 'store', 'status', 'from', 'to'] as const);
+  // Opened from Activity Log: ?receipt=<purchase receipt> or ?item=<stock item>
+  // narrows the register to exactly those items ("Show all" clears it).
+  const linkParams = useUrlFilters(['receipt', 'item'] as const);
+  const [linkIds, setLinkIds] = useState<{ key: string; ids: Set<string>; label: string } | null>(null);
+  const linkKey = linkParams.values.receipt ? `r:${linkParams.values.receipt}` : linkParams.values.item ? `i:${linkParams.values.item}` : '';
+  useEffect(() => {
+    if (!linkKey) return;
+    let alive = true;
+    void (async () => {
+      if (linkKey.startsWith('i:')) {
+        if (alive) setLinkIds({ key: linkKey, ids: new Set([linkKey.slice(2)]), label: '' });
+        return;
+      }
+      const receiptId = linkKey.slice(2);
+      const [{ data: lines }, { data: rcpt }] = await Promise.all([
+        supabase.from('stock_purchase_lines').select('store_item_id').eq('receipt_id', receiptId).returns<{ store_item_id: string | null }[]>(),
+        supabase.from('stock_purchase_receipts').select('vendor_name, purchase_date, created_at').eq('id', receiptId).maybeSingle<{ vendor_name: string; purchase_date: string | null; created_at: string }>(),
+      ]);
+      if (!alive) return;
+      const ids = new Set((lines ?? []).map(l => l.store_item_id).filter((x): x is string => !!x));
+      setLinkIds({ key: linkKey, ids, label: rcpt ? `${formatDate(rcpt.purchase_date || rcpt.created_at)} · ${rcpt.vendor_name}` : '' });
+    })();
+    return () => { alive = false; };
+  }, [linkKey]);
+  const activeLink = linkKey && linkIds?.key === linkKey ? linkIds : null;
   const search = filters.values.q;
   const { store: storeFilter, status: stockStatusFilter, from: entryFrom, to: entryTo } = filters.values;
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -221,8 +253,12 @@ export function StockRegister() {
 
   const canUploadExcel =
     isAdminProfile(activeProfile);
-  const canDeleteStockItem =
-    canUploadExcel || activeProfile.allowedDashboardRoutes.includes('*');
+  // Access & backup → "Who can edit or delete" (Stock Register). Admin always can;
+  // otherwise only a saved tick (role or person). An all-screens login without
+  // the tick no longer deletes — a tick that is off is off (fail-closed).
+  const opsTicks = useOpsSettings();
+  const canDeleteStockItem = canUploadExcel || canDeleteModule(opsTicks, activeProfile, 'stock', activePersonId);
+  const canEditStockItem = canEditModule(opsTicks, activeProfile, 'stock', activePersonId);
 
   async function load() {
     try {
@@ -478,6 +514,7 @@ export function StockRegister() {
     for (const it of registerItems) {
       const regId = registerIdOf(it);
       if (plantFilter.length && !(regId && plantFilter.includes(regId))) continue;
+      if (activeLink && !activeLink.ids.has(it.id)) continue;
       const tickets = issueTickets[it.id] || [];
       const job = stockJobMap.get(it.id) || jobNoStock(it.id, it.job_no);
       const hay = normSearch([it.item_name, it.equipment || '', it.model || '', job, ...tickets.map(ticketShort)].join(' '));
@@ -496,7 +533,7 @@ export function StockRegister() {
     return [...map.values()]
       .filter(m => inIstDayRange(m.entryAt, entryFrom, entryTo))
       .sort((a, b) => (b.entryAt || '').localeCompare(a.entryAt || '') || a.itemName.localeCompare(b.itemName));
-  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap, entryFrom, entryTo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [registerItems, plantFilter, search, plants, stores, issueTickets, stockJobMap, entryFrom, entryTo, activeLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Counts stay across all statuses so picking "Low" doesn't zero the others.
   const summary = useMemo(() => {
@@ -510,6 +547,7 @@ export function StockRegister() {
   );
 
   // Column sort — click a header to sort by it (toggles asc/desc).
+  const urlTable = useUrlTable({ key: 'date', dir: 'desc' });
   const mergedSort = useSortable(shownMerged, {
     date: r => r.entryAt || '',
     item: r => r.itemName,
@@ -518,15 +556,17 @@ export function StockRegister() {
     issued: r => r.issued,
     procured: r => r.procured,
     status: r => (r.onHand <= 0 ? 0 : r.onHand <= 2 ? 1 : 2),
-  }, { key: 'date', dir: 'desc' });
+  }, urlTable.sort, urlTable.onSort);
 
-  // Paginate the register — it can hold hundreds of items per plant.
-  const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${mergedSort.sort.key}|${mergedSort.sort.dir}` });
+  // Paginate the register — it can hold hundreds of items per plant. Page,
+  // size and sort live in the URL so a ticket opened from a row comes back here.
+  const { pageRows, controls } = usePagination(mergedSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${mergedSort.sort.key}|${mergedSort.sort.dir}`, ...urlTable.paging, ready: !loading });
 
   // ── Import ──────────────────────────────────────────────────────────────────
   // Stores this user may upload against. At Rehla that is the one shared
   // register, which is what the client's single Jharkhand workbook maps to.
-  const storeOptions = allowedStores.length ? allowedStores : stores;
+  // Fail-closed: no store grant means nothing to upload against (never every store).
+  const storeOptions = allowedStores;
   function defaultStore(): string { return storeOptions[0]?.id || ''; }
 
   async function handleFile(file: File) {
@@ -665,6 +705,10 @@ export function StockRegister() {
 
   // ── Manual edit (requires justification, logged to Activity Log) ─────────────
   function openEdit(it: StockItem) {
+    if (!canEditStockItem) {
+      toast.error(t('storereq.stockEditForbidden', 'Your role is not allowed to edit stock (Access & backup).'));
+      return;
+    }
     if (isSnapshotItem(it.id)) {
       toast.error(t('storereq.stockSnapshotReadOnly', 'This view is from a monthly snapshot — upload or refresh the living register to edit stock.'));
       return;
@@ -719,11 +763,11 @@ export function StockRegister() {
         qty_delta: delta, on_hand_after: qtyChanged ? newOnHand : oldOnHand, justification: reason,
         actor_name: activeProfile.name,
       });
-      await insertRows('activity_logs', {
-        equipment: `Stock: ${newName}`, type: 'stock_edit', date: new Date().toISOString().slice(0, 10),
+      await logActivity({
+        equipment: `Stock: ${newName}`, type: 'stock_edit', date: istToday(),
         done_by: activeProfile.name, plant_id: editItem.plant_id,
         note: `${qtyChanged ? `Qty ${oldOnHand} → ${newOnHand} (${delta > 0 ? '+' : ''}${delta}). ` : ''}${nameChanged ? `Renamed from "${editItem.item_name}". ` : ''}${equipmentChanged ? `Equipment "${oldEquipment || '—'}" → "${newEquipment || '—'}". ` : ''}${modelChanged ? `Model "${oldModel || '—'}" → "${newModel || '—'}". ` : ''}${unitChanged ? `Unit ${oldUnit} → ${newUnit}. ` : ''}${reason}`,
-      });
+      }, { type: 'stock_item', id: editItem.id });
       setEditItem(null);
       toast.success(t('storereq.stockToastSaved', 'Stock updated and logged to the Activity Log.'));
       await load();
@@ -754,7 +798,7 @@ export function StockRegister() {
       await insertRows('activity_logs', {
         equipment: `Stock: ${deleteItem.item_name}`,
         type: 'stock_delete',
-        date: new Date().toISOString().slice(0, 10),
+        date: istToday(),
         done_by: activeProfile.name,
         plant_id: deleteItem.plant_id,
         note: `Deleted stock item "${deleteItem.item_name}" (on-hand ${Number(deleteItem.on_hand)} ${normalizeUnit(deleteItem.unit)}). ${reason}`,
@@ -789,7 +833,7 @@ export function StockRegister() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {items.length > 0 && !fromSnapshot && profileHasCapability(activeProfile, 'add_stock_purchase') && (
+          {items.length > 0 && !fromSnapshot && profileHasCapability(activeProfile, 'add_stock_purchase') && rights.can('purchase', 'add') && (
             <button onClick={() => setShowPurchase(true)} className="pill px-4 py-2 font-semibold text-sm" style={{ border: '1px solid #E2E8F0', background: '#fff', color: '#334155', cursor: 'pointer' }}>{t('storereq.stockAddPurchase', '＋ Add Purchase')}</button>
           )}
           {/* The delete-a-bad-upload flow lives in Admin → Upload History, but
@@ -886,6 +930,17 @@ export function StockRegister() {
                   {!storeChips[0].hasData && (
                     <span style={{ fontSize: 11, color: '#94A3B8' }}>{t('storereq.storeNoStock', 'no stock file uploaded yet')}</span>
                   )}
+                </div>
+              )}
+              {linkKey && (
+                <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900 flex flex-wrap items-center gap-2">
+                  {!activeLink ? '…'
+                    : linkKey.startsWith('r:')
+                      ? t('storereq.linkReceipt', { defaultValue: 'Items added by that purchase{{label}}.', label: activeLink.label ? ` (${activeLink.label})` : '' })
+                      : registerItems.some(it => activeLink.ids.has(it.id))
+                        ? t('storereq.linkItem', 'The stock item from the Activity Log.')
+                        : t('storereq.linkItemGone', 'That stock item no longer exists — it was deleted.')}
+                  <button type="button" className="font-semibold underline" onClick={() => linkParams.set({ receipt: '', item: '' })}>{t('storereq.linkShowAll', 'Show all')}</button>
                 </div>
               )}
               <FilterBar
@@ -1056,7 +1111,7 @@ export function StockRegister() {
                                 <button
                                   key={tid}
                                   type="button"
-                                  onClick={() => navigate(`/dashboard/purchase/maint?ticket=${tid}`)}
+                                  onClick={() => navigate(withBack(`/dashboard/purchase/maint?ticket=${tid}`, hereNow()))}
                                   className="num text-blue-600 font-semibold mr-1"
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
                                   title={t('storereq.open_ticket', 'Open maintenance ticket')}
@@ -1068,7 +1123,7 @@ export function StockRegister() {
                             <td>
                               {single && !fromSnapshot ? (
                                 <span className="inline-flex items-center gap-2 text-xs" onClick={e => e.stopPropagation()}>
-                                  <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                  {canEditStockItem && <button onClick={() => openEdit(m.stores[0].raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
                                   {canDeleteStockItem && (
                                     <button onClick={() => openDelete(m.stores[0].raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                   )}
@@ -1093,7 +1148,7 @@ export function StockRegister() {
                                     <span>{t('storereq.stockExpManual', 'Manual')}: <strong>{Number(s.raw.manual_delta) > 0 ? '+' : ''}{Number(s.raw.manual_delta)}</strong></span>
                                     {!fromSnapshot && (
                                       <span className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                                        <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>
+                                        {canEditStockItem && <button onClick={() => openEdit(s.raw)} style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockEdit', 'Edit')}</button>}
                                         {canDeleteStockItem && (
                                           <button onClick={() => openDelete(s.raw)} style={{ color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5, padding: 0 }}>{t('storereq.stockDelete', 'Delete')}</button>
                                         )}

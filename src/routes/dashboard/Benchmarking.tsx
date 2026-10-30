@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Building2, TrendingDown, Factory } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useQuery } from '@tanstack/react-query';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
@@ -30,13 +31,17 @@ function fmtINR(v: number): string {
 export function Benchmarking() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // Plant-scoped (fail-closed): a user sees batches of their own plants only.
+  const { scopeQuery, ready: scopeReady, plantIds, isGlobal } = usePlantScope();
+  const scopeKey = isGlobal ? 'all' : plantIds.join(',');
 
   const { data, isLoading, isError, refetch } = useQuery<BatchRow[]>({
-    queryKey: ['benchmark-batches'],
+    queryKey: ['benchmark-batches', scopeKey],
+    enabled: scopeReady,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await scopeQuery(supabase
         .from('active_batches')
-        .select('*, plants(name)')
+        .select('*, plants(name)'))
         .in('status', ['closed', 'flagged'])
         .returns<BatchRow[]>();
       if (error) throw error;
@@ -107,7 +112,7 @@ export function Benchmarking() {
           value={`${stats.reduce((s, p) => s + p.totalOutputMT, 0).toFixed(0)} MT`} />
       </div>
 
-      <SectionCard flush title={t('benchmarking.title')} subtitle={t('benchmarking.subtitle')}>
+      <SectionCard flush title={t('benchmarking.tableTitle', 'Cost per MT by plant')} subtitle={t('benchmarking.subtitle')}>
         {isLoading ? (
           <div className="px-5 pb-5"><SkeletonRows rows={5} /></div>
         ) : isError ? (

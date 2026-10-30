@@ -7,6 +7,7 @@ import { isAdminProfile, isManagementProfile, type MockProfile } from './profile
 import { needsLateApproval } from './datePolicy';
 import { DEFAULT_VALUE_CATEGORIES, type ValueCategorySettings } from './valueCategory';
 import { formatDate } from './utils/formatting';
+import { cleanEditWindowHours } from './editWindowHours';
 
 export const MODULES = [
   { key: 'stock', label: 'Stock Register' },
@@ -15,6 +16,10 @@ export const MODULES = [
   { key: 'far', label: 'FAR' },
   { key: 'purchase', label: 'Purchases' },
   { key: 'store_req', label: 'Store requisitions' },
+  // Per-tab / per-screen Add forms (User Management → Add/Modify/Delete).
+  { key: 'payments', label: 'Payments (Purchase book)' },
+  { key: 'dispatch', label: 'Dispatch (Purchase book)' },
+  { key: 'activity', label: 'Activity Log (+ Log activity)' },
 ] as const;
 
 export type ModuleKey = (typeof MODULES)[number]['key'];
@@ -24,6 +29,28 @@ export type BackupFrequency = 'weekly' | 'monthly' | 'half_yearly' | 'yearly';
 export interface ModuleGrant {
   edit: string[];
   delete: string[];
+  /**
+   * Who may Add (New payment, New dispatch, + Log activity, add stock…).
+   * Undefined until Admin saves the Add column once: until then Add follows the
+   * screen's View (today's behaviour). Saved and blank = Admin only.
+   */
+  add?: string[];
+}
+
+export type Verb = 'add' | 'edit' | 'delete';
+
+/**
+ * One person's overrides on top of their roles (User Management → People).
+ * true = yes even if the role says no; false = no even if the role says yes.
+ * Missing = follow the role.
+ */
+export interface PersonRights {
+  /** Dashboard sections by route. */
+  sections?: Record<string, boolean>;
+  /** Tabs by "route#tab", e.g. "/dashboard/purchase/book#dispatch". */
+  tabs?: Record<string, boolean>;
+  /** Verbs by "module.verb", e.g. "payments.add". */
+  verbs?: Record<string, boolean>;
 }
 
 export interface OpsSettings {
@@ -39,6 +66,29 @@ export interface OpsSettings {
   /** People (profile id or name) who must not see that photo kind. Admin still sees all. */
   photosHiddenFrom: Record<PhotoKey, string[]>;
   valueCategories: ValueCategorySettings;
+  /** The one edit window for every screen, in hours (default 1). Admin sets it. */
+  editWindowHours: number;
+  /**
+   * Tab grants: route → tab → role ids. Only roles Admin has decided for count
+   * (see tabRoles); a role never configured keeps every tab of the page.
+   */
+  tabs: Record<string, Record<string, string[]>>;
+  /**
+   * route → roles whose tab list Admin has saved (even an empty one). A role
+   * not listed here (and not in any list of `tabs`) is "not configured yet":
+   * it sees every tab the page already showed.
+   */
+  tabRoles: Record<string, string[]>;
+  /** Per-person overrides, keyed by the person id (db_<uuid>). */
+  people: Record<string, PersonRights>;
+  /** Back days allowed per module (0 = no back date). Missing = bufferDays. */
+  backDays: Record<string, number>;
+  /**
+   * True once the saved settings were read from the server. Not stored. Until
+   * then (new device, offline, read failed) Edit is closed for everyone but
+   * Admin — a stale or default copy must never open edits (fail-closed).
+   */
+  loaded?: boolean;
 }
 
 const EMPTY_GRANT = (): ModuleGrant => ({ edit: [], delete: [] });
@@ -57,10 +107,18 @@ export const DEFAULT_OPS: OpsSettings = {
     far: EMPTY_GRANT(),
     purchase: EMPTY_GRANT(),
     store_req: EMPTY_GRANT(),
+    payments: EMPTY_GRANT(),
+    dispatch: EMPTY_GRANT(),
+    activity: EMPTY_GRANT(),
   },
   photos: { heat: [], sheet: [], bucket: [] },
   photosHiddenFrom: { heat: [], sheet: ['Ravi Shankar'], bucket: [] },
   valueCategories: DEFAULT_VALUE_CATEGORIES,
+  editWindowHours: 1,
+  tabs: {},
+  tabRoles: {},
+  people: {},
+  backDays: {},
 };
 
 const LS_KEY = 'suntek.opsSettings.v1';
@@ -71,7 +129,8 @@ function readLocal(): OpsSettings {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return DEFAULT_OPS;
-    return { ...DEFAULT_OPS, ...JSON.parse(raw), modules: { ...DEFAULT_OPS.modules, ...(JSON.parse(raw).modules || {}) } };
+    // A local copy is only a first paint; it never counts as loaded.
+    return { ...DEFAULT_OPS, ...JSON.parse(raw), modules: { ...DEFAULT_OPS.modules, ...(JSON.parse(raw).modules || {}) }, loaded: false };
   } catch {
     return DEFAULT_OPS;
   }
@@ -89,12 +148,20 @@ export function roleKey(profile: Pick<MockProfile, 'id' | 'baseRoleId'>): string
 
 export function roleAllowed(ids: string[] | undefined, profile: MockProfile): boolean {
   if (isAdminProfile(profile)) return true;
-  const id = roleKey(profile);
-  return (ids || []).includes(id) || (ids || []).includes(profile.id);
+  const list = ids || [];
+  // Any role the person holds (multi-role), their own role key, or their person id.
+  return [roleKey(profile), profile.id, ...(profile.roleIds || [])].some((id) => list.includes(id));
 }
 
-/** Edit is open until Admin turns restrictions on and saves a list. */
-export function canEditModule(settings: OpsSettings, profile: MockProfile, module: ModuleKey): boolean {
+/**
+ * Edit follows Access & backup's Edit ticks once restrictions are on (a blank
+ * list = nobody but Admin). Before the saved settings are read, only Admin.
+ */
+export function canEditModule(settings: OpsSettings, profile: MockProfile, module: ModuleKey, personId?: string | null): boolean {
+  if (isAdminProfile(profile)) return true;
+  if (!settings.loaded) return false;
+  const own = personOverride(settings, personId, 'verbs', `${module}.edit`);
+  if (own !== undefined) return own;
   if (!settings.enforced) return true;
   return roleAllowed(settings.modules[module]?.edit, profile);
 }
@@ -105,6 +172,9 @@ export function canEditModule(settings: OpsSettings, profile: MockProfile, modul
  */
 export function canDeleteModule(settings: OpsSettings, profile: MockProfile, module: ModuleKey, personId?: string | null): boolean {
   if (isAdminProfile(profile)) return true;
+  if (!settings.loaded) return false;
+  const own = personOverride(settings, personId, 'verbs', `${module}.delete`);
+  if (own !== undefined) return own;
   if (!settings.enforced) return false;
   const granted = settings.modules[module]?.delete || [];
   if (roleAllowed(granted, profile)) return true;
@@ -164,7 +234,7 @@ function mergeSettings(raw: Partial<OpsSettings> & { mobilePreview?: unknown }):
   const modules = { ...DEFAULT_OPS.modules };
   for (const m of MODULES) {
     const g = raw.modules?.[m.key];
-    if (g) modules[m.key] = { edit: g.edit || [], delete: g.delete || [] };
+    if (g) modules[m.key] = { edit: g.edit || [], delete: g.delete || [], ...(Array.isArray(g.add) ? { add: g.add } : {}) };
   }
   const { mobilePreview: _dropped, ...rest } = raw;
   return {
@@ -185,7 +255,69 @@ function mergeSettings(raw: Partial<OpsSettings> & { mobilePreview?: unknown }):
     },
     bufferDays: raw.bufferDays === 1 ? 1 : 2,
     bufferDaysByPlant: cleanPlantBuffers(raw.bufferDaysByPlant),
+    editWindowHours: cleanEditWindowHours(raw.editWindowHours),
+    tabs: cleanTabs(raw.tabs),
+    tabRoles: cleanIdLists(raw.tabRoles),
+    people: cleanPeople(raw.people),
+    backDays: cleanBackDays(raw.backDays),
+    loaded: true,
   };
+}
+
+function cleanTabs(raw: unknown): Record<string, Record<string, string[]>> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, Record<string, string[]>> = {};
+  for (const [route, tabs] of Object.entries(raw as Record<string, unknown>)) {
+    if (!tabs || typeof tabs !== 'object') continue;
+    out[route] = {};
+    for (const [tab, ids] of Object.entries(tabs as Record<string, unknown>)) {
+      if (Array.isArray(ids)) out[route][tab] = ids.filter((x): x is string => typeof x === 'string');
+    }
+  }
+  return out;
+}
+
+function cleanIdLists(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (Array.isArray(v)) out[k] = v.filter((x): x is string => typeof x === 'string');
+  }
+  return out;
+}
+
+function boolMap(raw: unknown): Record<string, boolean> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) if (typeof v === 'boolean') out[k] = v;
+  return out;
+}
+
+function cleanPeople(raw: unknown): Record<string, PersonRights> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, PersonRights> = {};
+  for (const [id, r] of Object.entries(raw as Record<string, Record<string, unknown>>)) {
+    if (!r || typeof r !== 'object') continue;
+    out[id] = { sections: boolMap(r.sections), tabs: boolMap(r.tabs), verbs: boolMap(r.verbs) };
+  }
+  return out;
+}
+
+function cleanBackDays(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Math.round(Number(v));
+    if (v === null || v === '' || !Number.isFinite(n) || n < 0 || n > 366) continue;
+    out[k] = n;
+  }
+  return out;
+}
+
+/** A person's own yes / no for a key, or undefined (follow the role). */
+export function personOverride(settings: OpsSettings, personId: string | null | undefined, kind: keyof PersonRights, key: string): boolean | undefined {
+  if (!personId) return undefined;
+  return settings.people?.[personId]?.[kind]?.[key];
 }
 
 function cleanPlantBuffers(raw: unknown): Record<string, number> {
@@ -201,9 +333,12 @@ function cleanPlantBuffers(raw: unknown): Record<string, number> {
 
 export async function saveOpsSettings(next: OpsSettings, actorName: string): Promise<string | null> {
   publish(next);
+  // `loaded` is this device's state, not a setting.
+  const value: Partial<OpsSettings> = { ...next };
+  delete value.loaded;
   const { error } = await q('ops_settings').upsert({
     key: 'controls',
-    value: next,
+    value,
     updated_at: new Date().toISOString(),
     updated_by: actorName,
   }, { onConflict: 'key' });
@@ -406,7 +541,7 @@ export async function ensureLateApproval(opts: {
     await recordAudit({
       module: opts.module,
       action: 'late_entry',
-      summary: `Management saved a backdated ${opts.module} entry for ${date}`,
+      summary: `Management saved a backdated ${opts.module} entry for ${formatDate(date)}`,
       actorName: opts.profile.name,
       actorRole: opts.profile.roleLabel,
     });
@@ -445,7 +580,7 @@ export async function submitLateRequest(input: {
   await recordAudit({
     module: input.module,
     action: 'late_requested',
-    summary: `Asked Management to allow a ${input.module} entry dated ${input.entryDate}: ${input.reason.trim()}`,
+    summary: `Asked Management to allow a ${input.module} entry dated ${formatDate(input.entryDate)}: ${input.reason.trim()}`,
     actorName: input.actorName,
     actorRole: input.actorRole,
   });

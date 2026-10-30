@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { isAdminProfile, isManagementProfile } from '../../lib/profiles';
 import {
-  MODULES, backupOverdue, downloadBackup, loadAudit, loadLateRequests, reviewLateRequest,
-  recordAudit, saveOpsSettings, useOpsSettings, type AuditRow, type LateRequest, type ModuleKey, type OpsSettings, type PhotoKey,
+  backupOverdue, downloadBackup, loadAudit, loadLateRequests, reviewLateRequest,
+  recordAudit, saveOpsSettings, useOpsSettings, type AuditRow, type LateRequest, type OpsSettings, type PhotoKey,
 } from '../../lib/opsControls';
 import { BUYER_TYPES, saveBuyers, useBuyers, type BuyerPerson, type BuyerType } from '../../lib/procurementPeople';
 import { fetchActivePlants } from '../../lib/plants';
@@ -12,6 +12,8 @@ import { useToast } from '../../components/ui/toast';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
 import { formatDate, formatDateTime } from '../../lib/utils/formatting';
+import { codeLabel } from '../../lib/labels';
+import { useTranslation } from 'react-i18next';
 
 const PHOTOS: { key: PhotoKey; label: string }[] = [
   { key: 'heat', label: 'Heat sample' },
@@ -24,7 +26,12 @@ function toggle(list: string[], id: string, on: boolean): string[] {
   return on ? [...next, id] : next;
 }
 
-export function AccessControl() {
+/** Which part of the old Access & backup page to show (User Management tabs). */
+export type AccessPart = 'all' | 'backup' | 'lateBills' | 'photos' | 'purchasers';
+
+export function AccessControl({ part = 'all' }: { part?: AccessPart } = {}) {
+  const { t } = useTranslation();
+  const show = (k: Exclude<AccessPart, 'all'>) => part === 'all' || part === k;
   const { activeProfile, roles, allProfiles } = useRoleContext();
   const saved = useOpsSettings();
   const toast = useToast();
@@ -58,16 +65,6 @@ export function AccessControl() {
     ? people.filter((p) => `${p.name} ${p.roleLabel} ${p.plant || ''}`.toLowerCase().includes(personQ))
     : people;
 
-  function setModule(module: ModuleKey, kind: 'edit' | 'delete', roleId: string, on: boolean) {
-    setDraft((d) => ({
-      ...d,
-      modules: {
-        ...d.modules,
-        [module]: { ...d.modules[module], [kind]: toggle(d.modules[module][kind], roleId, on) },
-      },
-    }));
-  }
-
   async function saveBillDays() {
     setSaving(true);
     const err = await saveOpsSettings({ ...saved, bufferDays: draft.bufferDays, bufferDaysByPlant: draft.bufferDaysByPlant }, activeProfile.name);
@@ -86,21 +83,11 @@ export function AccessControl() {
 
   async function save() {
     setSaving(true);
-    const known = new Set(people.map((p) => p.id));
-    const roleIds = new Set(roles.map((r) => r.id));
-    const modules = { ...draft.modules };
-    if (known.size) {
-      for (const m of MODULES) {
-        modules[m.key] = {
-          ...modules[m.key],
-          delete: modules[m.key].delete.filter((id) => known.has(id) || roleIds.has(id)),
-        };
-      }
-    }
-    const err = await saveOpsSettings({ ...draft, modules, enforced: true }, activeProfile.name);
+    // Only photo visibility is edited here; every other setting is kept as saved.
+    const err = await saveOpsSettings({ ...saved, photosEnforced: draft.photosEnforced, photos: draft.photos, photosHiddenFrom: draft.photosHiddenFrom }, activeProfile.name);
     setSaving(false);
     if (err) toast.error(err);
-    else toast.success('Permissions saved. Ticked roles and ticked people can delete.');
+    else toast.success(t('rights.photosSaved', 'Photo visibility saved.'));
   }
 
   async function backup() {
@@ -122,7 +109,7 @@ export function AccessControl() {
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="card2 p-5">
+      {show('backup') && <section className="card2 p-5">
         <h2 className="text-base font-bold">Backup data</h2>
         <p className="text-xs text-slate-500 mt-1">Downloads stock, schedules, batch sheets, assets and purchase receipts. Pick how often a fresh copy should be taken.</p>
         <div className="flex flex-wrap items-end gap-3 mt-3">
@@ -151,9 +138,9 @@ export function AccessControl() {
             </button>
           )}
         </div>
-      </section>
+      </section>}
 
-      <section className="card2 p-5">
+      {show('lateBills') && <section className="card2 p-5">
         <h2 className="text-base font-bold">Purchase categories</h2>
         <p className="text-xs text-slate-500 mt-1">Each purchased line is graded by its own bill amount. Category C skips unit-head verification on a maintenance ticket. B and A, and any amount in a gap, keep the normal workflow. A plant with the switch off always keeps the normal workflow.</p>
         <div className="mt-3 flex flex-wrap gap-3">
@@ -215,9 +202,9 @@ export function AccessControl() {
             {saving ? 'Saving…' : 'Save categories'}
           </button>
         )}
-      </section>
+      </section>}
 
-      <section className="card2 p-5">
+      {show('lateBills') && <section className="card2 p-5">
         <h2 className="text-base font-bold">Backdated entries</h2>
         <p className="text-xs text-slate-500 mt-1">Dates older than this buffer cannot be saved until Management approves a reason. Management can still enter them, and that is written to the history.</p>
         <label className="mt-3 inline-flex items-center gap-2 text-sm font-bold">
@@ -275,11 +262,11 @@ export function AccessControl() {
               {requestPage.map((r) => (
                 <tr key={r.id}>
                   <td className="text-xs font-bold">{formatDateTime(r.created_at)}</td>
-                  <td className="text-xs">{r.requested_by}<div className="text-slate-400">{r.requested_role}</div></td>
-                  <td className="text-xs">{r.module}</td>
+                  <td className="text-xs">{r.requested_by}<div className="text-slate-400">{codeLabel(r.requested_role)}</div></td>
+                  <td className="text-xs">{codeLabel(r.module)}</td>
                   <td className="text-xs font-bold">{formatDate(r.entry_date)}</td>
                   <td className="text-xs">{r.reason}</td>
-                  <td className="text-xs font-bold">{r.status}</td>
+                  <td className="text-xs font-bold">{codeLabel(r.status)}</td>
                   <td>
                     {r.status === 'pending' && isManagementProfile(activeProfile) && (
                       <span className="inline-flex gap-2">
@@ -294,94 +281,12 @@ export function AccessControl() {
           </table>
         </div>
         {requests.length > 0 && <TablePaginationV2 controls={requestPager} label="requests" />}
-      </section>
+      </section>}
 
-      {admin && (
+      {admin && show('photos') && (
         <section className="card2 p-5">
-          <h2 className="text-base font-bold">Who can edit or delete</h2>
-          <p className="text-xs text-slate-500 mt-1">Owner/Admin always can. Tick a role, then save. Edit and delete on tickets, stock, FAR, batch sheets and store requests follow these ticks. A ticked role applies to everyone in that role. Deleting an uploaded workbook or CSV is a separate allowance in User Management → the role.</p>
-          <div className="overflow-x-auto mt-3">
-            <table className="dt2 text-xs">
-              <thead>
-                <tr>
-                  <th>Role</th>
-                  {MODULES.map((m) => <th key={m.key} colSpan={2}>{m.label}</th>)}
-                </tr>
-                <tr>
-                  <th></th>
-                  {MODULES.map((m) => (
-                    <React.Fragment key={m.key}>
-                      <th>Edit</th>
-                      <th>Delete</th>
-                    </React.Fragment>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {roleRows.map((role) => (
-                  <tr key={role.id}>
-                    <td className="font-semibold">{role.label}{role.is_admin ? ' · always on' : ''}</td>
-                    {MODULES.map((m) => (
-                      <React.Fragment key={m.key}>
-                        <td><input type="checkbox" disabled={role.is_admin} checked={role.is_admin || draft.modules[m.key].edit.includes(role.id)} onChange={(e) => setModule(m.key, 'edit', role.id, e.target.checked)} /></td>
-                        <td><input type="checkbox" disabled={role.is_admin} checked={role.is_admin || draft.modules[m.key].delete.includes(role.id)} onChange={(e) => setModule(m.key, 'delete', role.id, e.target.checked)} /></td>
-                      </React.Fragment>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <h3 className="text-sm font-bold mt-6">Or one person</h3>
-          <p className="text-xs text-slate-500 mt-1">Tick a person to let them delete even when their role is not ticked. If their role is already ticked above, they already can, and that box stays on.</p>
-          <input
-            value={personQuery}
-            onChange={(e) => setPersonQuery(e.target.value)}
-            placeholder="Search a person, role or plant"
-            className="mt-2 w-full max-w-sm rounded-lg border border-slate-200 px-3 py-2 text-sm"
-          />
-          <div className="overflow-x-auto mt-2">
-            <table className="dt2 text-xs">
-              <thead>
-                <tr>
-                  <th>Person</th>
-                  {MODULES.map((m) => <th key={m.key}>{m.label}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {shownPeople.length === 0 && (
-                  <tr><td colSpan={MODULES.length + 1} className="text-center text-slate-400 py-6">No people match.</td></tr>
-                )}
-                {shownPeople.map((person) => {
-                  const always = isAdminProfile(person);
-                  return (
-                  <tr key={person.id}>
-                    <td className="font-semibold">
-                      {person.name}
-                      <div className="text-slate-400 font-normal">{person.roleLabel}{person.plant ? ` · ${displayLocationName(person.plant)}` : ''}{always ? ' · always on' : ''}</div>
-                    </td>
-                    {MODULES.map((m) => {
-                      const viaRole = !!(person.baseRoleId && draft.modules[m.key].delete.includes(person.baseRoleId));
-                      return (
-                      <td key={m.key}>
-                        <input
-                          type="checkbox"
-                          disabled={always || viaRole}
-                          checked={always || viaRole || draft.modules[m.key].delete.includes(person.id)}
-                          onChange={(e) => setModule(m.key, 'delete', person.id, e.target.checked)}
-                        />
-                      </td>
-                      );
-                    })}
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <h3 className="text-sm font-bold mt-6">Who can view batch photos</h3>
+          {/* Add / Edit / Delete ticks and the edit window moved to User Management → Add/Modify/Delete. */}
+          <h2 className="text-base font-bold">{t('rights.photosTitle', 'Who can view batch photos')}</h2>
           <p className="text-xs text-slate-500 mt-1">Heat sample, batch sheet and bucket photo are separate. Unticked roles still use the batch sheet, but those pictures stay hidden.</p>
           <label className="mt-2 inline-flex items-center gap-2 text-sm font-bold">
             <input type="checkbox" checked={draft.photosEnforced} onChange={(e) => setDraft((d) => ({ ...d, photosEnforced: e.target.checked }))} />
@@ -412,6 +317,12 @@ export function AccessControl() {
 
           <h3 className="text-sm font-bold mt-6">Hide photos from a person</h3>
           <p className="text-xs text-slate-500 mt-1">Tick to hide that picture from this person only. Everyone else still sees it. Admin always sees every photo. Ravi Shankar is ticked off batch-sheet photos by default; heat and bucket stay visible.</p>
+          <input
+            value={personQuery}
+            onChange={(e) => setPersonQuery(e.target.value)}
+            placeholder="Search a person, role or plant"
+            className="mt-2 w-full max-w-sm rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          />
           <div className="overflow-x-auto mt-2">
             <table className="dt2 text-xs">
               <thead><tr><th>Person</th>{PHOTOS.map((p) => <th key={p.key}>{p.label}</th>)}</tr></thead>
@@ -454,14 +365,14 @@ export function AccessControl() {
           </div>
 
           <button type="button" className="btn-accent rounded-[10px] px-4 py-2 text-sm font-semibold mt-5" disabled={saving} onClick={() => void save()}>
-            {saving ? 'Saving…' : 'Save permissions'}
+            {saving ? 'Saving…' : t('rights.savePhotos', 'Save photo visibility')}
           </button>
         </section>
       )}
 
-      {admin && <PurchaserList actorName={activeProfile.name} loginNames={people.map((p) => p.name)} />}
+      {admin && show('purchasers') && <PurchaserList actorName={activeProfile.name} loginNames={people.map((p) => p.name)} />}
 
-      <section className="card2 p-5">
+      {show('backup') && <section className="card2 p-5">
         <h2 className="text-base font-bold">History</h2>
         <p className="text-xs text-slate-500 mt-1">Who did it, and when. Covers permission changes, late approvals, backups, bill uploads, batch photos, edits and deletions that write to this log.</p>
         <div className="overflow-x-auto mt-3">
@@ -472,8 +383,8 @@ export function AccessControl() {
               {auditPage.map((row) => (
                 <tr key={row.id}>
                   <td className="text-xs font-bold whitespace-nowrap">{formatDateTime(row.created_at)}</td>
-                  <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{row.actor_role}</div></td>
-                  <td className="text-xs">{row.module}</td>
+                  <td className="text-xs">{row.actor_name || '—'}<div className="text-slate-400">{codeLabel(row.actor_role)}</div></td>
+                  <td className="text-xs">{codeLabel(row.module)}</td>
                   <td className="text-xs">{row.summary}</td>
                   <td>{row.photo_url ? <a className="text-xs font-bold text-[var(--accent-deep)]" href={row.photo_url} target="_blank" rel="noreferrer">View</a> : '—'}</td>
                 </tr>
@@ -482,7 +393,7 @@ export function AccessControl() {
           </table>
         </div>
         {audit.length > 0 && <TablePaginationV2 controls={auditPager} label="entries" />}
-      </section>
+      </section>}
     </div>
   );
 }

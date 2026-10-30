@@ -9,7 +9,8 @@ import { plantsForPicker } from '../../lib/access/pickerPlants';
 import { StatCard, SectionCard, ButtonV2, FilterBar, FilterSelect, StatusPill, TablePaginationV2 } from '../../components/v2';
 import { usePagination } from '../../components/ui/usePagination';
 import { exportToCsv } from '../../lib/utils/exportCsv';
-import { formatDate, formatDateTime, formatTime } from '../../lib/utils/formatting';
+import { formatDate, formatDateTime, formatTime, istToday } from '../../lib/utils/formatting';
+import { DateInput } from '../../components/ui/DateInput';
 
 /**
  * Night-duty scheduler — shown to users with the `allocate_night_duty` capability
@@ -30,7 +31,7 @@ type Duty = {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const todayIso = () => iso(new Date());
+const todayIso = () => istToday(); // IST day, not the browser's
 
 // CSV export keeps the original English labels by design.
 const STATUS_CFG: Record<string, { label: string; bg: string; color: string }> = {
@@ -422,7 +423,7 @@ export function NightDutyScheduler() {
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11.5, color: '#64748B' }}>{t('nightBoard.until', 'until')}</span>
-        <input type="date" value={repeatUntil} min={today} onChange={e => setRepeatUntil(e.target.value)}
+        <DateInput value={repeatUntil} min={today} onChange={e => setRepeatUntil(e.target.value)}
           style={{ padding: '7px 10px', border: '1px solid #E2E8F0', borderRadius: 10, fontSize: 12.5, fontFamily: 'inherit' }} />
         <ButtonV2 size="sm" variant="outline" onClick={applyRepeat}>{t('nightBoard.addDates', 'Add dates')}</ButtonV2>
       </div>
@@ -507,10 +508,10 @@ export function NightDutyScheduler() {
           <FilterSelect icon={<Building2 />} value={schedPlant} onChange={setSchedPlant}
             options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...pickerPlants.map(p => ({ value: p.name, label: p.name }))]} />
           <div className="flex items-center gap-1.5">
-            <input type="date" value={schedFrom} onChange={e => setSchedFrom(e.target.value)}
+            <DateInput value={schedFrom} onChange={e => setSchedFrom(e.target.value)}
               className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />
             <span className="text-slate-400 text-[12px]">–</span>
-            <input type="date" value={schedTo} onChange={e => setSchedTo(e.target.value)}
+            <DateInput value={schedTo} onChange={e => setSchedTo(e.target.value)}
               className="rounded-[10px] border border-slate-200 bg-white text-[13px] text-slate-700 py-2.5 px-3 hover:bg-slate-50" />
           </div>
           <FilterSelect icon={<Activity />} value={schedStatus} onChange={setSchedStatus}

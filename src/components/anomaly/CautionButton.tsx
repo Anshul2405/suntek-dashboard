@@ -62,7 +62,7 @@ export function CautionButton() {
     <>
       <button
         ref={btnRef}
-        title={t('anomaly.detectionTitle', 'Anomaly detection')}
+        title={t('anomaly.detectionTitle', 'Busy anomalies (urgent + warning)')}
         className={`${TB_ICON_BTN}${open ? ` ${TB_ICON_BTN_ACTIVE}` : ''}${!open && criticalCount > 0 ? ' text-red-600' : ''}`}
         onClick={() => setOpen(v => !v)}
       >
@@ -87,7 +87,7 @@ export function CautionButton() {
           <div style={{ padding: '16px 18px 12px', borderBottom: '1px solid #F1F5F9', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: '#0F172A' }}>{t('anomaly.detectionTitle', 'Anomaly detection')}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#0F172A' }}>{t('anomaly.detectionTitle', 'Busy anomalies (urgent + warning)')}</div>
                 <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>
                   {t('anomaly.urgentFlaggedCount', { defaultValue: '{{urgent}} urgent · {{flagged}} flagged', urgent: urgentCount, flagged: criticalCount })}
                 </div>

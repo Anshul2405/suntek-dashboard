@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import { busyChromeOn } from '../../lib/busyChrome';
 import { useTranslation } from 'react-i18next';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
@@ -14,6 +15,7 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import { SearchPaletteProvider } from '../../contexts/SearchPaletteContext';
 import { BrandLoader } from '../brand/BrandLoader';
 import { LateEntryHost } from '../LateEntryHost';
+import { useOpsSettings } from '../../lib/opsControls';
 
 // ── Blacklisted overlay ───────────────────────────────────────────────────────
 
@@ -87,7 +89,7 @@ const PAGE_TITLES: Record<string, L> = {
   '/dashboard/anomaly-center': ['nav.anomalyOperationsCenter', 'Anomaly Operations Center'],
   '/dashboard/cost-intelligence': ['nav.costMarginIntelligence', 'Cost & Margin Intelligence'],
   '/dashboard/benchmarking': ['nav.multiPlantBenchmarking', 'Multi-Plant Benchmarking'],
-  '/dashboard/predictive-qc': ['nav.livePredictiveQcBoard', 'Live Predictive QC Board'],
+  '/dashboard/predictive-qc': ['nav.predictiveQc', 'Predictive QC'],
   '/dashboard/working-capital': ['nav.workingCapitalCash', 'Working Capital & Cash'],
   '/dashboard/owner': ['nav.ownerIntelligence', 'Owner Intelligence'],
   '/dashboard/night-entry':     ['nav.nightCheckin', 'Night Check-in'],
@@ -96,7 +98,6 @@ const PAGE_TITLES: Record<string, L> = {
   '/dashboard/blacklist':       ['nav.blacklist', 'Blacklist'],
   '/dashboard/admin/uploads':   ['nav.uploadHistory', 'Upload History'],
   '/dashboard/users':           ['nav.userManagement', 'User Management'],
-  '/dashboard/access':          ['nav.accessBackup', 'Access & backup'],
   '/dashboard/daily-log':       ['nav.dailyUnitLog', 'Daily Unit Log'],
 };
 
@@ -126,7 +127,6 @@ const BREADCRUMBS: Record<string, readonly L[]> = {
   '/dashboard/working-capital': [C_MONITORING, ['nav.workingCapital', 'Working Capital']],
   '/dashboard/owner': [C_MONITORING, ['nav.ownerIntelligence', 'Owner Intelligence']],
   '/dashboard/users': [C_ADMIN, ['nav.userManagement', 'User Management']],
-  '/dashboard/access': [C_ADMIN, ['nav.accessBackup', 'Access & backup']],
   '/dashboard/blacklist': [C_ADMIN, ['nav.blacklist', 'Blacklist']],
   '/dashboard/admin/uploads': [C_ADMIN, ['nav.uploadHistory', 'Upload History']],
   '/dashboard/daily-log': [C_REFERENCE, ['nav.dailyUnitLog', 'Daily Unit Log']],
@@ -144,7 +144,7 @@ const FACTORY_SUBPAGES: Record<string, { title: L; breadcrumb: readonly L[]; sub
   '/dashboard/purchase/storereq': { title: ['nav.storeRequisition', 'Store Requisition'], breadcrumb: [C_FACTORY, ['nav.storeRequisition', 'Store Requisition']], subtitle: ['nav.subStoreReq', 'Request materials, track approvals, manage stock and scrap.'] },
   '/dashboard/purchase/purchase': { title: ['nav.purchaseOrder', 'Purchase Order'],       breadcrumb: [C_FACTORY, ['nav.purchaseOrder', 'Purchase Order']],       subtitle: ['nav.subPurchaseOrder', 'Raise and track purchase orders.'] },
   '/dashboard/purchase/marine':   { title: ['nav.marineInsurance', 'Marine Insurance'],   breadcrumb: [C_FACTORY, ['nav.marineInsurance', 'Marine Insurance']] },
-  '/dashboard/purchase/book':     { title: ['nav.purchaseBook', 'Purchase book'],         breadcrumb: [C_OPERATIONS, ['nav.purchaseBook', 'Purchase book']],         subtitle: ['nav.subPurchaseBook', 'Payments, dispatch, requirements, Kolkata and SHD — the Purchase workbook plus live entries.'] },
+  '/dashboard/purchase/book':     { title: ['nav.purchaseBook', 'Purchase book'],         breadcrumb: [C_OPERATIONS, ['nav.purchaseBook', 'Purchase book']],         subtitle: ['nav.subPurchaseBook', 'Payments, dispatch, requirements, NKG · Kolkata and SHD — the Purchase workbook plus live entries.'] },
   '/dashboard/purchase/labour':   { title: ['nav.labour', 'Labour'],                      breadcrumb: [C_FACTORY, ['nav.labour', 'Labour']] },
 };
 
@@ -161,8 +161,7 @@ const PAGE_SUBTITLES: Record<string, L> = {
   '/dashboard/audit': ['nav.subAudit', 'Security and change log.'],
   '/dashboard/anomalies': ['nav.subAnomalies', 'Open risk flags across modules.'],
   '/dashboard/anomaly-center': ['nav.subAnomalyCenter', 'Investigate and close anomalies.'],
-  '/dashboard/users': ['nav.subUsers', 'Staff directory, roles and plant access.'],
-  '/dashboard/access': ['nav.subAccess', 'Backup download and late bill approvals.'],
+  '/dashboard/users': ['nav.subUsersAll', 'User list → Modify user: details, User Controls (Y / N), Menu Rights tree and back-dated entries — one Save.'],
   '/dashboard/blacklist': ['nav.subBlacklist', 'Restricted persons, vehicles and vendors.'],
   '/dashboard/admin/uploads': ['nav.subUploadHistory', 'Bulk import history and rollbacks.'],
   '/dashboard/daily-log': ['nav.subDailyLog', 'Daily unit sheets by plant.'],
@@ -231,6 +230,9 @@ export function DashboardLayout() {
   // management dashboard. In development we leave it open so the role/profile
   // switcher ("view-as") demo works without standing up auth.
   //
+  // Saved rights read yet? (a page given to one person is known only then)
+  const opsLoaded = !!useOpsSettings().loaded;
+
   // IMPORTANT: this guard must run AFTER every hook above — returning early
   // before a hook call changes the hook count between renders and crashes React
   // (Minified React error #300). All hooks are unconditional; only the render
@@ -294,13 +296,13 @@ export function DashboardLayout() {
 
   // User Management is reachable by anyone with a user/role-management capability
   // (e.g. a delegated unit head), not only via an explicit route grant.
-  const isUserMgmt = path === '/dashboard/users';
-  const isAccess = path === '/dashboard/access';
+  // User Management (with Access & backup inside) is reachable by user/role
+  // managers and by Admin / management (Backup, Late bills tabs).
+  const isUserMgmt = path === '/dashboard/users' || path === '/dashboard/access';
   const canAccessRoute =
     !activeProfile.standaloneOnly &&
     (isPurchaseRoot ? hasSomePurchaseAccess
-      : isUserMgmt ? (can('manage_users') || can('manage_roles') || profileCanAccess(activeProfile, lookupPath))
-      : isAccess ? (isAdminProfile(activeProfile) || isManagementProfile(activeProfile) || profileCanAccess(activeProfile, lookupPath))
+      : isUserMgmt ? (can('manage_users') || can('manage_roles') || isAdminProfile(activeProfile) || isManagementProfile(activeProfile) || profileCanAccess(activeProfile, lookupPath))
       : profileCanAccess(activeProfile, lookupPath));
 
   // Post-login landing: a locked user who hits the Overview ('/dashboard') they
@@ -337,9 +339,10 @@ export function DashboardLayout() {
         />
       )}
 
-      <main className="min-h-screen p-4 md:p-7 ml-0 md:ml-[var(--sidebar-width,260px)] transition-[margin] duration-200">
+      {/* Phones: room below the last button for the thumb and the home indicator. */}
+      <main className="min-h-screen p-4 md:p-7 max-sm:pb-[max(6rem,calc(env(safe-area-inset-bottom)+4rem))] ml-0 md:ml-[var(--sidebar-width,260px)] transition-[margin] duration-200">
         <div className="max-w-[1500px] mx-auto">
-          <TopBar title={title} breadcrumb={breadcrumb} subtitle={subtitle} onMenu={() => setSidebarOpen(true)} />
+          <TopBar title={title} breadcrumb={breadcrumb} subtitle={subtitle} busyChrome={busyChromeOn(location.pathname, location.search)} onMenu={() => setSidebarOpen(true)} />
 
           {/* DEV-ONLY: no Supabase session → the shell shows the demo admin
               profile, but the database sees an ANONYMOUS caller, so every
@@ -413,7 +416,11 @@ export function DashboardLayout() {
                   <LateEntryHost />
                 </ErrorBoundary>
               )
-            : <RestrictedAccess />
+            // A page given to this person (User Management → People) is known only
+            // once the saved rights are read: wait for them, then decide.
+            : !opsLoaded
+              ? <div className="flex min-h-[30vh] items-center justify-center"><div className="h-7 w-7 animate-spin rounded-full border-2 border-slate-200 border-t-slate-500" /></div>
+              : <RestrictedAccess />
           }
 
           <Footer />

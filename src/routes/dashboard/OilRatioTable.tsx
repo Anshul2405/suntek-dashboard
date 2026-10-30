@@ -393,10 +393,6 @@ export function OilRatioTable() {
         )}
       </div>
 
-      {/* Footer */}
-      <div className="text-center text-[11px] text-slate-400 mt-8">
-        Suntek Operations · CaratSense · v0.2 (28-Apr revision)
-      </div>
     </div>
   );
 }

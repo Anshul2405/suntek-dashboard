@@ -36,8 +36,8 @@ const NightEntry       = lazy(() => import('./routes/dashboard/NightEntry').then
 const BatchEntry       = lazy(() => import('./routes/dashboard/BatchEntry').then(m => ({ default: m.BatchEntry })));
 const WarehouseEntry   = lazy(() => import('./routes/dashboard/WarehouseEntry').then(m => ({ default: m.WarehouseEntry })));
 const DailyLogPage     = lazy(() => import('./routes/dashboard/DailyLogPage').then(m => ({ default: m.DailyLogPage })));
-const UserManagement   = lazy(() => import('./routes/dashboard/UserManagement').then(m => ({ default: m.UserManagement })));
-const AccessControl    = lazy(() => import('./routes/dashboard/AccessControl').then(m => ({ default: m.AccessControl })));
+// User Management is the one admin home; Access & backup is its Backup / Late bills tabs.
+const AdminHome        = lazy(() => import('./routes/dashboard/admin/AdminHome').then(m => ({ default: m.AdminHome })));
 const Blacklist        = lazy(() => import('./routes/dashboard/Blacklist').then(m => ({ default: m.Blacklist })));
 const UploadHistory    = lazy(() => import('./routes/dashboard/UploadHistory').then(m => ({ default: m.UploadHistory })));
 const AnomalyDashboard = lazy(() => import('./routes/dashboard/AnomalyDashboard').then(m => ({ default: m.AnomalyDashboard })));
@@ -125,8 +125,8 @@ function App() {
             <Route path="batch-entry"       element={<BatchEntry />} />
             <Route path="warehouse-entry"   element={<WarehouseEntry />} />
             <Route path="daily-log"         element={<DailyLogPage />} />
-            <Route path="users"             element={<UserManagement />} />
-            <Route path="access"            element={<AccessControl />} />
+            <Route path="users"             element={<AdminHome />} />
+            <Route path="access"            element={<Navigate to="/dashboard/users?tab=backup" replace />} />
             <Route path="blacklist"         element={<Blacklist />} />
             {/* Admin-only: delete data imported through an incorrect CSV/Excel
                 upload. Gated by the '*' route wildcard that only admin holds,

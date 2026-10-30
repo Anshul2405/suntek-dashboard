@@ -6,12 +6,16 @@ import { Eye, Plus, Check, Building2 } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { withEmbedFallback } from '../../../lib/scopedList';
+import { useUrlFilters } from '../../../lib/urlFilters';
+import { useUrlTable } from '../../../lib/urlTable';
+import { hereNow, withBack } from '../../../lib/backLink';
 import { usePagination } from '../../../components/ui/usePagination';
 import { ErrorState } from '../../../components/ui/states';
 import { FilterBar, FilterSelect, ButtonV2, StatusPill, TablePaginationV2 } from '../../../components/v2';
 import { normMark } from '../../../lib/far/assets';
 import type { Database } from '../../../lib/database.types';
 import { fetchAllRows } from '../../../lib/fetchAll';
+import { displayLocationName } from '../../../lib/plantLabels';
 
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 type SortKey = 'name' | 'mark' | 'plant' | 'status' | 'generated';
@@ -36,10 +40,18 @@ export function QRManagement() {
   const [assets, setAssets] = useState<AssetRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [search, setSearch] = useState('');
-  const [plantFilter, setPlantFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'name', dir: 'asc' });
+  // Search, filters, sort and page live in the URL: QR Detail's Back used to
+  // land on a fresh list (page 1, no search).
+  const filters = useUrlFilters(['q', 'plant', 'status'] as const);
+  const search = filters.values.q;
+  const setSearch = (q: string) => filters.set({ q });
+  const plantFilter = filters.values.plant || 'all';
+  const setPlantFilter = (v: string) => filters.set({ plant: v === 'all' ? '' : v });
+  const statusFilter = filters.values.status || 'all';
+  const setStatusFilter = (v: string) => filters.set({ status: v === 'all' ? '' : v });
+  const url = useUrlTable({ key: 'name', dir: 'asc' });
+  const sort = { key: (url.sort?.key ?? 'name') as SortKey, dir: url.sort?.dir ?? 'asc' };
+  const setSort = (f: (s: typeof sort) => typeof sort) => url.onSort(f(sort));
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +107,7 @@ export function QRManagement() {
     return [...filtered].sort((a, b) => val(a).localeCompare(val(b)) * dir);
   }, [filtered, sort]);
 
-  const { pageRows, controls } = usePagination(sorted, { initialPageSize: 10, resetKey: `${search}|${plantFilter}|${statusFilter}|${sort.key}|${sort.dir}` });
+  const { pageRows, controls } = usePagination(sorted, { resetKey: `${search}|${plantFilter}|${statusFilter}|${sort.key}|${sort.dir}`, ...url.paging, ready: !loading });
 
   function toggleSort(key: SortKey) {
     setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
@@ -112,7 +124,7 @@ export function QRManagement() {
     );
   };
 
-  const openDetail = (a: AssetRow) => navigate(`/dashboard/purchase/qr/${a.qr_token ?? a.id}`);
+  const openDetail = (a: AssetRow) => navigate(withBack(`/dashboard/purchase/qr/${a.qr_token ?? a.id}`, hereNow()));
 
   return (
     <>
@@ -120,12 +132,12 @@ export function QRManagement() {
       <FilterBar
         className="mb-4"
         search={search} onSearch={setSearch} searchPlaceholder={t('far.qrSearchPlaceholder', 'Search asset name or mark…')}
-        onReset={() => { setSearch(''); setPlantFilter('all'); setStatusFilter('all'); }}
+        onReset={filters.reset}
       >
         <FilterSelect
           label={t('common.plant', 'Plant')} icon={<Building2 />}
           value={plantFilter} onChange={setPlantFilter}
-          options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plantNames.map(p => ({ value: p, label: p }))]}
+          options={[{ value: 'all', label: t('common.allPlants', 'All Plants') }, ...plantNames.map(p => ({ value: p, label: displayLocationName(p) }))]}
         />
         <FilterSelect
           label={t('far.qrStatus', 'QR Status')}
@@ -166,7 +178,7 @@ export function QRManagement() {
                     <tr key={a.id} onClick={() => openDetail(a)} style={{ cursor: 'pointer' }}>
                       <td className="font-semibold text-slate-700">{a.name}</td>
                       <td className="text-slate-500">{a.identification_mark || '—'}</td>
-                      <td className="text-slate-500">{a.plants?.name || '—'}</td>
+                      <td className="text-slate-500">{displayLocationName(a.plants?.name) || '—'}</td>
                       <td>
                         {a.qr_token
                           ? <StatusPill tone="green" icon={<Check strokeWidth={3} />} label={t('far.qrGenerated', 'Generated')} />

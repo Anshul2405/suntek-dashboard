@@ -1,6 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { hereForBack, withBack } from '../../lib/backLink';
+import React, { useMemo, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { patchUrlParams } from '../../lib/urlParams';
+import { hereNow, withBack } from '../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import {
   ClipboardCheck, Receipt, Package, Wrench, Undo2, CalendarClock,
@@ -10,6 +11,7 @@ import { WorkCard } from '../../components/v2';
 import { useTodo } from '../../contexts/TodoContext';
 import { useRoleContext } from '../../contexts/RoleContext';
 import type { TodoTone, TodoItem, TodoCell } from '../../lib/todo/sections';
+import { TODO_ROW_CAP } from '../../lib/todo/rowCap';
 
 /**
  * To-Do / Personal Work Queue — a per-profile view of everything still awaiting
@@ -47,6 +49,19 @@ const SECTION_ICONS: Record<string, React.ReactNode> = {
 
 type SortMode = 'priority' | 'newest' | 'oldest' | 'az' | 'za';
 type SectionSort = SortMode | '';
+
+/** "a:1,b:2" ⇄ { a: '1', b: '2' } — small per-section state in one URL param. */
+function decodePairs(raw: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (raw || '').split(',')) {
+    const i = part.indexOf(':');
+    if (i > 0 && part.slice(i + 1)) out[part.slice(0, i)] = part.slice(i + 1);
+  }
+  return out;
+}
+function encodePairs(map: Record<string, string | number>): string {
+  return Object.entries(map).filter(([, v]) => v !== '' && v != null).map(([k, v]) => `${k}:${v}`).join(',');
+}
 const PAGE_SIZE = 10;
 
 /** All cell text (+ hidden search) for one row, lowercased, for filtering. */
@@ -87,7 +102,6 @@ function Cell({ value }: { value: TodoCell }) {
 
 export function Todo() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { t } = useTranslation();
   const { sections, totalCount, ready, refresh } = useTodo();
   const { activeProfile } = useRoleContext();
@@ -101,12 +115,20 @@ export function Todo() {
     return () => window.removeEventListener('focus', onFocus);
   }, [refresh]);
 
-  const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<SortMode>('priority');
-  const [sectionSort, setSectionSort] = useState<Record<string, SectionSort>>({});
-  const [pages, setPages] = useState<Record<string, number>>({});
-  const sectionSortKey = JSON.stringify(sectionSort);
-  useEffect(() => { setPages({}); }, [query, sort, sectionSortKey]);
+  // Search, sort, per-section sort and per-section page live in the URL
+  // (?q= ?tsort= ?ssort=key:mode ?tpg=key:page), so opening a ticket and
+  // closing it (back=) or Back returns to the same view. A search / sort change
+  // goes back to the first page.
+  const [params, setParams] = useSearchParams();
+  const query = params.get('q') || '';
+  const setQuery = (q: string) => patchUrlParams(setParams, { q, tpg: '' });
+  const sort = (params.get('tsort') || 'priority') as SortMode;
+  const setSort = (m: SortMode) => patchUrlParams(setParams, { tsort: m === 'priority' ? '' : m, tpg: '' });
+  const ssortRaw = params.get('ssort');
+  const sectionSort = useMemo(() => decodePairs(ssortRaw) as Record<string, SectionSort>, [ssortRaw]);
+  const setSectionSort = (key: string, m: SectionSort) =>
+    patchUrlParams(setParams, { ssort: encodePairs({ ...sectionSort, [key]: m }), tpg: encodePairs({ ...decodePairs(params.get('tpg')), [key]: '' }) });
+  const pages = Object.fromEntries(Object.entries(decodePairs(params.get('tpg'))).map(([k, v]) => [k, Number(v) || 0]));
 
   const view = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -129,7 +151,7 @@ export function Todo() {
     );
   }
 
-  const setPage = (key: string, p: number) => setPages((prev) => ({ ...prev, [key]: p }));
+  const setPage = (key: string, p: number) => patchUrlParams(setParams, { tpg: encodePairs({ ...decodePairs(params.get('tpg')), [key]: p > 0 ? String(p) : '' }) });
 
   const sortOptions = (
     <>
@@ -232,7 +254,8 @@ export function Todo() {
               className="flex-1 min-w-[150px]"
               icon={SECTION_ICONS[s.key] ?? s.icon}
               label={t(s.titleKey)}
-              value={s.items.length}
+              // A section reads at most TODO_ROW_CAP rows per query: say "500+", not 500.
+              value={s.items.length >= TODO_ROW_CAP ? `${s.items.length}+` : s.items.length}
               onClick={() => document.getElementById(`todo-sec-${s.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             />
           ))}
@@ -254,7 +277,7 @@ export function Todo() {
                   <div className="ml-auto flex items-center gap-2">
                     <select
                       value={sectionSort[s.key] ?? ''}
-                      onChange={(e) => setSectionSort((prev) => ({ ...prev, [s.key]: e.target.value as SectionSort }))}
+                      onChange={(e) => setSectionSort(s.key, e.target.value as SectionSort)}
                       title={t('todo.sortSection')}
                       className="text-[11px] rounded-lg border border-slate-200 bg-white text-slate-500 focus:outline-none focus:border-slate-400"
                       style={{ padding: '3px 6px' }}
@@ -292,7 +315,7 @@ export function Todo() {
                         <tr
                           key={it.id}
                           // Items that open a ticket / requisition return here on close.
-                          onClick={() => navigate(it.route.startsWith('/dashboard/purchase/') ? withBack(it.route, hereForBack(location)) : it.route)}
+                          onClick={() => navigate(it.route.startsWith('/dashboard/purchase/') ? withBack(it.route, hereNow()) : it.route)}
                           className="hover:bg-slate-50"
                           style={{ cursor: 'pointer', borderBottom: '1px solid #F8FAFC' }}
                         >

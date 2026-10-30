@@ -4,6 +4,8 @@ import type { MockProfile, RoleRow } from '../lib/profiles';
 import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
 import { applyLanguage, hasStoredLanguage } from '../i18n';
+import { loadOpsSettings, useOpsSettings } from '../lib/opsControls';
+import { applyPersonSections } from '../lib/access/rights';
 
 type DbUser = Pick<
   Database['public']['Tables']['user_accounts']['Row'],
@@ -306,6 +308,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
           ...overrides,
           allowedDashboardRoutes: access.allowed_routes,
           capabilities: access.capabilities,
+          roleIds: all.map((r) => r.id),
         }));
       } else {
         // Unknown role → a locked directory entry (no access), still taggable.
@@ -339,9 +342,9 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
       const all = [role, ...extraRoles.filter((r) => r.id !== role.id)];
       if (all.length > 1) {
         const access = unionRoleAccess(all);
-        return { ...base, allowedDashboardRoutes: access.allowed_routes, capabilities: access.capabilities };
+        return { ...base, allowedDashboardRoutes: access.allowed_routes, capabilities: access.capabilities, roleIds: all.map((r) => r.id) };
       }
-      return base;
+      return { ...base, roleIds: [role.id] };
     }
     // Role not found in the catalog.
     if (rolesStatus === 'failed' && sessionProfile.role === 'admin') {
@@ -373,12 +376,38 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     ?? (devBypass ? adminProfile : LOCKED_FALLBACK);
 
   // Active = (admin's preview selection) else self. Non-admins can never deviate.
-  const activeProfile: MockProfile = useMemo(() => {
+  const baseProfile: MockProfile = useMemo(() => {
     if (canSwitch && previewProfileId) {
       return allProfiles.find((p) => p.id === previewProfileId) ?? selfProfile;
     }
     return selfProfile;
   }, [canSwitch, previewProfileId, allProfiles, selfProfile]);
+
+  // The active person's unique personal id (their db twin if provisioned, else
+  // their profile id). NEVER the shared role id — used for "is this mine /
+  // mark seen / exclude self" so two same-role people stay distinct.
+  const activePersonId = useMemo(() => {
+    if (baseProfile.id.startsWith('db_')) return baseProfile.id; // already personal
+    if (sessionUserId && baseProfile.id === selfProfile.id) {
+      const mine = directory.find((p) => p.authUserId === sessionUserId);
+      if (mine) return mine.id; // exact auth link
+    }
+    const key = baseProfile.name.trim().toLowerCase();
+    const twin = directory.find((p) => p.name.trim().toLowerCase() === key);
+    return twin?.id ?? baseProfile.id; // name twin, else the profile id
+  }, [baseProfile, directory, sessionUserId, selfProfile]);
+
+  // User Management → People: this person's own yes / no on sections beats
+  // their roles. A "no" applies from any copy of the settings; a "yes" only
+  // once the saved settings are read (fail-closed).
+  const ops = useOpsSettings();
+  // Re-read the saved rights when the login changes: the first read runs before
+  // sign-in and is refused, which would leave everyone fail-closed all session.
+  useEffect(() => { if (sessionUserId) void loadOpsSettings(); }, [sessionUserId]);
+  const activeProfile: MockProfile = useMemo(
+    () => applyPersonSections(baseProfile, ops, activePersonId),
+    [baseProfile, ops, activePersonId],
+  );
 
   // Every id the active person answers to (self id + role id + db twin id).
   const activeIdentityIds = useMemo(() => {
@@ -396,19 +425,6 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     return [...ids];
   }, [activeProfile, directory, sessionUserId, selfProfile]);
 
-  // The active person's unique personal id (their db twin if provisioned, else
-  // their profile id). NEVER the shared role id — used for "is this mine /
-  // mark seen / exclude self" so two same-role people stay distinct.
-  const activePersonId = useMemo(() => {
-    if (activeProfile.id.startsWith('db_')) return activeProfile.id; // already personal
-    if (sessionUserId && activeProfile.id === selfProfile.id) {
-      const mine = directory.find((p) => p.authUserId === sessionUserId);
-      if (mine) return mine.id; // exact auth link
-    }
-    const key = activeProfile.name.trim().toLowerCase();
-    const twin = directory.find((p) => p.name.trim().toLowerCase() === key);
-    return twin?.id ?? activeProfile.id; // name twin, else the profile id
-  }, [activeProfile, directory, sessionUserId, selfProfile]);
 
   // The active person's provisioning date (notification floor). Resolved from
   // whichever directory entry matches their personal id; null for archetypes.

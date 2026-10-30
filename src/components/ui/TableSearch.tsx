@@ -34,6 +34,8 @@ export function TableSearch({
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
+        // Phones: 44px tall, 16px text so iOS does not zoom on focus.
+        className="max-sm:min-h-[44px] max-sm:!text-[16px]"
         style={{
           width: '100%', border: '1px solid #E2E8F0', borderRadius: 8, padding: '7px 30px 7px 32px',
           fontSize: 13, fontFamily: 'inherit', outline: 'none',

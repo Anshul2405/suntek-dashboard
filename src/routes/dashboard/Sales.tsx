@@ -24,7 +24,7 @@ function customerSearchName(label: string): string {
 }
 import { supabase } from '../../lib/supabase';
 import { insertRows } from '../../lib/db';
-import { useSalesMTD, useSalesContracts, useAnalyticsKPIs, fmtINR } from '../../hooks/useBusyData';
+import { useSalesMTD, useSalesContracts, useAnalyticsKPIs, useOverviewKPIs, fmtINR } from '../../hooks/useBusyData';
 import { DeltaBadge, BulletCompare } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { exportToXlsx } from '../../lib/utils/exportXlsx';
@@ -32,6 +32,7 @@ import { useRoleContext } from '../../contexts/RoleContext';
 import { profileCanAccess } from '../../lib/profiles';
 import { useToast } from '../../components/ui/toast';
 import { OcrUploadCard } from '../../components/OcrUploadCard';
+import { SalesDesksCard } from '../../components/SalesDesksCard';
 
 // Sales sheet OCR upload is available to management/finance roles only.
 const CAN_UPLOAD_SHEET = ['admin', 'unit_head', 'accountant_delhi', 'accountant_other'];
@@ -52,6 +53,9 @@ export function Sales() {
   const { activeProfile } = useRoleContext();
   const { data: salesKPIs } = useSalesMTD();
   const { data: liveContracts } = useSalesContracts();
+  // Overview's "Debtors outstanding" is the Busy ledger balance; this table's
+  // outstanding is Busy's open bill-by-bill references. Say so when they differ.
+  const { data: overviewKpis } = useOverviewKPIs();
   const [salesSearch, setSalesSearch] = useState('');
   // Row click opens a real detail (B6) — the row used to look clickable and do nothing.
   const [detail, setDetail] = useState<SalesContract | null>(null);
@@ -333,6 +337,9 @@ export function Sales() {
         </InfoBanner>
       </div>
 
+      {/* NKG · Kolkata and SHD desks (read only) */}
+      <SalesDesksCard />
+
       {/* Contracts filter + table */}
       <FilterBar
         className="mb-4"
@@ -343,7 +350,7 @@ export function Sales() {
       />
 
       <div className="relative">
-        <KpiInfoButton info={{ title: 'Sales Contracts Table', what: 'All customer contracts with locked-in price and density spread. Shows FY sales, MTD sales, invoice count, and outstanding balance per customer. Status (On Track / Overdue / Cleared) is derived from BUSY outstanding balance. Live data from BUSY DB.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum/Master1 ParentGrp=116' }} />
+        <KpiInfoButton info={{ title: 'Sales Contracts Table', what: 'Top 20 customers of each Busy company by FY sales (All companies = combined and re-ranked). Shows FY sales, MTD sales, invoice count, and outstanding balance per customer. Status is the outstanding balance only — over ₹5 L, up to ₹5 L, or cleared. Busy sends no due dates, so it does not say whether a bill is overdue. Live data from BUSY DB.', source: 'BUSY DB', tables: ['Tran1', 'Master1', 'DailySum'], dbPath: 'BusyFY2026 > dbo > Tables > Tran1\nBusyFY2026 > dbo > Tables > Master1', filter: 'VchType=9, Cancelled=0 · outstanding from DailySum/Master1 ParentGrp=116' }} />
         <SectionCard
           flush
           title={t('sales.contractsTitle')}
@@ -400,6 +407,12 @@ export function Sales() {
                 </table>
               </div>
               <TablePagination controls={salesPg.controls} />
+              {overviewKpis && (overviewKpis.debtorsOutstanding ?? 0) > 0
+                && (liveContracts ?? []).reduce((n, c) => n + (Number(c.outstanding) || 0), 0) === 0 && (
+                <p className="px-5 pb-4 text-xs text-slate-500">
+                  {t('sales.outstandingSourceNote', { defaultValue: 'Open bills here come from Busy’s bill-by-bill references, which are empty in this read. Overview’s debtors ({{amount}}) is the ledger balance — the two differ when bills are not adjusted bill-by-bill in Busy.', amount: fmtINR(overviewKpis.debtorsOutstanding) })}
+                </p>
+              )}
             </>
           )}
         </SectionCard>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { formatDateTime } from '../../../lib/utils/formatting';
+import { formatDateTime, istDayKey, istFyStartYear, istToday } from '../../../lib/utils/formatting';
+import { canEditModule, useOpsSettings } from '../../../lib/opsControls';
 import { displayLocationName } from '../../../lib/plantLabels';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
@@ -10,7 +11,7 @@ import { humanizeError as errMsg } from '../../../lib/errors';
 import { insertRows, updateRows } from '../../../lib/db';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
-import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelRow, PanelDivider, OcrUpload, PanelFooter } from '../../../components/SlidePanel';
+import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelRow, PanelDivider, OcrUpload, PanelFooter, PanelDateInput } from '../../../components/SlidePanel';
 import { KpiInfoButton } from '../../../components/KpiInfoButton';
 import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../../components/ui/states';
@@ -18,6 +19,8 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { useSortable } from '../../../components/ui/useSortable';
 import { StatCard, SectionCard, ButtonV2, SegmentTabs, TablePaginationV2, ThV2 as Th, FilterBar, FilterSelect } from '../../../components/v2';
 import { Boxes, Wrench, Camera, Download, Upload, Plus, Building2 } from 'lucide-react';
+import { useUrlTable } from '../../../lib/urlTable';
+import { hereNow } from '../../../lib/backLink';
 import { useUrlFilters } from '../../../lib/urlFilters';
 import { exportToCsv, type CsvColumn } from '../../../lib/utils/exportCsv';
 import { uploadWorkflowFile, uploadWorkflowImage } from '../../../lib/cloudinary';
@@ -33,6 +36,7 @@ import { normalizeAssetDate } from '../../../lib/far/dates';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import type { Database } from '../../../lib/database.types';
 import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
+import { useRights } from '../../../lib/access/useRights';
 
 // ── FAR bulk-import (CSV / Excel → verify → register) ─────────────────────────
 interface FarImportRow {
@@ -122,11 +126,10 @@ interface MaintEntry {
 /** Indian financial year (Apr–Mar) label for a date, e.g. "FY2025-26". */
 function fyOf(d: string | null | undefined): string {
   if (!d) return 'Unknown';
-  const dt = new Date(d);
-  if (isNaN(dt.getTime())) return 'Unknown';
-  const y = dt.getFullYear();
-  const apr = dt.getMonth() >= 3; // month 3 = April
-  const start = apr ? y : y - 1;
+  // The IST day decides the year: a ticket closed at 01:00 IST on 1 April is
+  // the new FY even though it is still 31 March in UTC.
+  if (!istDayKey(d)) return 'Unknown';
+  const start = istFyStartYear(d);
   return `FY${start}-${String((start + 1) % 100).padStart(2, '0')}`;
 }
 
@@ -281,18 +284,28 @@ export function FAR() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
-  const location = useLocation();
   /** Return path for anything opened from FAR: Maintenance navigates here when its panel closes. */
-  const backHere = () => `back=${encodeURIComponent(location.pathname + location.search)}`;
+  // Live URL: page / group / register state is written with replace.
+  const backHere = () => `back=${encodeURIComponent(hereNow())}`;
   const statusLabel = (status: string) => statusText(status, t);
-  const { activeProfile } = useRoleContext();
+  const { activeProfile, activePersonId } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks.
+  const rights = useRights();
   const { scopeQuery, allowedPlants, ready: scopeReady } = usePlantScope();
   // Machine-photo lightbox (PIC column → view).
   const [picView, setPicView] = useState<LightboxImage[] | null>(null);
 
   /** PIC column upload: Cloudinary → fixed_assets.photo_url → local state.
    *  The same photo then appears on the Asset Profile (QR landing) header. */
+  // Access & backup → "Who can edit or delete" (FAR): once saved, only ticked
+  // roles / people change an asset's photo. Admin always can.
+  const opsTicks = useOpsSettings();
+  const canEditFar = canEditModule(opsTicks, activeProfile, 'far', activePersonId);
   async function handleAssetPicUpload(asset: AssetRow, file: File) {
+    if (!canEditFar) {
+      toast.error(t('far.editForbidden', 'Your role is not allowed to edit FAR assets (Access & backup).'));
+      return;
+    }
     try {
       const up = await uploadWorkflowImage(file, {
         workflow: 'general', subfolder: 'far-assets', kind: 'asset-pic',
@@ -313,14 +326,23 @@ export function FAR() {
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [assets, setAssets] = useState<AssetRow[]>([]);
-  const [expandedType, setExpandedType] = useState<string | null>(null);
+  // Which group is open and whether the register is shown also live in the URL
+  // (?grp= ?reg=): raising / opening a ticket from an asset and closing it came
+  // back to a hidden register on page 1.
+  const viewState = useUrlFilters(['grp', 'reg'] as const);
+  const expandedType = viewState.values.grp || null;
+  const setExpandedType = (grp: string | null) => viewState.set({ grp: grp ?? '' });
   // Filters live in the URL (q, plant, pic, rstatus, fy) — refresh / back= keep them.
   const filters = useUrlFilters(['q', 'plant', 'pic', 'rstatus', 'fy'] as const);
   const { q: equipSearch, plant: farPlant, pic: picFilter, rstatus: repairStatus, fy: fyParam } = filters.values;
   const equipPlantFilter = useMemo(() => (farPlant ? [farPlant] : []), [farPlant]);
   // The big list is hidden until asked. null = automatic: a register filter
   // (search / photo) opens it — filtering a hidden list helps no one.
-  const [equipOpenTable, setEquipOpenTable] = useState<boolean | null>(null);
+  const equipOpenTable = viewState.values.reg === '1' ? true : viewState.values.reg === '0' ? false : null;
+  const setEquipOpenTable = (v: boolean | null | ((cur: boolean | null) => boolean | null)) => {
+    const next = typeof v === 'function' ? v(equipOpenTable) : v;
+    viewState.set({ reg: next == null ? '' : next ? '1' : '0' });
+  };
   const registerOpen = equipOpenTable ?? (!!equipSearch || !!picFilter);
   // Plant filter options: only factories this user can access.
   const filterPlants = useMemo(
@@ -336,6 +358,8 @@ export function FAR() {
   // register; the client's requirement is "FAR different for all 3".
   const [importPlantId, setImportPlantId] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  // The first page paints the table; totals wait for every page (no 1000 / partial % shown as final).
+  const [assetsComplete, setAssetsComplete] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Maintenance/repair cost register (annual, for insurance)
   const [maintEntries, setMaintEntries] = useState<MaintEntry[]>([]);
@@ -354,10 +378,10 @@ export function FAR() {
   const [cloudUrl, setCloudUrl] = useState<string | null>(null);
   const [importFileName, setImportFileName] = useState('');
   const importInputRef = useRef<HTMLInputElement>(null);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   const [form, setForm] = useState({
     mark: '', model: '', capacity: '', origin: 'India',
-    year: new Date().getFullYear().toString(),
+    year: istToday().slice(0, 4),
     value: '', invoice: '', purchaseDate: today,
     account: 'Plant & Machinery', plant: '',
   });
@@ -376,7 +400,7 @@ export function FAR() {
         withEmbedFallback(
           fetchAllRows<AssetRow>((from, to) =>
             scopeQuery(supabase.from('fixed_assets').select(`${ASSET_COLS}, plants(name)`)).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>(),
-            { onPartial: rows => { setAssets(rows); setLoading(false); } }),
+            { onPartial: rows => { setAssets(rows); setLoading(false); setAssetsComplete(false); } }),
           () => fetchAllRows<AssetRow>((from, to) =>
             scopeQuery(supabase.from('fixed_assets').select('*')).order('created_at', { ascending: false }).order('id').range(from, to).returns<AssetRow[]>()),
           'FAR.assets',
@@ -385,6 +409,7 @@ export function FAR() {
       if (plantsData && plantsData.length > 0) setDbPlants(plantsData);
       if (error) throw error;
       setAssets(data || []);
+      setAssetsComplete(true);
       setLoadError(false);
       // Display codes come from assignSequentialJobNos / jobNoFar. Do not write
       // job_no just because the register opened — that used to RPC next_job_no
@@ -547,13 +572,16 @@ export function FAR() {
     if (q) filtered = filtered.filter(a => (a.name || '').toLowerCase().includes(q) || normMark(a.identification_mark).includes(normMark(q)) || (jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no)).toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
     return groupAssetsByType(filtered);
   }, [assets, equipSearch, equipPlantFilter, picFilter, jobMap]);
+  // Page / size / sort of both lists in the URL (register: ?gp= ?gsort=, cost register: ?mp= ?msort=).
+  const groupUrl = useUrlTable({ key: 'type', dir: 'asc' }, 'g');
+  const fyUrl = useUrlTable({ key: 'closed', dir: 'desc' }, 'm');
   const groupSort = useSortable(equipGroups, {
     type: g => g.type,
     count: g => g.count,
     job: g => g.assets
       .map(a => jobMap.get(a.id) || jobNoFar(a.id, a.identification_mark, a.job_no))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0] || '',
-  }, { key: 'type', dir: 'asc' });
+  }, groupUrl.sort, groupUrl.onSort);
   // Representative (most common non-empty) value for a group column.
   const repVal = (vals: (string | number | null)[]) => {
     const counts = new Map<string, number>();
@@ -622,9 +650,9 @@ export function FAR() {
     status: e => e.status,
     closed: e => new Date(e.closed_at || e.created_at),
     cost: e => e.cost,
-  }, { key: 'closed', dir: 'desc' });
-  const groupPg = usePagination(groupSort.sorted, { resetKey: `${equipSearch}|${farPlant}|${picFilter}|${groupSort.sort.key}|${groupSort.sort.dir}` });
-  const fyPg = usePagination(fySort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}` });
+  }, fyUrl.sort, fyUrl.onSort);
+  const groupPg = usePagination(groupSort.sorted, { resetKey: `${equipSearch}|${farPlant}|${picFilter}|${groupSort.sort.key}|${groupSort.sort.dir}`, ...groupUrl.paging, ready: !loading });
+  const fyPg = usePagination(fySort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${activeFY ?? ''}|${fySort.sort.key}|${fySort.sort.dir}`, ...fyUrl.paging, ready: !maintLoading });
 
   // ── Pic-proof coverage — % of registered assets with a photo on file ─────────
   const picCoverage = assets.length
@@ -813,7 +841,7 @@ export function FAR() {
     }
     if (data) setAssets(prev => [data as AssetRow, ...prev]);
     setSaved(true);
-    setTimeout(() => { setOpen(false); setSaved(false); setForm({ mark: '', model: '', capacity: '', origin: 'India', year: new Date().getFullYear().toString(), value: '', invoice: '', purchaseDate: today, account: 'Plant & Machinery', plant: plantOptions[0]?.id ?? '' }); }, 1600);
+    setTimeout(() => { setOpen(false); setSaved(false); setForm({ mark: '', model: '', capacity: '', origin: 'India', year: istToday().slice(0, 4), value: '', invoice: '', purchaseDate: today, account: 'Plant & Machinery', plant: plantOptions[0]?.id ?? '' }); }, 1600);
   }
 
   function handleClose() { setOpen(false); setSaved(false); }
@@ -827,7 +855,7 @@ export function FAR() {
               changed twice (migration 58's rename, migration 69's Drum Plant).
               A hard-coded roster in help text goes stale silently. */}
           <KpiInfoButton info={{ title: 'Total Fixed Assets', what: 'Count of all capitalised fixed assets registered across the factories you have access to. Each asset is named and tracked in the FAR, and belongs to exactly one factory.', source: 'Form entry', formLabel: 'Add Asset form', formPath: '/dashboard/purchase/far', note: 'Live count from the Supabase fixed_assets table, scoped to your factories.' }} />
-          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading ? '…' : assets.length}
+          <StatCard className="h-full" icon={<Boxes />} label={t('far.totalFixedAssets')} value={loading || !assetsComplete ? '…' : assets.length}
             onView={() => { filters.only({}); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')}
             caption={loading ? '\u00a0' : plantsInFar.length === 0
@@ -844,7 +872,7 @@ export function FAR() {
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-4 relative">
           <KpiInfoButton info={{ title: 'Pic-Proof Coverage', what: 'Percentage of registered assets that have a photo on file as proof of existence. Required for insurance claims and audits. Target 100%.', source: 'Derived', note: 'Assets with a photo on file ÷ total registered assets. 0% when the FAR is empty. Updates as photos are added or removed.' }} />
-          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading ? '…' : `${picCoverage}%`}
+          <StatCard className="h-full" icon={<Camera />} tone="green" label={t('far.picProofCoverage')} value={loading || !assetsComplete ? '…' : `${picCoverage}%`}
             caption={<div className="progress mt-1"><div style={{ width: `${picCoverage}%` }}></div></div>}
             onView={() => { filters.only({ pic: 'missing' }); setEquipOpenTable(true); farRegisterRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
             viewLabel={t('far.viewRegister', 'View register')} />
@@ -901,11 +929,11 @@ export function FAR() {
             <div className="grid grid-cols-12 gap-4 mb-4">
               <div className="col-span-12 sm:col-span-4 rounded-xl border border-slate-100 p-4" style={{ background: '#F8FAFC' }}>
                 <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('far.repairCost')} · {fyLabel}</div>
-                <div className="text-[24px] font-extrabold mt-1 num text-slate-800">{inr(fyTotal)}</div>
+                <div className="text-[24px] font-extrabold mt-1 num text-slate-800">{maintLoading ? '…' : inr(fyTotal)}</div>
               </div>
               <div className="col-span-6 sm:col-span-4 rounded-xl border border-slate-100 p-4" style={{ background: '#F8FAFC' }}>
                 <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('far.maintenanceEntries')}</div>
-                <div className="text-[24px] font-extrabold mt-1 num">{fyEntries.length}</div>
+                <div className="text-[24px] font-extrabold mt-1 num">{maintLoading ? '…' : fyEntries.length}</div>
               </div>
               <div className="col-span-6 sm:col-span-4 rounded-xl border border-slate-100 p-4" style={{ background: '#F8FAFC' }}>
                 <div className="text-[11px] text-slate-500 uppercase tracking-wider">{t('far.lastUpdated')}</div>
@@ -958,9 +986,11 @@ export function FAR() {
             <ButtonV2 variant="outline" icon={<Upload />} onClick={() => { setImportOpen(o => !o); if (importStage === 'done') resetImport(); }}>
               {t('far.importCsvExcel')}
             </ButtonV2>
-            <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
-              {t('far.registerAsset')}
-            </ButtonV2>
+            {rights.can('far', 'add') && (
+              <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setOpen(true)}>
+                {t('far.registerAsset')}
+              </ButtonV2>
+            )}
           </>
         }
       >
@@ -1205,7 +1235,7 @@ export function FAR() {
 
         <PanelRow>
           <PanelField label={t('far.fldDateOfPurchase')}>
-            <PanelInput type="date" value={form.purchaseDate} onChange={e => set('purchaseDate', e.target.value)} />
+            <PanelDateInput value={form.purchaseDate} onChange={e => set('purchaseDate', e.target.value)} />
           </PanelField>
           <PanelField label={t('far.fldPlant')}>
             <PanelSelect value={form.plant} onChange={e => set('plant', e.target.value)}>
@@ -1231,7 +1261,7 @@ export function FAR() {
             { key: 'model',        label: t('far.ocrFldModelMake'),     value: 'Atlas Copco GA18' },
             { key: 'capacity',     label: t('far.ocrFldCapacitySpecs'), value: '18 kW / 10 bar' },
             { key: 'value',        label: t('far.ocrFldTaxableValue'),  value: '3,85,000' },
-            { key: 'purchaseDate', label: t('far.ocrFldInvoiceDate'),   value: new Date().toISOString().slice(0, 10) },
+            { key: 'purchaseDate', label: t('far.ocrFldInvoiceDate'),   value: istToday() },
           ]}
           onExtracted={handleOcr}
         />

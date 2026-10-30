@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { patchUrlParams } from '../../../lib/urlParams';
-import { formatDateTime, inIstDayRange } from '../../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday, istMonthStartIso } from '../../../lib/utils/formatting';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
@@ -17,10 +17,11 @@ import { fetchAllRows, fetchByIds } from '../../../lib/fetchAll';
 import { isAdminProfile, canSeeScheduleSetup, type RoleRow } from '../../../lib/profiles';
 import { issueLineValue, storeIssueNeedsPhoto } from '../../../lib/store/issuePhoto';
 import { fetchPurchaseFacts, type PurchaseFact } from '../../../lib/store/purchaseFacts';
-import { canEditRaisedTicket, ticketEditMinutesLeft } from '../../../lib/ticketEditWindow';
+import { codeLabel } from '../../../lib/labels';
+import { canEditRaisedTicket, editAccess, editWindowMs, editWindowText, ticketEditMinutesLeft, ticketIsApprovedOrClosed } from '../../../lib/ticketEditWindow';
 import { useBlacklist } from '../../../contexts/BlacklistContext';
 import { uploadMaintenancePhoto } from '../../../lib/cloudinary';
-import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, PanelFooter } from '../../../components/SlidePanel';
+import { SlidePanel, PanelField, PanelInput, PanelSelect, PanelTextarea, PanelRow, PanelDivider, PanelFooter, PanelDateInput } from '../../../components/SlidePanel';
 import { MentionText, NotesButton, ReadReceipt } from '../../../components/mentions';
 import { useToast } from '../../../components/ui/toast';
 import { useNotifications } from '../../../contexts/NotificationsContext';
@@ -53,12 +54,17 @@ import {
   partDecisionLabel,
 } from './maintenance/shared';
 import { usePagination } from '../../../components/ui/usePagination';
+import { useUrlTable } from '../../../lib/urlTable';
+import { displayEquipName, searchFold } from '../../../lib/far/equipName';
 import { useSortable } from '../../../components/ui/useSortable';
 import { SegmentTabs, StatCard, SectionCard, FilterBar, FilterSelect, ButtonV2, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
-import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText, Trash2 } from 'lucide-react';
+import { Calendar, CalendarDays, AlertTriangle, CheckCircle2, Hourglass, ShoppingCart, Settings, Building2, Activity, Plus, Upload, FileText } from 'lucide-react';
 import { safeBack } from '../../../lib/backLink';
+import { canDeleteModule, useOpsSettings } from '../../../lib/opsControls';
 import { itemStageOf, rollupStatusOf, vijayStepLive, useVijayStepLive, type ItemStage } from './maintenance/itemStage';
 import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
+import { logActivity } from '../../../lib/activityWrite';
+import { useRights } from '../../../lib/access/useRights';
 
 type EntityNoteRow = Database['public']['Tables']['entity_notes']['Row'];
 
@@ -519,7 +525,9 @@ function ScheduleRowMenu({ isActive, deleting, onRevise, onToggle, onDuplicate, 
 const materialising = new Set<string>();
 
 export function Maintenance() {
-  const { activeProfile, allProfiles, roles, can } = useRoleContext();
+  const { activeProfile, activePersonId, allProfiles, roles, can } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks.
+  const rights = useRights();
   const { scopeQuery, units: scopeUnits, allowedPlants, storeIdFor, ready: scopeReady } = usePlantScope();
   const { isPersonBlacklisted, notifyActivity, tableReady: blacklistReady } = useBlacklist();
   const toast = useToast();
@@ -586,7 +594,6 @@ export function Maintenance() {
   const isUnitHead = role === 'unit_head' || activeProfile.baseRoleId === 'unit_head';
   const isStoreManager = [role, activeProfile.baseRoleId].some(id => !!id && ALL_STORE_MANAGER_IDS.includes(id));
   const showScheduleSetup = canSeeScheduleSetup(activeProfile);
-  const isPurchaseManager = role === 'purchase_manager';
   // Not-in-store parts: Unit Head → Vijay ji → purchaser (once migration 0038 is in).
   const vijayLive = useVijayStepLive();
   const buyers = useBuyers();
@@ -663,7 +670,7 @@ export function Maintenance() {
   const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
 
   // Form state
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
   // unit is NOT seeded from the legacy plant_name (that mis-tagged non-Jharkhand users
   // with Plasticiser/Chlorides). Plant defaults from the real data scope; unit only
   // applies when the chosen plant is a Jharkhand plant.
@@ -694,11 +701,8 @@ export function Maintenance() {
   // Handover form (store manager uploads invoice + product photo)
   const [handoverInvoiceBlob, setHandoverInvoiceBlob] = useState<Blob | null>(null);
   const [handoverPhotoBlob, setHandoverPhotoBlob] = useState<Blob | null>(null);
-  const [dispatchBlob, setDispatchBlob] = useState<Blob | null>(null); // purchase manager bill photo
+  const [purchaseBillBlob, setPurchaseBillBlob] = useState<Blob | null>(null);
   const [handoverNotes, setHandoverNotes] = useState('');
-
-  // Purchase Manager aggregate bill form (one bill for all procured items).
-  const [pmForm, setPmForm] = useState({ itemsCount: '', billTotal: '' });
 
   // Other action state
   const [busyRef, setBusyRef] = useState('');
@@ -724,8 +728,7 @@ export function Maintenance() {
   const [raisePhotoBlob, setRaisePhotoBlob] = useState<Blob | null>(null); // optional defective-item photo at raise
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
-  // Distinguishes the two slow steps of a bill submit: the AI read/verify (no % yet)
-  // vs the actual file upload (real %). Only set during submitPurchaseManagerBill.
+  // Distinguishes OCR vs the actual file upload on the purchaser bill.
   const [busyPhase, setBusyPhase] = useState<'verifying' | 'uploading'>('uploading');
 
   // Save states
@@ -733,7 +736,6 @@ export function Maintenance() {
   const [scheduleSaved, setScheduleSaved] = useState(false);
   const [raising, setRaising] = useState(false);          // double-submit guard
   const [savingSchedule, setSavingSchedule] = useState(false);
-  const [deletingAll, setDeletingAll] = useState(false);
 
   // Admin edit + report
   const [editingTicket, setEditingTicket] = useState(false);
@@ -1211,6 +1213,9 @@ export function Maintenance() {
     // over the Incidents tab's own URL filters — they never applied.
   }, [fltQ, fltPlant, fltStatus, fltDue]); // eslint-disable-line react-hooks/exhaustive-deps
   const resetFilters = () => { setFltQ(''); setFltPlant('all'); setFltStatus('all'); setFltDue('all'); };
+  // The emergency KPI cards count every ticket in scope, so "See …" clears the
+  // search / plant filter too — otherwise the list showed fewer than the card.
+  const showEmergencyGroup = (group: string) => { setFltQ(''); setFltPlant('all'); setFltStatus(group); };
 
   // Schedule Setup uses the same URL filters as the other tabs (q / plant / status).
   const shownSchedules = schedules.filter(s =>
@@ -1229,9 +1234,10 @@ export function Maintenance() {
     if (d !== null && d <= 3) return 'due-soon';
     return 'on-track';
   };
+  // "diesel" also finds the 67 tickets typed "Disel Generator" (and the reverse).
   const matchQ = (...txt: (string | null | undefined)[]) => {
-    const q = fltQ.trim().toLowerCase();
-    return !q || txt.some(x => (x || '').toLowerCase().includes(q));
+    const q = searchFold(fltQ.trim());
+    return !q || txt.some(x => searchFold(x).includes(q));
   };
   /** Ticket # is shown as the first 8 chars of the UUID — search must match that too. */
   const ticketSearchHaystack = (t: TicketRow) => {
@@ -1285,12 +1291,12 @@ export function Maintenance() {
     return names.length ? `${names.join(', ')}${extra} · ${dueScopeLabel}` : dueScopeLabel;
   };
   // Emergency KPI "See …" links filter to exactly the statuses each card counts.
-  const grpMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const grpMonthStart = istMonthStartIso();
   const emergencyGroups: Record<string, { label: string; match: (tk: TicketRow) => boolean }> = {
     'grp:open':       { label: t('maint.openTickets'), match: tk => tk.status !== 'closed' },
     'grp:store':      { label: t('maint.pendingStoreApproval'), match: tk => ['pending_store', 'pending_unit_head'].includes(tk.status) },
     'grp:purchase':   { label: t('maint.purchaseHandover'), match: tk => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(tk.status) },
-    'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && tk.closed_at >= grpMonthStart },
+    'grp:closed_mtd': { label: t('maint.closedMtd'), match: tk => tk.status === 'closed' && !!tk.closed_at && Date.parse(tk.closed_at) >= Date.parse(grpMonthStart) },
   };
   const fltEmergency = emergencyTickets.filter(t =>
     matchQ(...ticketSearchHaystack(t))
@@ -1331,10 +1337,19 @@ export function Maintenance() {
     lastDone: (s: ScheduleRow) => (s.last_completed_at ? new Date(s.last_completed_at) : null),
     due: (s: ScheduleRow) => (s.next_due_at ? new Date(s.next_due_at) : null),
   };
-  const dueTodaySort = useSortable(dueTodaySchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
-  const overdueSort = useSortable(overdueSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
-  const weeklyListSort = useSortable(weeklyListSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
-  const upcomingSort = useSortable(upcomingSchedules.filter(inDue), periodicSortKeys, { key: 'due', dir: 'asc' });
+  // Every worklist keeps its page / size / sort in the URL (own prefix per list),
+  // so Back from a linked screen, back= and a refresh return to the same rows.
+  const dueAsc = { key: 'due', dir: 'asc' as const };
+  const todayUrl = useUrlTable(dueAsc, 'td');
+  const overdueUrl = useUrlTable(dueAsc, 'od');
+  const weeklyUrl = useUrlTable(dueAsc, 'wk');
+  const upcomingUrl = useUrlTable(dueAsc, 'up');
+  const emergencyUrl = useUrlTable({ key: 'created', dir: 'desc' });
+  const scheduleUrl = useUrlTable(dueAsc, 'sc');
+  const dueTodaySort = useSortable(dueTodaySchedules.filter(inDue), periodicSortKeys, todayUrl.sort, todayUrl.onSort);
+  const overdueSort = useSortable(overdueSchedules.filter(inDue), periodicSortKeys, overdueUrl.sort, overdueUrl.onSort);
+  const weeklyListSort = useSortable(weeklyListSchedules.filter(inDue), periodicSortKeys, weeklyUrl.sort, weeklyUrl.onSort);
+  const upcomingSort = useSortable(upcomingSchedules.filter(inDue), periodicSortKeys, upcomingUrl.sort, upcomingUrl.onSort);
   const emergencySort = useSortable(fltEmergency, {
     ticket: t => t.id,
     equipment: t => t.equipment,
@@ -1343,7 +1358,7 @@ export function Maintenance() {
     status: t => t.status,
     raisedBy: t => t.raised_by,
     created: t => (t.created_at ? new Date(t.created_at) : null),
-  }, { key: 'created', dir: 'desc' });
+  }, emergencyUrl.sort, emergencyUrl.onSort);
   const scheduleSort = useSortable(shownSchedules, {
     task: s => s.title,
     equipment: s => s.equipment,
@@ -1352,28 +1367,29 @@ export function Maintenance() {
     assignedTo: s => s.assigned_to,
     due: s => (s.next_due_at ? new Date(s.next_due_at) : null),
     status: s => (s.is_active ? 1 : 0),
-  }, { key: 'due', dir: 'asc' });
+  }, scheduleUrl.sort, scheduleUrl.onSort);
 
   // Pagination for the three long maintenance tables (default 10/page).
   const fltKey = `${fltQ}|${fltPlant}|${fltStatus}|${fltDue}`;
-  const dueTodayPg = usePagination(dueTodaySort.sorted, { resetKey: `${fltKey}|today|${dueTodaySort.sort.key}|${dueTodaySort.sort.dir}` });
-  const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}` });
-  const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}` });
-  const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}` });
-  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}` });
-  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${fltKey}|schedule|${scheduleSort.sort.key}|${scheduleSort.sort.dir}` });
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  // Not clamped while the ticket pages are still arriving (first 1000 paint first).
+  const listsReady = !loading && !ticketsPartial;
+  const dueTodayPg = usePagination(dueTodaySort.sorted, { resetKey: `${fltKey}|today|${dueTodaySort.sort.key}|${dueTodaySort.sort.dir}`, ...todayUrl.paging, ready: listsReady });
+  const overduePg = usePagination(overdueSort.sorted, { resetKey: `${fltKey}|overdue|${overdueSort.sort.key}|${overdueSort.sort.dir}`, ...overdueUrl.paging, ready: listsReady });
+  const weeklyListPg = usePagination(weeklyListSort.sorted, { resetKey: `${fltKey}|weekly|${weeklyListSort.sort.key}|${weeklyListSort.sort.dir}`, ...weeklyUrl.paging, ready: listsReady });
+  const upcomingPg = usePagination(upcomingSort.sorted, { resetKey: `${fltKey}|upcoming|${upcomingSort.sort.key}|${upcomingSort.sort.dir}`, ...upcomingUrl.paging, ready: listsReady });
+  const emergencyPg = usePagination(emergencySort.sorted, { resetKey: `${fltKey}|${emergencySort.sort.key}|${emergencySort.sort.dir}`, ...emergencyUrl.paging, ready: listsReady });
+  const schedulePg = usePagination(scheduleSort.sorted, { resetKey: `${fltKey}|schedule|${scheduleSort.sort.key}|${scheduleSort.sort.dir}`, ...scheduleUrl.paging, ready: listsReady });
+  const monthStart = istMonthStartIso();
 
   const openEmergency = emergencyTickets.filter(t => t.status !== 'closed').length;
   const pendingStore = emergencyTickets.filter(t => ['pending_store', 'pending_unit_head'].includes(t.status)).length;
   const pendingPurchase = emergencyTickets.filter(t => ['pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover'].includes(t.status)).length;
-  const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  const closedMTD = emergencyTickets.filter(t => t.status === 'closed' && !!t.closed_at && Date.parse(t.closed_at) >= Date.parse(monthStart)).length;
 
   const dueToday = dueTodaySchedules.length;
   const dueWeek = dueWeekSchedules.length;
   const overdue = overdueSchedules.length;
-  const closedPeriodicMTD = periodicTickets.filter(t => t.status === 'closed' && !!t.closed_at && t.closed_at >= monthStart).length;
+  const closedPeriodicMTD = periodicTickets.filter(t => t.status === 'closed' && !!t.closed_at && Date.parse(t.closed_at) >= Date.parse(monthStart)).length;
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -1499,20 +1515,46 @@ export function Maintenance() {
     } finally { setRaising(false); }
   }
 
-  // ── Admin: edit / delete a ticket ───────────────────────────────────────────
-  function canCorrectTicket(tk: TicketRow | null | undefined) {
-    if (!tk) return false;
-    if (isAdmin) return true;
-    if (tk.status === 'closed') return false;
-    if (!canEditRaisedTicket(tk.created_at)) return false;
+  // ── Edit / delete a ticket ──────────────────────────────────────────────────
+  // Access & backup → "Who can edit or delete" (Maintenance) + the edit window.
+  // Until the saved settings load, only Admin. A closed ticket is never deleted
+  // except by Admin.
+  const opsTicks = useOpsSettings();
+  const tickDeleteMaint = isAdmin || canDeleteModule(opsTicks, activeProfile, 'maintenance', activePersonId);
+
+  // One edit window for every screen (Access & backup, default 1 hour). The
+  // creator edits inside it; Admin, Unit Head and Vijay ji (management) may
+  // still edit after it or once approved / closed — audited + creator told.
+  const editHours = opsTicks.editWindowHours;
+  const editWindow = editWindowText(editHours);
+  const editWindowLabel = editWindow.unit === 'min'
+    ? t('maint.editWindowMins', { defaultValue: '{{n}} min', n: editWindow.n })
+    : t(editWindow.unit === 'hour' ? 'maint.editWindowHour' : 'maint.editWindowHours', { defaultValue: editWindow.unit === 'hour' ? '{{n}} hour' : '{{n}} hours', n: editWindow.n });
+  function ticketEditAccess(tk: TicketRow | null | undefined) {
+    if (!tk) return null;
     const me = activeProfile.name?.trim().toLowerCase();
     const raiser = (tk.raised_by || '').trim().toLowerCase();
-    return !!me && me === raiser;
+    return editAccess({
+      profile: activeProfile,
+      settings: opsTicks,
+      module: 'maintenance',
+      createdAt: tk.created_at,
+      locked: ticketIsApprovedOrClosed(tk.status),
+      isCreator: !!me && me === raiser,
+      personId: activePersonId,
+    });
   }
+  function canCorrectTicket(tk: TicketRow | null | undefined) {
+    return ticketEditAccess(tk) != null;
+  }
+  const editClosedMsg = () => t('maint.editWindowClosedN', {
+    defaultValue: 'Tickets can be edited by the person who raised them within {{window}} of raising. After that, or once approved or closed, only Admin, Unit Head or management can edit.',
+    window: editWindowLabel,
+  });
 
   function startEdit(tk: TicketRow) {
     if (!canCorrectTicket(tk)) {
-      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      toast.error(editClosedMsg());
       return;
     }
     setEditForm({ equipment: tk.equipment || '', description: tk.description || '', plant: tk.plant_id || '', status: tk.status, farAssetId: tk.far_asset_id || '' });
@@ -1521,7 +1563,7 @@ export function Maintenance() {
 
   async function saveEdit() {
     if (!selectedTicket || !canCorrectTicket(selectedTicket)) {
-      toast.error(t('maint.editWindowClosed', 'Tickets can only be edited within 1 hour of raising.'));
+      toast.error(editClosedMsg());
       return;
     }
     // Same FAR-only rule as Raise: a changed equipment name must be a FAR pick.
@@ -1535,6 +1577,8 @@ export function Maintenance() {
     const changes: string[] = [];
     if ((selectedTicket.equipment || '').trim() !== editForm.equipment.trim()) changes.push(`equipment: ${selectedTicket.equipment || '—'} → ${editForm.equipment || '—'}`);
     if ((selectedTicket.description || '').trim() !== (editForm.description || '').trim()) changes.push(`description: ${(selectedTicket.description || '—').slice(0, 40)} → ${(editForm.description || '—').slice(0, 40)}`);
+    if (plant && plant.id !== selectedTicket.plant_id) changes.push(`plant: ${selectedTicket.plants?.name || '—'} → ${plant.name}`);
+    if ((editForm.farAssetId || null) !== (selectedTicket.far_asset_id || null)) changes.push('FAR link changed');
     const { error: editErr } = await updateRows('maintenance_tickets', {
       equipment: editForm.equipment,
       description: editForm.description || null,
@@ -1543,7 +1587,27 @@ export function Maintenance() {
     }).eq('id', selectedTicket.id);
     if (editErr) { toast.error(editErr.message); return; }
     if (changes.length) {
-      await auditNote(selectedTicket, `✎ ${isAdmin ? 'Admin edit' : 'Edited'} by ${activeProfile.name} · ${changes.join('; ')}`);
+      // Readable who-and-why: "Unit head edit (after the edit window)".
+      const access = ticketEditAccess(selectedTicket);
+      const who = access === 'admin' ? 'Admin edit' : access === 'senior' ? `${codeLabel(activeProfile.baseRoleId || activeProfile.id)} edit` : 'Edited';
+      const late = access !== 'creator' && (ticketIsApprovedOrClosed(selectedTicket.status) || !canEditRaisedTicket(selectedTicket.created_at, Date.now(), editWindowMs(editHours)))
+        ? ` (after the ${editWindow.n} ${editWindow.unit} edit window or once approved/closed)` : '';
+      await auditNote(selectedTicket, `✎ ${who}${late} by ${activeProfile.name} · ${changes.join('; ')}`);
+      // Tell the people on the ticket — and the person who raised it, when
+      // someone else made the change.
+      await notifyTicketWatchers(selectedTicket, `Ticket edited: ${editForm.equipment || selectedTicket.equipment}`, `${activeProfile.name}: ${changes.join('; ')}`);
+      const raiser = (selectedTicket.raised_by || '').trim().toLowerCase();
+      const raiserPerson = raiser && raiser !== (activeProfile.name || '').trim().toLowerCase()
+        ? people.find(p => (p.name || '').trim().toLowerCase() === raiser)
+        : undefined;
+      if (raiserPerson) {
+        await addNote({
+          target_roles: [raiserPerson.id], scope: 'personal',
+          title: `Your ticket was edited: ${editForm.equipment || selectedTicket.equipment}`,
+          body: `${activeProfile.name}: ${changes.join('; ')}`, type: 'info',
+          route: maintRoute(selectedTicket.id), actor_name: activeProfile.name, actor_role: role,
+        });
+      }
     }
     setSelectedTicket((t) => t ? { ...t, equipment: editForm.equipment, description: editForm.description || null, far_asset_id: editForm.farAssetId || null, plants: plant ? { name: plant.name } : t.plants } : t);
     await notifyMentions(editForm.description, {
@@ -1556,7 +1620,7 @@ export function Maintenance() {
   }
 
   async function handleDeleteTicket(tk: TicketRow) {
-    if (!isAdmin) return;
+    if (!(isAdmin || (tickDeleteMaint && tk.status !== 'closed'))) return;
     if (!window.confirm(t('maint.confirmDeleteTicket', { defaultValue: 'Delete ticket "{{name}}"? This permanently removes it and cannot be undone. Any stock issued or reserved for this ticket will be restored to the register.', name: tk.equipment || tk.title }))) return;
     // Reverse stock first (unissue / release), then drop dependent store-request rows.
     const unwind = await unwindStoreRequestsForTickets([tk.id], { actorName: activeProfile.name });
@@ -1571,6 +1635,12 @@ export function Maintenance() {
     if (error) { toast.error(t('maint.deleteFailedMsg', { defaultValue: 'Delete failed: {{message}}', message: error.message })); return; }
     setTickets((prev) => prev.filter((x) => x.id !== tk.id));
     if (selectedTicket?.id === tk.id) { setSelectedTicket(null); setEditingTicket(false); }
+    // Keep a trace: the Activity Log shows this line shaded as deleted.
+    insertRows('activity_logs', {
+      type: 'ticket_deleted', date: istToday(), done_by: activeProfile.name, verified_by: null,
+      equipment: tk.equipment || tk.title, plant_id: tk.plant_id, photo_url: null,
+      note: `Ticket ${ticketNoLabel(tk)} deleted by ${activeProfile.name} (was ${STATUS_CFG[tk.status]?.label ?? tk.status})`,
+    }).then(() => {}, () => {});
     const restored = unwind.unissued + unwind.released + unwind.procuredReversed;
     toast.success(restored > 0
       ? t('maint.ticketDeletedStockRestored', { defaultValue: 'Ticket deleted · {{n}} unit(s) restored to stock', n: restored })
@@ -1781,31 +1851,7 @@ export function Maintenance() {
   }
 
   // Bulk-delete every emergency ticket currently shown (admin cleanup tool).
-  async function handleDeleteAllEmergency() {
-    if (!isAdmin) return;
-    const ids = emergencyTickets.map((t) => t.id);
-    if (!ids.length) return;
-    if (!window.confirm(t('maint.confirmDeleteAllTickets', { defaultValue: 'Delete ALL {{count}} emergency tickets? This permanently removes every emergency ticket and cannot be undone. Stock issued or reserved for them will be restored.', count: ids.length }))) return;
-    setDeletingAll(true);
-    try {
-      // Delete in chunks so a long id list doesn't blow the URL length limit.
-      for (let i = 0; i < ids.length; i += 100) {
-        const chunk = ids.slice(i, i + 100);
-        await unwindStoreRequestsForTickets(chunk, { actorName: activeProfile.name });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { error: srErr } = await (supabase.from('maintenance_store_requests') as any).delete().in('ticket_id', chunk);
-        if (srErr) { toast.error(t('maint.deleteFailedMsg', { defaultValue: 'Delete failed: {{message}}', message: srErr.message })); return; }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { error } = await (supabase.from('maintenance_tickets') as any).delete().in('id', chunk);
-        if (error) { toast.error(t('maint.deleteFailedMsg', { defaultValue: 'Delete failed: {{message}}', message: error.message })); return; }
-      }
-      setTickets((prev) => prev.filter((t) => !ids.includes(t.id)));
-      setSelectedTicket(null); setEditingTicket(false);
-      toast.success(t('maint.deletedNTickets', { defaultValue: 'Deleted {{count}} emergency tickets', count: ids.length }));
-    } finally {
-      setDeletingAll(false);
-    }
-  }
+
 
   // ── Admin: generate CSV maintenance report ──────────────────────────────────
   function reportTickets(): TicketRow[] {
@@ -2263,11 +2309,11 @@ export function Maintenance() {
           actor_name: activeProfile.name,
         });
       }
-      await insertRows('activity_logs', {
+      await logActivity({
         equipment: `Stock check: ${req.part_name}`, type: 'stock_check_override',
-        date: new Date().toISOString().slice(0, 10), done_by: activeProfile.name, plant_id: selectedTicket.plant_id,
+        date: istToday(), done_by: activeProfile.name, plant_id: selectedTicket.plant_id,
         note: `Register said ${regQty}, store counted ${enteredQty}. ${storeDecisionForm.qtyJustification.trim()}`,
-      });
+      }, { type: 'maintenance_ticket', id: selectedTicket.id });
     }
     notify({
       target_roles: ['admin', 'unit_head'],
@@ -2367,104 +2413,66 @@ export function Maintenance() {
   }
 
   async function markPurchased(req: StoreReqRow) {
-    if (!selectedTicket || !busyRef.trim()) return;
+    if (!selectedTicket || !busyRef.trim() || !purchaseBillBlob) return;
     const supplier = supplierName.trim();
     const need = Number(req.quantity) || 0;
-    // Bulk buy: default to the shortfall, but they can buy more (excess → stock on handover).
     const bought = Math.max(need, parseFloat(purchaseQty) || need);
-    await updateRows('maintenance_store_requests', {
-      busy_transaction_ref: busyRef,
-      supplier_name: supplier || null,
-      purchased_qty: bought,
-      procured_by: activeProfile.name,
-      procured_at: new Date().toISOString(),
-    })
-      .eq('id', req.id);
-    notify({ target_roles: ['purchase_manager', 'admin'], title: `Procured — Purchase Manager to bill: ${req.part_name}`, body: `BUSY ref: ${busyRef}${supplier ? ` · ${supplier}` : ''} — Purchase Manager to upload the bill.`, type: 'info', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket?.plant_id ?? null, unit_id: selectedTicket?.unit_id ?? null });
-    if (supplier) {
-      const hits = await screenBlacklist([{ value: supplier, label: 'Supplier' }], { workflow: 'Maintenance Procurement', source: 'entry', entityLabel: selectedTicket.equipment });
-      if (hits.length) { const h = hits[0]; toast.error(t('maint.blacklistSupplierToast', { defaultValue: '⚠ Supplier "{{value}}" ≈ blacklisted {{type}} "{{name}}" ({{pct}}%). Admin notified.', value: h.candidate.value, type: h.entry.type, name: h.entry.name, pct: Math.round(h.score * 100) })); }
-    }
-    setBusyRef(''); setSupplierName(''); setPurchaseQty(''); setActingReqId(null);
-    await refreshAfterItemChange();
-  }
-
-  // Purchase Manager: ONE aggregate bill for all externally-procured items on this
-  // ticket. PM declares # items + total; we OCR the bill and FLAG (never block) a
-  // mismatch. Procured items are marked billed → they move to handover.
-  async function submitPurchaseManagerBill() {
-    if (!selectedTicket || !dispatchBlob) return;
-    const declaredItems = parseInt(pmForm.itemsCount, 10);
-    const declaredTotal = parseFloat(pmForm.billTotal.replace(/[^0-9.]/g, ''));
-    if (!declaredItems || !declaredTotal) { toast.error(t('maint.enterItemsAndTotal', 'Enter the number of items and the total bill amount.')); return; }
     setUploading(true);
-    setBusyPhase('verifying');
+    setBusyPhase('uploading');
+    setUploadPct(0);
     try {
-      // OCR the bill (best-effort) — this never blocks submission.
-      let ocrTotal: number | null = null, ocrItems: number | null = null, ocrStatus = 'unread';
-      let ocrRaw: unknown = null, mismatch = false;
-      let ocrLines: SupplierBillLine[] = [];
-      try {
-        const file = new File([dispatchBlob], 'bill.jpg', { type: dispatchBlob.type || 'image/jpeg' });
-        const dataUrl = await resizeImageToDataUrl(file, 1600);
-        const ocr = await extractSupplierBill(dataUrl);
-        // Robust grand total: prefer subTotal + tax so the model can't report the tax
-        // figure (or a subtotal) as the invoice total; fall back to its totalAmount.
-        const ocrGrand = (ocr.subTotal != null && ocr.taxAmount != null) ? ocr.subTotal + ocr.taxAmount : ocr.totalAmount;
-        ocrTotal = ocrGrand; ocrItems = ocr.lineItemCount; ocrRaw = ocr;
-        ocrLines = ocr.lineItems || [];
-        // Verify against the bill's DECLARED TOTAL (the reliable summary), NOT the count
-        // of detected rows. "Number of items" is ambiguous (line rows vs total quantity),
-        // so the line-item count is recorded for info only and never fails the check.
-        const totalOff = ocrTotal != null && Math.abs(ocrTotal - declaredTotal) > Math.max(1, declaredTotal * 0.05);
-        mismatch = !!totalOff;
-        ocrStatus = ocrTotal == null ? 'unread' : (mismatch ? 'mismatch' : 'match');
-      } catch { ocrStatus = 'unread'; }
-
-      setBusyPhase('uploading'); setUploadPct(0);
-      const r = await uploadMaintenancePhoto(dispatchBlob, {
+      const r = await uploadMaintenancePhoto(purchaseBillBlob, {
         ticketId: selectedTicket.id, plantName: selectedTicket.plants?.name || 'Plant',
         photoType: 'bill', creator: activeProfile.name, onProgress: setUploadPct,
       });
-
-      const billedAt = new Date().toISOString();
-      await updateRows('maintenance_tickets', {
-        pm_items_count: declaredItems, pm_bill_total: declaredTotal, pm_bill_url: r.secure_url,
-        pm_billed_by: activeProfile.name, pm_billed_at: billedAt,
-        pm_ocr_total: ocrTotal, pm_ocr_items: ocrItems, pm_ocr_status: ocrStatus, pm_ocr_raw: ocrRaw, pm_mismatch: mismatch,
-      }).eq('id', selectedTicket.id);
-      setSelectedTicket((t) => t ? { ...t, pm_items_count: declaredItems, pm_bill_total: declaredTotal, pm_bill_url: r.secure_url, pm_billed_by: activeProfile.name, pm_billed_at: billedAt, pm_ocr_total: ocrTotal, pm_ocr_items: ocrItems, pm_ocr_status: ocrStatus, pm_mismatch: mismatch } : t);
-
-      // Mark all procured-but-unbilled items as billed → they move to handover.
-      const procured = storeReqs.filter(sr => itemStage(sr) === 'purchase_manager');
-      for (const sr of procured) {
-        // Attribute this requested part's cost from the bill's matching line item, so the
-        // Maintenance Purchase record shows the item-specific unit price + total. The full
-        // invoice total stays on the ticket (pm_bill_total) for FAR — unchanged.
-        const line = ocrLines.length ? matchBillLine(sr.part_name, ocrLines) : null;
-        const patch: Record<string, unknown> = { bill_verified: true, handover_invoice_url: r.secure_url };
+      const patch: Record<string, unknown> = {
+        busy_transaction_ref: busyRef.trim(),
+        supplier_name: supplier || null,
+        purchased_qty: bought,
+        procured_by: activeProfile.name,
+        procured_at: new Date().toISOString(),
+        bill_verified: true,
+        handover_invoice_url: r.secure_url,
+      };
+      try {
+        const file = new File([purchaseBillBlob], 'bill.jpg', { type: purchaseBillBlob.type || 'image/jpeg' });
+        const dataUrl = await resizeImageToDataUrl(file, 1600);
+        const ocr = await extractSupplierBill(dataUrl);
+        const line = ocr.lineItems?.length ? matchBillLine(req.part_name, ocr.lineItems) : null;
         if (line?.unitPrice != null) {
           patch.unit_price = line.unitPrice;
-          // Cost for the actually-procured quantity (not the full invoice line, which may
-          // cover more units than this ticket needed).
-          patch.total_price = sr.quantity != null ? line.unitPrice * Number(sr.quantity) : (line.amount ?? null);
+          patch.total_price = req.quantity != null ? line.unitPrice * Number(req.quantity) : (line.amount ?? null);
         } else if (line?.amount != null) {
           patch.total_price = line.amount;
+        } else if (ocr.totalAmount != null) {
+          patch.total_price = ocr.totalAmount;
         }
-        await updateRows('maintenance_store_requests', patch).eq('id', sr.id);
+      } catch { /* OCR is best-effort */ }
+      const { error } = await updateRows('maintenance_store_requests', patch).eq('id', req.id);
+      if (error) { toast.error(error.message); return; }
+      await updateRows('maintenance_tickets', {
+        pm_bill_url: r.secure_url,
+        pm_billed_by: activeProfile.name,
+        pm_billed_at: new Date().toISOString(),
+      }).eq('id', selectedTicket.id);
+      notify({
+        target_roles: ['store_manager_maint', 'warehouse_manager', 'admin'],
+        title: `Bought — store to hand over: ${req.part_name}`,
+        body: `BUSY ref: ${busyRef}${supplier ? ` · ${supplier}` : ''} — purchaser uploaded the bill.`,
+        type: 'info', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role,
+        read_by: [], plant_id: selectedTicket?.plant_id ?? null, unit_id: selectedTicket?.unit_id ?? null,
+      });
+      if (supplier) {
+        const hits = await screenBlacklist([{ value: supplier, label: 'Supplier' }], { workflow: 'Maintenance Procurement', source: 'entry', entityLabel: selectedTicket.equipment });
+        if (hits.length) { const h = hits[0]; toast.error(t('maint.blacklistSupplierToast', { defaultValue: '⚠ Supplier "{{value}}" ≈ blacklisted {{type}} "{{name}}" ({{pct}}%). Admin notified.', value: h.candidate.value, type: h.entry.type, name: h.entry.name, pct: Math.round(h.score * 100) })); }
       }
-      notify({ target_roles: ['store_manager_maint', 'warehouse_manager', 'admin'], title: `Bill uploaded — ${procured.length} item(s) en route`, body: `${activeProfile.name} billed ₹${declaredTotal.toLocaleString('en-IN')} for ${declaredItems} item(s).`, type: 'info', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket?.plant_id ?? null, unit_id: selectedTicket?.unit_id ?? null });
-
-      if (mismatch) {
-        const ocrTotalTxt = ocrTotal != null ? `₹${ocrTotal.toLocaleString('en-IN')}` : '₹?';
-        toast.error(t('maint.billMismatchToast', { defaultValue: '⚠ Bill total mismatch — you entered ₹{{declared}}, OCR read {{ocr}}. Submitted, but admin has been notified to verify.', declared: declaredTotal.toLocaleString('en-IN'), ocr: ocrTotalTxt }));
-        notify({ target_roles: ['admin', 'unit_head'], title: `⚠ Bill total mismatch flagged: ${selectedTicket.equipment}`, body: `${activeProfile.name} declared ₹${declaredTotal.toLocaleString('en-IN')} (${declaredItems} line item${declaredItems === 1 ? '' : 's'}); OCR read ${ocrTotalTxt}. Please verify the bill.`, type: 'urgent', route: maintRoute(selectedTicket?.id), actor_name: activeProfile.name, actor_role: role, read_by: [], plant_id: selectedTicket.plant_id, unit_id: selectedTicket.unit_id });
-      }
-      await notifyTicketWatchers(selectedTicket, `Bill uploaded: ${selectedTicket.equipment}`, `${activeProfile.name} uploaded the supplier bill — items en route to store.`);
-      setDispatchBlob(null); setUploadPct(0); setPmForm({ itemsCount: '', billTotal: '' });
+      setBusyRef(''); setSupplierName(''); setPurchaseQty(''); setPurchaseBillBlob(null); setActingReqId(null);
       await refreshAfterItemChange();
-    } catch (err) { toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) })); }
-    finally { setUploading(false); setBusyPhase('uploading'); }
+    } catch (err) {
+      toast.error(t('maint.uploadFailedMsg', { defaultValue: 'Upload failed: {{message}}', message: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setUploading(false); setBusyPhase('uploading');
+    }
   }
 
   // Store manager: confirm physical handover to technician.
@@ -2480,7 +2488,7 @@ export function Maintenance() {
         return;
       }
       if (!handoverNotes.trim() && !handoverPhotoBlob) { toast.error(t('maint.handoverNeedDescription', "Please add a short description (why you're providing this part) or a part photo before confirming handover.")); return; }
-    } else if (!handoverInvoiceBlob && !handoverPhotoBlob) {
+    } else if (!handoverInvoiceBlob && !handoverPhotoBlob && !req.handover_invoice_url) {
       toast.error(t('maint.handoverNeedInvoice', 'Please upload at least the invoice or part photo before confirming handover.')); return;
     }
     setUploading(true);
@@ -2951,7 +2959,7 @@ export function Maintenance() {
         const pr = storeReqs.find(r => r.store_decision === 'unavailable' || r.purchase_required) ?? sr;
         if (pr) body = <>
           {doneBy(pr.procured_by || notifActor('Procured —'), pr.procured_at)}
-          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.busyTransactionRef', 'BUSY transaction ref'), pr.busy_transaction_ref)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.unitHeadLabel', 'Unit head'), pr.unit_head_approval === 'approved' ? t('maint.approvedProcurement', 'Approved procurement') : pr.unit_head_approval)}<div style={{ fontSize: 12.5, color: '#334155', marginTop: 5 }}>{t('maint.externalProcurementNote', 'External procurement for the quantity not in store.')}</div>
+          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.busyTransactionRef', 'BUSY transaction ref'), pr.busy_transaction_ref)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.unitHeadLabel', 'Unit head'), pr.unit_head_approval === 'approved' ? t('maint.approvedProcurement', 'Approved procurement') : pr.unit_head_approval)}{photo(tk.pm_bill_url || pr.handover_invoice_url, t('maint.supplierBillCaption', 'Supplier bill'))}<div style={{ fontSize: 12.5, color: '#334155', marginTop: 5 }}>{t('maint.externalProcurementNote', 'External procurement for the quantity not in store.')}</div>
         </>;
         break;
       }
@@ -2959,8 +2967,8 @@ export function Maintenance() {
         const pr = storeReqs.find(r => r.store_decision === 'unavailable' || r.purchase_required) ?? sr;
         const amount = tk.pm_bill_total ?? pr?.total_price ?? null;
         if (pr) body = <>
-          {doneBy(tk.pm_billed_by)}
-          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.purchaseAmount', 'Purchase amount'), amount != null ? `₹ ${Number(amount).toLocaleString('en-IN')}` : null)}{line(t('maint.itemsOnBill', 'Items on bill'), tk.pm_items_count)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.busyRefLabel', 'BUSY ref'), pr.busy_transaction_ref)}{line(t('maint.purchaseManagerLabel', 'Purchase Manager'), tk.pm_billed_by)}{line(t('maint.billedOn', 'Billed on'), tk.pm_billed_at ? formatDate(tk.pm_billed_at) : null)}{line(t('maint.billVerifiedLabel', 'Bill verified'), pr.bill_verified ? t('maint.yes', 'Yes') : '—')}{photo(tk.pm_bill_url || pr.handover_invoice_url, t('maint.supplierBillPmCaption', 'Supplier bill (Purchase Manager)'))}
+          {doneBy(tk.pm_billed_by || pr.procured_by)}
+          {line(t('maint.qtyProcured', 'Qty procured'), pr.quantity)}{line(t('maint.purchaseAmount', 'Purchase amount'), amount != null ? `₹ ${Number(amount).toLocaleString('en-IN')}` : null)}{line(t('maint.supplierLabel', 'Supplier'), pr.supplier_name)}{line(t('maint.busyRefLabel', 'BUSY ref'), pr.busy_transaction_ref)}{line(t('maint.purchaserLabel', 'Purchaser'), pr.buyer_name || tk.pm_billed_by)}{photo(tk.pm_bill_url || pr.handover_invoice_url, t('maint.supplierBillCaption', 'Supplier bill'))}
         </>;
         break;
       }
@@ -3172,8 +3180,8 @@ export function Maintenance() {
 
     // ── Per-item workflow (multi-item) ──────────────────────────────────────
     // Each item card shows its own stage + the action for the current role.
-    // Items flow independently; the Purchase Manager bills the procured ones
-    // together below. The ticket status is a roll-up of the least-advanced item.
+    // The purchaser uploads the supplier bill on their step. The ticket status
+    // is a roll-up of the least-advanced item.
     // Any store manager may act: the register they serve is decided by the
     // ticket's factory, not by which unit-flavoured role they happen to hold.
     const storeManagerCanAct = isAdmin || isStoreManager;
@@ -3188,13 +3196,11 @@ export function Maintenance() {
       unit_head: { label: t('maint.unitHeadLabel', 'Unit head'), bg: '#F1F5F9', color: '#0A1628' },
       vijay: { label: t('maint.badgeVijay', 'Vijay ji'), bg: '#EDE9FE', color: '#7C3AED' },
       purchase: { label: vijayLive ? t('maint.badgePurchaser', 'Purchaser') : t('maint.badgeProcure', 'Procure'), bg: '#EFF6FF', color: '#2563EB' },
-      purchase_manager: { label: t('maint.badgeAwaitingBill', 'Awaiting bill'), bg: '#FDF4FF', color: '#A21CAF' },
+      purchase_manager: { label: t('maint.badgePurchaser', 'Purchaser'), bg: '#EFF6FF', color: '#2563EB' },
       handover: { label: t('maint.badgeHandover', 'Handover'), bg: '#F8FAFC', color: '#9333EA' },
       done: { label: t('common.done', 'Done'), bg: '#F0FDF4', color: '#16A34A' },
       rejected: { label: t('maint.badgeRejected', 'Rejected'), bg: '#FEF2F2', color: '#DC2626' },
     };
-
-    const procuredAwaitingBill = storeReqs.filter(r => itemStage(r) === 'purchase_manager');
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -3209,7 +3215,7 @@ export function Maintenance() {
           const needIssuePhoto = fromOwnStore && storeIssueNeedsPhoto(issueValue);
           const canConfirmHandover = fromOwnStore
             ? ((needIssuePhoto ? !!handoverPhotoBlob : true) && (!!handoverNotes.trim() || !!handoverPhotoBlob))
-            : (!!handoverInvoiceBlob || !!handoverPhotoBlob);
+            : (!!req.handover_invoice_url || !!handoverInvoiceBlob || !!handoverPhotoBlob);
           // Map the request to the plant's stock so the store manager confirms
           // rather than re-counts: exact link if the tech picked it, else fuzzy.
           const linkedStock = req.store_item_id ? storeStock.find(x => x.id === req.store_item_id) ?? null : null;
@@ -3350,18 +3356,20 @@ export function Maintenance() {
                       {t('maint.boughtInBulkPrefix', { defaultValue: 'Bought in bulk → {{n}} to the technician, ', n: req.quantity })}<strong>{t('maint.addedToStoreStock', { defaultValue: '{{n}} added to store stock', n: (parseFloat(purchaseQty) || 0) - (Number(req.quantity) || 0) })}</strong>{t('maint.onHandoverSuffix', ' on handover.')}
                     </div>
                   )}
+                  <PhotoUploader onBlobReady={setPurchaseBillBlob} label={t('maint.purchaserBill', 'Supplier bill *')} hint={t('maint.purchaserBillHint', 'The purchaser has the bill — attach it here with the BUSY ref.')} />
+                  {uploading && <UploadBar pct={uploadPct} color="#0A1628" />}
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => { setActingReqId(null); setBusyRef(''); setSupplierName(''); setPurchaseQty(''); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
-                    <button onClick={() => markPurchased(req)} disabled={!busyRef.trim()} style={{ ...primaryBtn('#0A1628'), flex: 2, opacity: !busyRef.trim() ? 0.5 : 1 }}>{t('maint.markPurchased', 'Mark purchased')}</button>
+                    <button onClick={() => { setActingReqId(null); setBusyRef(''); setSupplierName(''); setPurchaseQty(''); setPurchaseBillBlob(null); }} style={cancelBtn}>{t('common.cancel', 'Cancel')}</button>
+                    <button onClick={() => void markPurchased(req)} disabled={!busyRef.trim() || !purchaseBillBlob || uploading} style={{ ...primaryBtn('#0A1628'), flex: 2, opacity: (!busyRef.trim() || !purchaseBillBlob || uploading) ? 0.5 : 1 }}>{uploading ? t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct }) : t('maint.markPurchasedWithBill', 'Mark purchased — bill on file')}</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => { setActingReqId(req.id); setBusyRef(''); setSupplierName(''); setPurchaseQty(String(req.quantity ?? '')); }} style={{ ...primaryBtn('#0A1628'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — enter BUSY ref')}</button>
+                <button onClick={() => { setActingReqId(req.id); setBusyRef(req.busy_transaction_ref || ''); setSupplierName(req.supplier_name || ''); setPurchaseQty(String(req.purchased_qty ?? req.quantity ?? '')); setPurchaseBillBlob(null); }} style={{ ...primaryBtn('#0A1628'), width: '100%', marginTop: 10 }}>{t('maint.procureEnterBusyRef', 'Procure — BUSY ref + bill')}</button>
               )) : <div style={awaitTxt}>{vijayLive
                 ? t('maint.purchaserBuying', { defaultValue: 'Purchaser {{name}} buying…', name: req.buyer_name || '' })
                 : t('maint.unitHeadProcuring', 'Unit head procuring…')}</div>)}
 
-              {s === 'purchase_manager' && <div style={awaitTxt}>{t('maint.procuredAwaitingBill', { defaultValue: 'Procured ({{ref}}) · awaiting purchase bill below…', ref: req.busy_transaction_ref || t('maint.refPending', 'ref pending') })}</div>}
+              {s === 'purchase_manager' && <div style={awaitTxt}>{t('maint.purchaserBuying', { defaultValue: 'Purchaser {{name}} buying…', name: req.buyer_name || '' })}</div>}
 
               {/* HANDOVER */}
               {s === 'handover' && (storeManagerCanAct ? (acting ? (
@@ -3371,6 +3379,10 @@ export function Maintenance() {
                       <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', textTransform: 'uppercase', marginBottom: 4 }}>{t('maint.reasonDescription', 'Reason / description')}</div>
                       <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>{t('maint.issuedFromOwnStoreHint', "Issued from own store — no bill. Note why you're providing this part (condition, source shelf, any caveat).")}</div>
                       <textarea value={handoverNotes} onChange={e => setHandoverNotes(e.target.value)} placeholder={t('maint.handoverNotesPlaceholder', 'e.g. Issued from Rack B-12 — spare seal in good condition, replaces the worn one.')} rows={3} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E2E8F0', borderRadius: 10, padding: '9px 11px', fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none' }} />
+                    </div>
+                  ) : req.handover_invoice_url ? (
+                    <div style={{ fontSize: 12, color: '#16A34A', marginBottom: 10, fontWeight: 600 }}>
+                      {t('maint.purchaserBillOnFile', 'Supplier bill already on file (purchaser).')}
                     </div>
                   ) : (
                     <PhotoUploader onBlobReady={setHandoverInvoiceBlob} label={t('maint.invoiceBill', 'Invoice / bill')} hint={t('maint.invoiceBillHint', 'Photo of the invoice or purchase bill')} />
@@ -3433,23 +3445,7 @@ export function Maintenance() {
           });
         })()}
 
-        {/* PURCHASE MANAGER — aggregate bill for all procured items */}
-        {procuredAwaitingBill.length > 0 && (isPurchaseManager || isAdmin) && (
-          <div style={{ border: '1px solid #F5D0FE', borderRadius: 14, padding: 14, background: '#FDF4FF' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#A21CAF', textTransform: 'uppercase', marginBottom: 4 }}>{t('maint.pmBillHeading', { defaultValue: 'Purchase Manager — bill {{n}} procured item(s)', n: procuredAwaitingBill.length })}</div>
-            <div style={{ fontSize: 12, color: '#475569', marginBottom: 10 }}>{t('maint.pmBillIntroPre', 'One supplier bill covers all procured items (incl. GST). OCR verifies the ')}<strong>{t('maint.pmBillTotalAmount', 'total amount')}</strong>{t('maint.pmBillIntroPost', ' against the photo; the line-item count is recorded for reference.')}</div>
-            <PanelRow>
-              <PanelField label={t('maint.pmLineItemsLabel', 'No. of line items on bill *')}><PanelInput type="number" value={pmForm.itemsCount} onChange={e => setPmForm(f => ({ ...f, itemsCount: e.target.value }))} placeholder={String(procuredAwaitingBill.length)} /></PanelField>
-              <PanelField label={t('maint.pmTotalBillLabel', 'Total bill amount (₹) *')}><PanelInput value={pmForm.billTotal} onChange={e => setPmForm(f => ({ ...f, billTotal: e.target.value }))} placeholder={t('maint.pmBillTotalPlaceholder', 'e.g. 177936.50')} /></PanelField>
-            </PanelRow>
-            <PhotoUploader onBlobReady={setDispatchBlob} label={t('maint.supplierBillPhoto', 'Supplier bill photo *')} hint={t('maint.supplierBillPhotoHint', 'Clear photo of the full supplier bill')} />
-            {uploading && <UploadBar pct={uploadPct} color="#A21CAF" phase={busyPhase} />}
-            <button onClick={submitPurchaseManagerBill} disabled={!dispatchBlob || uploading} style={{ ...primaryBtn('#A21CAF'), width: '100%', marginTop: 8, opacity: (!dispatchBlob || uploading) ? 0.5 : 1 }}>{uploading ? (busyPhase === 'verifying' ? t('maint.verifyingBill', 'Verifying bill…') : t('maint.uploadingPct', { defaultValue: 'Uploading… {{pct}}%', pct: uploadPct })) : t('maint.uploadBillVerify', 'Upload bill — verify & mark en route')}</button>
-          </div>
-        )}
-        {procuredAwaitingBill.length > 0 && !(isPurchaseManager || isAdmin) && <div style={awaitTxt}>{t('maint.awaitingPmBill', 'Purchase Manager (Anshul) to upload the bill…')}</div>}
-
-        {/* PM mismatch banner */}
+        {/* Leftover OCR mismatch from older Purchase Manager bills */}
         {tk.pm_mismatch && (
           <div style={{ border: '1px solid #FECACA', background: '#FEF2F2', borderRadius: 12, padding: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#DC2626' }}>{t('maint.billTotalMismatch', '⚠ Bill total mismatch')}</div>
@@ -3599,6 +3595,8 @@ export function Maintenance() {
   function periodicScheduleRows(pageRows: ScheduleRow[]) {
     return pageRows.map(s => {
       const linkedTicket = tickets.find(tk => tk.schedule_id === s.id && tk.status !== 'closed');
+      // Any ticket of this schedule with notes / feedback — the same badge as the emergency list.
+      const scheduleHasNotes = tickets.some(tk => tk.schedule_id === s.id && ticketsWithNotes.has(tk.id));
       const awaitingVerify = linkedTicket?.status === 'pending_unit_head';
       const days = daysFromNow(s.next_due_at);
       const due = dueDateLabel(days, t);
@@ -3613,7 +3611,7 @@ export function Maintenance() {
       return (
         <tr key={s.id}>
           {/* Long text wraps so Status / Action stay on screen at 1366 (dt2 cells are nowrap). */}
-          <td className="font-semibold !whitespace-normal min-w-[180px]">{stripPlaceholderParen(s.title)}</td>
+          <td className="font-semibold !whitespace-normal min-w-[180px]">{stripPlaceholderParen(s.title)}{scheduleHasNotes ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>{t('maint.notesLabel', 'Notes')}</span> : null}</td>
           <td className="!whitespace-normal min-w-[140px]">
             <div>{stripPlaceholderParen(s.equipment)}</div>
             {job ? <div className="text-[11px] font-mono text-slate-400">{job}</div> : null}
@@ -3893,20 +3891,20 @@ export function Maintenance() {
             <StatCard className="col-span-6 lg:col-span-3" icon={<AlertTriangle />} tone="red" valueTone={openEmergency > 0 ? 'red' : 'default'}
               label={t('maint.openTickets')} value={ticketsPartial ? '…' : openEmergency}
               caption={openEmergency > 0 ? t('maint.needsAttention') : undefined}
-              onView={() => setFltStatus('grp:open')}
+              onView={() => showEmergencyGroup('grp:open')}
               viewLabel={t('maint.viewOpenTickets', 'See tickets')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
               label={t('maint.pendingStoreApproval')} value={ticketsPartial ? '…' : pendingStore}
-              onView={() => setFltStatus('grp:store')}
+              onView={() => showEmergencyGroup('grp:store')}
               viewLabel={t('maint.viewPendingStore', 'See store queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<ShoppingCart />} tone="amber"
               label={t('maint.purchaseHandover')} value={ticketsPartial ? '…' : pendingPurchase}
-              onView={() => setFltStatus('grp:purchase')}
+              onView={() => showEmergencyGroup('grp:purchase')}
               viewLabel={t('maint.viewPurchase', 'See purchase queue')} />
             <StatCard className="col-span-6 lg:col-span-3" icon={<CheckCircle2 />} tone="green"
               label={t('maint.closedMtd')} value={ticketsPartial ? '…' : closedMTD}
               caption={t('maint.completedThisMonth')}
-              onView={() => setFltStatus('grp:closed_mtd')}
+              onView={() => showEmergencyGroup('grp:closed_mtd')}
               viewLabel={t('maint.viewClosed', 'See closed')} />
           </div>
 
@@ -3925,19 +3923,16 @@ export function Maintenance() {
             subtitle={t('maint.emergencySub')}
             actions={
               <>
-                {isAdmin && emergencyTickets.length > 0 && (
-                  <ButtonV2 variant="outline" icon={<Trash2 />} onClick={handleDeleteAllEmergency} disabled={deletingAll} className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300">
-                    {deletingAll ? t('maint.deleting') : t('maint.deleteAll', { count: emergencyTickets.length })}
-                  </ButtonV2>
-                )}
                 {(isAdmin || isUnitHead) && (
                   <ButtonV2 variant="outline" icon={<FileText />} onClick={() => setShowReport(true)}>
                     {t('maint.createReport')}
                   </ButtonV2>
                 )}
-                <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setShowRaisePanel(true)}>
-                  {t('maint.raiseTicket')}
-                </ButtonV2>
+                {rights.can('maintenance', 'add') && (
+                  <ButtonV2 variant="accent" icon={<Plus />} onClick={() => setShowRaisePanel(true)}>
+                    {t('maint.raiseTicket')}
+                  </ButtonV2>
+                )}
               </>
             }
           >
@@ -3947,7 +3942,7 @@ export function Maintenance() {
                   <tr>
                     <Th sortKey="ticket" s={emergencySort}>{t('maint.colTicketNo')}</Th><Th sortKey="equipment" s={emergencySort}>{t('maint.colEquipment')}</Th><Th sortKey="plant" s={emergencySort}>{t('common.plant')}</Th><Th sortKey="issue" s={emergencySort}>{t('maint.colIssue')}</Th>
                     <Th sortKey="status" s={emergencySort}>{t('maint.colStatus')}</Th><Th sortKey="raisedBy" s={emergencySort}>{t('maint.colRaisedBy')}</Th><Th sortKey="created" s={emergencySort} firstDir="desc">{t('maint.colCreated')}</Th>
-                    {isAdmin && <th></th>}
+                    {tickDeleteMaint && <th></th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -3957,19 +3952,20 @@ export function Maintenance() {
                   {emergencyPg.pageRows.map(tk => (
                     <tr key={tk.id} onClick={() => setSelectedTicket(tk)} aria-selected={selectedTicket?.id === tk.id} style={{ cursor: 'pointer', ...(selectedTicket?.id === tk.id ? { background: '#FFF7ED', boxShadow: 'inset 3px 0 0 #EA580C' } : null) }}>
                       <td className="font-mono text-xs text-slate-400">{ticketNoLabel(tk)}{ticketsWithNotes.has(tk.id) ? <span className="badge" style={{ marginLeft: 6, background: '#EEF2FF', color: '#4338CA', fontSize: 10 }}>{t('maint.notesLabel', 'Notes')}</span> : null}</td>
-                      <td className="font-semibold !whitespace-normal min-w-[140px]">{tk.equipment}</td>
+                      <td className="font-semibold !whitespace-normal min-w-[140px]">{displayEquipName(tk.equipment)}</td>
                       <td>{displayLocationName(tk.plants?.name) || '—'}</td>
                       <td className="text-slate-500 text-xs !whitespace-normal min-w-[200px] max-w-[360px]">{tk.description ? <MentionText text={tk.description} /> : tk.title}</td>
                       <td>{statusBadge(tk.status, t)}</td>
                       <td className="text-slate-500 text-xs">{tk.raised_by || '—'}</td>
                       <td className="text-slate-500 text-xs">{formatDate(tk.created_at)}</td>
-                      {isAdmin && (
+                      {tickDeleteMaint && (
                         <td>
-                          <button
+                          {(isAdmin || tk.status !== 'closed') && <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteTicket(tk); }}
                             title={t('maint.deleteTicketTitle', 'Delete ticket')}
+                            className="max-sm:min-w-[44px] max-sm:min-h-[44px]"
                             style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#DC2626', fontSize: 13, padding: '2px 6px', lineHeight: 1 }}
-                          >🗑</button>
+                          >🗑</button>}
                         </td>
                       )}
                     </tr>
@@ -4285,7 +4281,7 @@ export function Maintenance() {
       {/* ── PANEL: Ticket detail ─────────────────────────────────────────── */}
       <SlidePanel
         open={!!selectedTicket}
-        onClose={() => { if (backTo) navigate(backTo); setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setPmForm({ itemsCount: '', billTotal: '' }); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setDispatchBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
+        onClose={() => { if (backTo) navigate(backTo); setSelectedTicket(null); setTicketLightbox(null); setEditingTicket(false); setViewStage(null); setShowStoreForm(false); setStoreItems([{ ...BLANK_ITEM }]); setActingReqId(null); setCompletionBlob(null); setDefectiveBlob(null); setHandoverInvoiceBlob(null); setHandoverPhotoBlob(null); setPurchaseBillBlob(null); setBusyRef(''); setUnitPrice(''); setSupplierName(''); setDefectiveDecision(''); setPartOutcome(''); setStoreDecisionForm({ ...BLANK_STORE_DECISION }); setRequestingChanges(false); setResubmitting(false); setChangeReason(''); setChangeTags([]); setResubmitPhotoBlob(null); setRejectReason(''); }}
         title={selectedTicket?.equipment || t('maint.ticketDetail', 'Ticket detail')}
         subtitle={`${t('maint.emergency')} · ${displayLocationName(selectedTicket?.plants?.name) || t('nav.maintenance')}`}
         locked={uploading}
@@ -4363,12 +4359,12 @@ export function Maintenance() {
                 Request Changes lets a reviewer send the ticket back for correction. */}
             {!editingTicket && !requestingChanges && !resubmitting && (
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <NotesButton entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
+                <NotesButton onPosted={() => { const id = selectedTicket.id; setTicketsWithNotes(prev => new Set(prev).add(id)); }} entityType="maintenance_ticket" entityId={selectedTicket.id} entityLabel={selectedTicket.equipment || selectedTicket.title || 'Ticket'} route={`/dashboard/purchase/maint?ticket=${selectedTicket.id}`} variant={selectedTicket.status === 'closed' ? 'feedback' : 'notes'} />
                 {(isUnitHead || isAdmin) && !['closed', 'changes_requested'].includes(selectedTicket.status) && (
                   <button onClick={() => { setChangeTags([]); setChangeReason(''); setRequestingChanges(true); }} className="chip" style={{ color: '#DC2626' }}>{t('maint.requestChangesChip', '↩ Request Changes')}</button>
                 )}
-                {canCorrectTicket(selectedTicket) && <button onClick={() => startEdit(selectedTicket)} className="chip">{isAdmin ? t('maint.editChipAdmin', '✎ Edit') : t('maint.editChip', '✎ Edit')}{!isAdmin && <> · {t('maint.editMinutesLeft', { defaultValue: '{{n}}m left', n: ticketEditMinutesLeft(selectedTicket.created_at) })}</>}</button>}
-                {isAdmin && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
+                {canCorrectTicket(selectedTicket) && <button onClick={() => startEdit(selectedTicket)} className="chip">{isAdmin ? t('maint.editChipAdmin', '✎ Edit') : t('maint.editChip', '✎ Edit')}{ticketEditAccess(selectedTicket) === 'creator' && <> · {t('maint.editMinutesLeft', { defaultValue: '{{n}}m left', n: ticketEditMinutesLeft(selectedTicket.created_at, Date.now(), editWindowMs(editHours)) })}</>}</button>}
+                {(isAdmin || (tickDeleteMaint && selectedTicket.status !== 'closed')) && <button onClick={() => handleDeleteTicket(selectedTicket)} className="chip" style={{ color: '#DC2626' }}>{t('maint.deleteChip', '🗑 Delete')}</button>}
               </div>
             )}
 
@@ -4621,10 +4617,10 @@ export function Maintenance() {
         </PanelRow>
         <PanelRow>
           <PanelField label={editingSchedule ? t('maint.nextDueDate', 'Next due date') : t('maint.firstDueDate', 'First due date')}>
-            <PanelInput type="date" value={scheduleForm.firstDue} onChange={e => setScheduleForm(f => ({ ...f, firstDue: e.target.value }))} />
+            <PanelDateInput value={scheduleForm.firstDue} onChange={e => setScheduleForm(f => ({ ...f, firstDue: e.target.value }))} />
           </PanelField>
           <PanelField label={t('maint.continueUntilOptional', 'Continue until (optional)')}>
-            <PanelInput type="date" value={scheduleForm.until} onChange={e => setScheduleForm(f => ({ ...f, until: e.target.value }))} />
+            <PanelDateInput value={scheduleForm.until} onChange={e => setScheduleForm(f => ({ ...f, until: e.target.value }))} />
           </PanelField>
         </PanelRow>
         <PanelRow>
@@ -4693,10 +4689,10 @@ export function Maintenance() {
 
         <PanelRow>
           <PanelField label={t('maint.fromDateCreated', 'From date (created)')}>
-            <PanelInput type="date" value={reportForm.from} onChange={e => setReportForm(f => ({ ...f, from: e.target.value }))} />
+            <PanelDateInput value={reportForm.from} onChange={e => setReportForm(f => ({ ...f, from: e.target.value }))} />
           </PanelField>
           <PanelField label={t('maint.toDateCreated', 'To date (created)')}>
-            <PanelInput type="date" value={reportForm.to} onChange={e => setReportForm(f => ({ ...f, to: e.target.value }))} />
+            <PanelDateInput value={reportForm.to} onChange={e => setReportForm(f => ({ ...f, to: e.target.value }))} />
           </PanelField>
         </PanelRow>
 

@@ -13,7 +13,7 @@ import { withEmbedFallback } from '../../lib/scopedList';
 import { useSortable } from '../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2 } from '../../components/v2';
 import type { Database } from '../../lib/database.types';
-import { formatDate } from '../../lib/utils/formatting';
+import { formatDate, istToday } from '../../lib/utils/formatting';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
 
@@ -33,6 +33,11 @@ export function CPMStock() {
   const toast = useToast();
   const { scopeQuery, isGlobal, allowedPlants, ready: scopeReady } = usePlantScope();
   const [storeSearch, setStoreSearch] = useState('');
+  // KPI cards count every store item: clear the search and scroll to the list.
+  const showStoreItems = () => {
+    setStoreSearch('');
+    document.getElementById('cpm-store-items')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkRows, setBulkRows] = useState<BulkRow[]>([
     { item: '', adjustment: '', direction: 'in', note: '' },
@@ -122,7 +127,7 @@ export function CPMStock() {
   async function handleBulkSave() {
     const filled = bulkRows.filter(r => r.item.trim() && r.adjustment);
     if (filled.length === 0) return;
-    const today = new Date().toISOString().split('T')[0];
+    const today = istToday();
     const plantId = bulkPlant || pickerPlants[0]?.id;
     if (!plantId) { toast.error(t('cpmStock.noPlantSelected')); return; }
     const inserts = filled.map(r => ({
@@ -160,14 +165,16 @@ export function CPMStock() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-6 lg:col-span-3" icon={<Boxes />} tone="orange"
           label={t('cpmStock.totalStockRecords')} value={loading ? '…' : stockItems.length}
-          caption={t('cpmStock.acrossAllPlants')} />
+          caption={t('cpmStock.acrossAllPlants')}
+          onView={showStoreItems} viewLabel={t('cpmStock.viewItems', 'See the items')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Layers />} tone="blue"
           label={t('cpmStock.totalQuantity')}
           value={loading ? '…' : stockItems.reduce((s, i) => s + (i.quantity || 0), 0).toFixed(0)}
           caption={t('cpmStock.unitsOnRecord')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Package />} tone="purple"
           label={t('cpmStock.productsTracked')} value={loading ? '…' : new Set(stockItems.map(i => i.product)).size}
-          caption={t('cpmStock.uniqueProducts')} />
+          caption={t('cpmStock.uniqueProducts')}
+          onView={showStoreItems} viewLabel={t('cpmStock.viewItems', 'See the items')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Fuel />} tone="amber"
           label={t('cpmStock.tankCapacity')} value={loading ? '…' : tanks.length ? `${avgTankLevel}%` : '—'}
           caption={<div className="progress mt-1"><div style={{ width: `${avgTankLevel}%` }}></div></div>} />
@@ -269,6 +276,7 @@ export function CPMStock() {
       </div>
 
       {/* Store items */}
+      <div id="cpm-store-items" />
       <FilterBar
         className="mb-4"
         search={storeSearch} onSearch={setStoreSearch}
@@ -302,7 +310,7 @@ export function CPMStock() {
                 {pagedItems.map(i => (
                   <tr key={i.id}>
                     <td className="font-semibold">{i.product}</td>
-                    <td>{i.plants?.name || '—'}</td>
+                    <td>{displayLocationName(i.plants?.name) || '—'}</td>
                     <td className="num">{i.density || '—'}</td>
                     <td className="num font-bold">{i.quantity}</td>
                     <td className="text-slate-500 text-xs">{formatDate(i.date)}</td>

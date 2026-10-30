@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canReceive, groupInTransit, isStorePart, placesOrFilter, type DispatchRow } from './dispatch';
+import { billUrlFromRemarks, canReceive, dispatchFieldOrder, dispatchSaveProblems, groupInTransit, isStorePart, placesOrFilter, withBillRemark, type DispatchFormInput, type DispatchRow } from './dispatch';
 
 const row = (over: Partial<DispatchRow>): DispatchRow => ({
   id: Math.random().toString(36).slice(2),
@@ -47,9 +47,47 @@ describe('dispatch', () => {
     expect(canReceive(row({ receive_date: '2026-10-27' }), mine, true)).toBe(false);
   });
 
+  it('keeps the purchaser bill URL in remarks', () => {
+    const remarks = withBillRemark('Store req #12', 'https://res.cloudinary.com/x/bill.jpg');
+    expect(billUrlFromRemarks(remarks)).toBe('https://res.cloudinary.com/x/bill.jpg');
+    expect(billUrlFromRemarks(null)).toBe(null);
+  });
+
   it('quotes place names for the PostgREST filter', () => {
     expect(placesOrFilter(['SPPL(K) – Rehla', 'A "B"'])).toBe(
       'from_location.in.("SPPL(K) – Rehla","A \\"B\\""),destination.in.("SPPL(K) – Rehla","A \\"B\\"")',
     );
+  });
+
+  const form = (over: Partial<DispatchFormInput> = {}): DispatchFormInput => ({
+    kind: 'item', company: '', payee: '', manual: false, exceptionReason: '', ifsc: '',
+    destination: 'SCPL – Rehla', date: '2026-10-30', item: 'Files', sender: 'Ravi', from: 'Madan Chemical – Sikandrabad',
+    vehicle_no: '', supplier: '', ...over,
+  });
+
+  it('without 0042: no company / payee in the form, and today\'s form saves', () => {
+    expect(dispatchFieldOrder(false)).not.toContain('company');
+    expect(dispatchFieldOrder(false)).not.toContain('payee');
+    expect(dispatchSaveProblems(form(), { payeeLive: false, hasBill: false })).toEqual([]);
+  });
+
+  it('with 0042: company → from → destination → payee, all required', () => {
+    const order = dispatchFieldOrder(true);
+    expect(order.slice(0, 4)).toEqual(['company', 'from', 'destination', 'payee']);
+    expect(dispatchSaveProblems(form(), { payeeLive: true, hasBill: false })).toEqual(['company', 'payee']);
+    expect(dispatchSaveProblems(form({ company: '0010', payee: 'NKG Plastochem Pvt Ltd (Howrah)' }), { payeeLive: true, hasBill: false })).toEqual([]);
+  });
+
+  it('IFSC: 5th character must be 0 (UTIB0000123 ok, UTIB1000123 blocks)', () => {
+    const base = { company: '0007', payee: 'X' };
+    expect(dispatchSaveProblems(form({ ...base, ifsc: 'UTIB0000123' }), { payeeLive: true, hasBill: false })).toEqual([]);
+    expect(dispatchSaveProblems(form({ ...base, ifsc: 'UTIB1000123' }), { payeeLive: true, hasBill: false })).toEqual(['ifsc']);
+    expect(dispatchSaveProblems(form({ ...base, ifsc: 'UTIBP000123' }), { payeeLive: true, hasBill: false })).toEqual(['ifsc']);
+  });
+
+  it('payee not in Busy needs a reason; a bad vehicle blocks; tomorrow is fine', () => {
+    expect(dispatchSaveProblems(form({ company: '0007', payee: 'Y', manual: true }), { payeeLive: true, hasBill: false })).toEqual(['exceptionReason']);
+    expect(dispatchSaveProblems(form({ vehicle_no: 'TRUCK 5' }), { payeeLive: false, hasBill: false })).toEqual(['vehicle']);
+    expect(dispatchSaveProblems(form({ vehicle_no: 'DL 1C AB 1234', date: '2099-01-01' }), { payeeLive: false, hasBill: false })).toEqual([]);
   });
 });

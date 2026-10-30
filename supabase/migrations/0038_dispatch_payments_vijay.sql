@@ -86,8 +86,10 @@ drop policy if exists purchase_payments_auth on public.purchase_payments;
 create policy purchase_payments_auth on public.purchase_payments
   for all to authenticated using (true) with check (true);
 
--- 5. Dispatch (dispatch_logs already exists). Only if it has no policy yet,
---    let signed-in users write consignments; an existing policy is left alone.
+-- 5. Dispatch (dispatch_logs already exists). Leave any existing policies.
+--    Live already has SELECT for signed-in users and ALL for L2+. Purchasers
+--    are not L2, so inserts were blocked. Add insert/update for signed-in
+--    users without dropping the L2 policy. No deletes granted here.
 do $$
 begin
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_logs') then
@@ -95,6 +97,15 @@ begin
     execute 'create policy dispatch_logs_auth on public.dispatch_logs for all to authenticated using (true) with check (true)';
   end if;
 end $$;
+drop policy if exists dispatch_logs_authenticated_write on public.dispatch_logs;
+create policy dispatch_logs_authenticated_write on public.dispatch_logs
+  for insert to authenticated
+  with check (auth.uid() is not null);
+drop policy if exists dispatch_logs_authenticated_update on public.dispatch_logs;
+create policy dispatch_logs_authenticated_update on public.dispatch_logs
+  for update to authenticated
+  using (auth.uid() is not null)
+  with check (auth.uid() is not null);
 create index if not exists dispatch_logs_vehicle_date_idx on public.dispatch_logs (vehicle_no, date);
 create index if not exists dispatch_logs_in_transit_idx on public.dispatch_logs (date desc) where receive_date is null;
 

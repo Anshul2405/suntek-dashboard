@@ -1283,6 +1283,9 @@ export interface Database {
           equipment: string | null;
           note: string | null;
           created_at: string;
+          // Migration 0042 (not applied): the entry this row points at.
+          entity_type?: string | null;
+          entity_id?: string | null;
         };
         Insert: OptionalNulls<Omit<Database['public']['Tables']['activity_logs']['Row'], 'id' | 'created_at'>>;
         Update: Partial<Database['public']['Tables']['activity_logs']['Insert']>;
@@ -1318,6 +1321,14 @@ export interface Database {
           receive_date: string | null;
           remarks: string | null;
           created_at: string;
+          // Migration 0042 (not applied) — optional until it is.
+          company_code?: string | null;
+          payee?: string | null;
+          payee_source?: string | null;
+          exception_reason?: string | null;
+          account_no?: string | null;
+          ifsc?: string | null;
+          bank?: string | null;
         };
         Insert: Omit<Database['public']['Tables']['dispatch_logs']['Row'], 'id' | 'created_at'>;
         Update: Partial<Database['public']['Tables']['dispatch_logs']['Insert']>;
@@ -1335,9 +1346,10 @@ export interface Database {
           amount: number;
           remarks: string | null;
           input_by: string;
-          // entered → input_done (Delhi office, Axis) → payment_done (management) → busy_done
-          status: 'entered' | 'input_done' | 'payment_done' | 'busy_done';
-          input_done_by: string | null;
+          // 0038 values (old rows, flow_version null) + the six meeting stages (0040). See lib/paymentFlow.ts.
+          status: 'entered' | 'input_done' | 'payment_done' | 'busy_done'
+            | 'payment_pending' | 'payment_approved' | 'payment_processing' | 'payment_completed' | 'busy_updated' | 'rejected';
+          input_done_by: string | null;   // 0038 rows: keyed into Axis by
           input_done_at: string | null;
           payment_done_by: string | null;
           payment_done_at: string | null;
@@ -1345,11 +1357,55 @@ export interface Database {
           busy_voucher: string | null;
           plant_id: string | null;
           created_at: string;
+          // 0040 (absent until applied)
+          company_code: string | null;          // Busy company 0007 / 0009 / 0010 / 0012 — not the factory
+          purpose: string | null;
+          payee_source: 'busy' | 'manual' | null;
+          busy_party_code: string | null;
+          exception_reason: string | null;      // required when payee_source = manual
+          created_by: string | null;
+          flow_version: number | null;          // null = 0038 row (old status meanings)
+          missing_bank: boolean | null;         // generated: no account no or IFSC
+          pending_by: string | null; pending_at: string | null;
+          approved_by: string | null; approved_at: string | null;
+          processing_by: string | null; processing_at: string | null;
+          completed_by: string | null; completed_at: string | null;
+          busy_updated_by: string | null; busy_updated_at: string | null;
+          busy_match: 'auto' | 'manual' | null;
+          rejected_by: string | null; rejected_at: string | null; reject_reason: string | null;
         };
-        Insert: OptionalNulls<Omit<Database['public']['Tables']['purchase_payments']['Row'], 'id' | 'created_at' | 'status'>> & {
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['purchase_payments']['Row'], 'id' | 'created_at' | 'status' | 'missing_bank'>> & {
           status?: Database['public']['Tables']['purchase_payments']['Row']['status'];
         };
         Update: Partial<Database['public']['Tables']['purchase_payments']['Insert']>;
+      };
+
+      // Batch-wise stock ledger (0041 — not applied). Signed drums; append-only.
+      batch_stock_movements: {
+        Row: {
+          id: string;
+          batch_no: string;
+          plant_id: string | null;
+          reactor_id: string | null;
+          batch_sheet_id: string | null;
+          density: number | null;
+          location: string | null;
+          movement_type: 'opening' | 'production' | 'dispatch' | 'transfer_in' | 'transfer_out' | 'return' | 'adjustment';
+          qty: number;
+          qty_kg: number | null;
+          to_plant_id: string | null;
+          from_plant_id: string | null;
+          transfer_group: string | null;
+          dispatch_ref: string | null;
+          busy_ref: string | null;
+          at: string;
+          actor_name: string | null;
+          created_by: string | null;
+          note: string | null;
+          created_at: string;
+        };
+        Insert: OptionalNulls<Omit<Database['public']['Tables']['batch_stock_movements']['Row'], 'id' | 'created_at' | 'at' | 'created_by'>> & { at?: string };
+        Update: Partial<Database['public']['Tables']['batch_stock_movements']['Insert']>;
       };
 
       daily_stock_entries: {

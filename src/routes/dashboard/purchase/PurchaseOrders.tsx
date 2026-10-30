@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { formatDate } from '../../../lib/utils/formatting';
+import { formatDate, istToday } from '../../../lib/utils/formatting';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Download, ShoppingCart, Package, Truck, Hourglass } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Plus, Download, ShoppingCart, Package, Truck, Hourglass, IndianRupee, ReceiptText } from 'lucide-react';
 import { ImageLightbox, type LightboxImage } from '../../../components/ui/ImageLightbox';
 import { supabase } from '../../../lib/supabase';
 import { insertRows } from '../../../lib/db';
@@ -16,14 +16,45 @@ import { KpiInfoButton } from '../../../components/KpiInfoButton';
 import { useToast } from '../../../components/ui/toast';
 import { SkeletonRows, ErrorState, EmptyState } from '../../../components/ui/states';
 import { usePagination } from '../../../components/ui/usePagination';
+import { useUrlTable } from '../../../lib/urlTable';
+import { hereNow, withBack } from '../../../lib/backLink';
 import { TablePaginationV2 as TablePagination } from '../../../components/v2';
 import { useTextFilter } from '../../../components/ui/TableSearch';
 import { useSortable } from '../../../components/ui/useSortable';
 import { ThV2 as Th, StatCard, SectionCard, FilterBar, ButtonV2, InfoBanner } from '../../../components/v2';
 import { AddPurchaseModal } from './AddPurchaseModal';
 import { BusyPurchasesCard } from '../../../components/BusyPurchasesCard';
+import { fmtINR, useOverviewKPIs } from '../../../hooks/useBusyData';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import type { Database } from '../../../lib/database.types';
+import { useRights } from '../../../lib/access/useRights';
+
+/** Operations → Purchase: Busy invoices only (read-only). Factory → Purchase Orders is a different screen. */
+function BusyPurchaseOpsPage() {
+  const { t } = useTranslation();
+  const { data: overview } = useOverviewKPIs();
+  return (
+    <>
+      <div className="grid grid-cols-12 gap-4 mb-4">
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<IndianRupee />} tone="blue"
+          label={t('overview.purchasePaidMtd', 'Purchase invoiced · MTD')}
+          value={overview ? fmtINR(overview.purchaseMTD) : '…'}
+          caption={t('overview.busyReadOnly', 'From the last Busy read. Never written back.')} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<ReceiptText />} tone="purple"
+          label={t('overview.busyInvoicesFy', 'Purchase invoices · FY')}
+          value={overview ? String(overview.purchaseInvoiceCount) : '…'}
+          caption={overview?.fyPurchase != null ? fmtINR(overview.fyPurchase) : undefined} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
+          label={t('overview.busyPendingBills', 'Pending bills')}
+          value={overview ? fmtINR(overview.pendingBills) : '…'} />
+        <StatCard className="col-span-12 sm:col-span-6 lg:col-span-3" icon={<Package />} tone="green"
+          label={t('overview.busyFyPurchase', 'FY purchase')}
+          value={overview ? fmtINR(overview.fyPurchase) : '…'} />
+      </div>
+      <BusyPurchasesCard />
+    </>
+  );
+}
 
 type OrderRow = Database['public']['Tables']['oil_contracts']['Row'];
 type MaintStoreReq = Database['public']['Tables']['maintenance_store_requests']['Row'];
@@ -66,6 +97,12 @@ const PORTS = ['Kandla', 'Mundra'];
 const UNITS  = ['nos', 'Ft', 'kg', 'MT', 'L', 'sets', 'boxes'];
 
 export function PurchaseOrders() {
+  const [searchParams] = useSearchParams();
+  if (searchParams.get('ctx') === 'ops') return <BusyPurchaseOpsPage />;
+  return <PurchaseOrderRegister />;
+}
+
+function PurchaseOrderRegister() {
   const { t } = useTranslation();
   const toast = useToast();
   const navigate = useNavigate();
@@ -81,6 +118,8 @@ export function PurchaseOrders() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const { activeProfile } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks.
+  const rights = useRights();
   const { scopeQuery, allowedPlants } = usePlantScope();
   const [form, setForm] = useState({ material: '', type: 'PO', supplier: '', destination: '', qty: '', unit: 'nos', value: '', notes: '' });
 
@@ -124,7 +163,8 @@ export function PurchaseOrders() {
             billTotal: t?.pm_bill_total != null ? Number(t.pm_bill_total) : null,
             billItems: t?.pm_items_count != null ? Number(t.pm_items_count) : null,
             billUrl: t?.pm_bill_url ?? s.handover_invoice_url ?? null,
-            date: t?.closed_at || t?.created_at || null, busyRef: s.busy_transaction_ref,
+            // When the part was bought, not when the ticket was raised / closed.
+            date: s.procured_at || t?.closed_at || t?.created_at || null, busyRef: s.busy_transaction_ref,
           };
         });
       setMaintPOs(mpos);
@@ -146,7 +186,7 @@ export function PurchaseOrders() {
     const { data, error } = await insertRows('oil_contracts', {
       oil_type: form.material,
       company: form.supplier,
-      date: new Date().toISOString().split('T')[0],
+      date: istToday(),
       book_qty_mt: parseFloat(form.qty) || null,
       price: form.value ? parseFloat(form.value.replace(/[^0-9.]/g, '')) : null,
       port: form.destination,
@@ -202,18 +242,20 @@ export function PurchaseOrders() {
     price: r => r.price, date: r => r.date,
   });
   const ordersPg = usePagination(ordersSort.sorted, { resetKey: `${poSearch}|${filter}|${ordersSort.sort.key}|${ordersSort.sort.dir}` });
+  const maintUrl = useUrlTable({ key: 'date', dir: 'desc' }, 'mp');
   const maintSort = useSortable(maintPOs, {
     ticket: r => r.ticketRef, part: r => r.part, equipment: r => r.equipment, store: r => r.store,
     supplier: r => r.supplier, qty: r => r.qty, unitPrice: r => r.unitPrice, total: r => r.total,
     busyRef: r => r.busyRef, date: r => (r.date ? new Date(r.date) : null),
-  }, { key: 'date', dir: 'desc' }); // default: latest first
-  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintSort.sort.key}|${maintSort.sort.dir}` });
+  }, maintUrl.sort, maintUrl.onSort); // default: latest first
+  // Page / sort in the URL (?mpp= ?mpsort=): opening a ticket and closing it returns here.
+  const maintPg = usePagination(maintSort.sorted, { resetKey: `${maintSort.sort.key}|${maintSort.sort.dir}`, ...maintUrl.paging, ready: !loading });
 
   return (
     <>
       {/* Add purchased spares to the stock register (bill AI or manual) —
           capability-gated; the RPC re-enforces this server-side. */}
-      {profileHasCapability(activeProfile, 'add_stock_purchase') && (
+      {profileHasCapability(activeProfile, 'add_stock_purchase') && rights.can('purchase', 'add') && (
         <>
           <SectionCard
             className="mb-4"
@@ -234,31 +276,31 @@ export function PurchaseOrders() {
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
           <KpiInfoButton info={{ title: 'Total Orders', what: 'Total count of oil/material purchase contracts on record.', source: 'Supabase', tables: ['oil_contracts'] }} />
           <StatCard className="h-full" icon={<ShoppingCart />} tone="blue"
-            label={t('po.kpi_total_orders')} value={orders.length + maintPOs.length}
-            caption={t('po.kpi_total_sub', { a: orders.length, b: maintPOs.length })} />
+            label={t('po.kpi_total_orders')} value={loading ? '…' : orders.length + maintPOs.length}
+            caption={loading ? '\u00a0' : t('po.kpi_total_sub', { a: orders.length, b: maintPOs.length })}
+            onView={() => { setPoSearch(''); setFilter('all'); document.getElementById('po-orders')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+            viewLabel={t('po.viewOrders', 'See the orders')} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
           <KpiInfoButton info={{ title: 'Total Booked Qty', what: 'Sum of all booked quantities (MT) across all purchase orders.', source: 'Supabase', tables: ['oil_contracts'] }} />
           <StatCard className="h-full" icon={<Package />} tone="purple"
             label={t('po.kpi_booked_qty')}
-            value={orders.reduce((s, r) => s + (r.book_qty_mt || 0), 0).toFixed(0)}
+            value={loading ? '…' : orders.reduce((s, r) => s + (r.book_qty_mt || 0), 0).toFixed(0)}
             caption={t('po.kpi_across_all_pos')} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
           <KpiInfoButton info={{ title: 'Dispatched', what: 'Total quantity already dispatched from suppliers.', source: 'Supabase', tables: ['oil_contracts'] }} />
           <StatCard className="h-full" icon={<Truck />} tone="green" valueTone="green"
             label={t('po.kpi_dispatched')}
-            value={orders.reduce((s, r) => s + (r.dispatched_qty || 0), 0).toFixed(0)} />
+            value={loading ? '…' : orders.reduce((s, r) => s + (r.dispatched_qty || 0), 0).toFixed(0)} />
         </div>
         <div className="col-span-12 sm:col-span-6 lg:col-span-3 relative">
           <KpiInfoButton info={{ title: 'Pending Qty', what: 'Total quantity still pending dispatch from suppliers.', source: 'Supabase', tables: ['oil_contracts'] }} />
           <StatCard className="h-full" icon={<Hourglass />} tone="amber" valueTone="amber"
             label={t('po.kpi_pending')}
-            value={orders.reduce((s, r) => s + (r.pending_qty || 0), 0).toFixed(0)} />
+            value={loading ? '…' : orders.reduce((s, r) => s + (r.pending_qty || 0), 0).toFixed(0)} />
         </div>
       </div>
-
-      <BusyPurchasesCard />
 
       {/* Search / filters */}
       <FilterBar
@@ -269,14 +311,13 @@ export function PurchaseOrders() {
       />
 
       {/* Table — material / oil purchase orders */}
-      <div className="relative">
+      <div className="relative" id="po-orders">
         <KpiInfoButton info={{ title: 'Purchase Orders List', what: 'All oil/material purchase contracts. New entries via "+ New PO" form.', source: 'Supabase', tables: ['oil_contracts'] }} />
         <SectionCard
           flush
           title={
             <span className="inline-flex items-center gap-2 flex-wrap">
               {t('po.section_material_oil')}
-              <span className="badge" style={{ background: '#E0E7FF', color: '#4338CA', fontWeight: 700, fontSize: 10 }}>⟳ BUSY API</span>
             </span>
           }
           subtitle={t('po.section_material_oil_sub')}
@@ -361,13 +402,13 @@ export function PurchaseOrders() {
             <thead><tr><Th sortKey="ticket" s={maintSort}>{t('po.col_ticket')}</Th><Th sortKey="part" s={maintSort}>{t('po.col_part')}</Th><Th sortKey="equipment" s={maintSort}>{t('po.col_equipment')}</Th><Th sortKey="store" s={maintSort}>{t('po.col_store_unit')}</Th><Th sortKey="supplier" s={maintSort}>{t('po.col_supplier')}</Th><Th sortKey="qty" s={maintSort} firstDir="desc" className="num">{t('po.col_qty')}</Th><Th sortKey="unitPrice" s={maintSort} firstDir="desc" className="num">{t('po.col_unit_price')}</Th><Th sortKey="total" s={maintSort} firstDir="desc" className="num">{t('po.col_total')}</Th><Th sortKey="busyRef" s={maintSort}>{t('po.col_busy_ref')}</Th><th>{t('po.col_bill', 'Bill')}</th><Th sortKey="date" s={maintSort} firstDir="desc">{t('po.col_date')}</Th></tr></thead>
             <tbody>
               {maintPOs.length === 0 && (
-                <tr><td colSpan={11} className="text-center text-slate-400 py-6 text-sm">{t('po.empty_maint')}</td></tr>
+                <tr><td colSpan={11} className="text-center text-slate-400 py-6 text-sm">{loading ? '…' : t('po.empty_maint')}</td></tr>
               )}
               {maintPg.pageRows.map(m => {
                 const totalCost = m.total ?? m.billTotal;
                 return (
                 <tr key={m.id}>
-                  <td><button type="button" onClick={() => navigate(`/dashboard/purchase/maint?ticket=${m.ticketId}`)} className="num text-xs" style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline' }} title={t('po.open_ticket', 'Open maintenance ticket')}>#{m.ticketRef}</button></td>
+                  <td><button type="button" onClick={() => navigate(withBack(`/dashboard/purchase/maint?ticket=${m.ticketId}`, hereNow()))} className="num text-xs" style={{ color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline' }} title={t('po.open_ticket', 'Open maintenance ticket')}>#{m.ticketRef}</button></td>
                   <td className="font-semibold">{m.part}</td>
                   <td className="text-slate-500 text-xs">{m.equipment}</td>
                   <td className="text-slate-500 text-xs">{m.store}</td>

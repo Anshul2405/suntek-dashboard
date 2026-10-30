@@ -49,14 +49,11 @@ const FACTORY_ITEMS: NavItem[] = [
 ];
 
 /**
- * Operations dropdown children. Purchase reuses the Purchase Orders page for now
- * and is expected to grow its own sub-modules later. CP and Stock is the CPM Stock
- * board (display rename only — same /dashboard/stock route).
+ * Operations dropdown children. Purchase is the Busy invoice workbook (?ctx=ops).
+ * Factory → Purchase Orders is the oil/spare PO register on the same path without ctx.
+ * CP and Stock is the CPM Stock board (display rename only — same /dashboard/stock route).
  */
 const OPERATIONS_ITEMS: NavItem[] = [
-  // Purchase reuses the same page as Factory's "Purchase Order". They share a
-  // route, so we tag this one with ?ctx=ops (`nav`) — the highlight logic reads
-  // that marker to light up ONLY the entry the user actually opened, not both.
   { key: 'nav.purchase',        path: '/dashboard/purchase/purchase', nav: '/dashboard/purchase/purchase?ctx=ops' },
   { key: 'nav.purchaseBook',    path: '/dashboard/purchase/book'     },
   { key: 'nav.sales',           path: '/dashboard/sales'             },
@@ -405,7 +402,6 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       >
         <IconSearch />
         <span className="sb-hide flex-1 text-left">{t('nav.quickSearch')}</span>
-        <kbd className="sb-hide text-[10px] text-slate-400 bg-transparent border border-white/10 rounded px-1.5 py-0.5">⌘K</kbd>
       </button>
 
       {/* ── WORKSPACE ─────────────────────────────────────────────────────── */}
@@ -782,10 +778,10 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
       {(showAdmin || showBlacklist || showUploads || showAccess) && (
       <nav className="flex flex-col gap-1">
         <a
-          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/access') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads')) ? ' active' : ''}`}
+          className={`nav-link${(isActive('/dashboard/users') || isActive('/dashboard/blacklist') || isActive('/dashboard/admin/uploads')) ? ' active' : ''}`}
           onClick={() => {
             setAdminOpen((o) => !o);
-            if (!adminOpen) navTo(showAdmin ? '/dashboard/users' : showBlacklist ? '/dashboard/blacklist' : '/dashboard/admin/uploads');
+            if (!adminOpen) navTo(showAdmin || showAccess ? '/dashboard/users' : showBlacklist ? '/dashboard/blacklist' : '/dashboard/admin/uploads');
           }}
         >
           <IconShield />
@@ -794,7 +790,7 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
         </a>
         {adminOpen && (
           <div className="nav-sub">
-            {showAdmin && (
+            {(showAdmin || showAccess) && (
               <a className={`nav-link${isActive('/dashboard/users') ? ' active' : ''}`} onClick={() => navTo('/dashboard/users')}>
                 <span>{t('nav.userManagement')}</span>
               </a>
@@ -802,11 +798,6 @@ export function Sidebar({ user, onSignOut, mobileOpen = false, onClose, collapse
             {showBlacklist && (
               <a className={`nav-link${isActive('/dashboard/blacklist') ? ' active' : ''}`} onClick={() => navTo('/dashboard/blacklist')}>
                 <span>{t('nav.blacklist')}</span>
-              </a>
-            )}
-            {showAccess && (
-              <a className={`nav-link${isActive('/dashboard/access') ? ' active' : ''}`} onClick={() => navTo('/dashboard/access')}>
-                <span>{t('nav.accessBackup', 'Access & backup')}</span>
               </a>
             )}
             {showUploads && (

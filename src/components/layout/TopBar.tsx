@@ -14,6 +14,7 @@ import { dropdownStyle } from '../../lib/uiPosition';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 import { IconBell, IconChecklist, IconMenu, IconSearch, TB_ICON_BTN, TB_ICON_BTN_ACTIVE } from './TopIcons';
 import { BUSY_COMPANIES, useBusyCompany } from '../../contexts/BusyCompanyContext';
+import type { BusyChrome } from '../../lib/busyChrome';
 import { useBusyHeartbeat } from '../../hooks/useBusyData';
 import { formatDateTime } from '../../lib/utils/formatting';
 
@@ -62,10 +63,12 @@ interface TopBarProps {
   subtitle?: string;
   /** Open the mobile sidebar drawer (shown only below md). */
   onMenu?: () => void;
+  /** Busy company picker / feed stamp — only on pages that read the Busy feed (lib/busyChrome). */
+  busyChrome?: BusyChrome;
 }
 
 
-function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
+function BusySyncStamp({ formatAge }: { formatAge: (ts: string, now?: number) => string }) {
   const { t } = useTranslation();
   const { data: beat, isLoading } = useBusyHeartbeat();
   const [now, setNow] = useState(() => Date.now());
@@ -82,8 +85,8 @@ function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
   const label = !beat
     ? t('topbar.busyNoFeed', { defaultValue: 'Busy not connected' })
     : waiting
-      ? t('topbar.busyWaiting', { defaultValue: 'Busy PC waiting · {{age}}', age: formatAge(beat.at) })
-      : t('topbar.busySync', { defaultValue: 'Busy · {{age}}', age: formatAge(beat.at) });
+      ? t('topbar.busyWaiting', { defaultValue: 'Busy PC waiting · {{age}}', age: formatAge(beat.at, now) })
+      : t('topbar.busySync', { defaultValue: 'Busy · {{age}}', age: formatAge(beat.at, now) });
   const title = beat
     ? t('topbar.busySyncTitle', {
         defaultValue: 'Last push from the Busy PC {{computer}} at {{time}}. Read only.',
@@ -99,7 +102,7 @@ function BusySyncStamp({ formatAge }: { formatAge: (ts: string) => string }) {
   );
 }
 
-export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
+export function TopBar({ title, breadcrumb, subtitle, onMenu, busyChrome = { company: false, stamp: false } }: TopBarProps) {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { openPalette } = useSearchPalette();
@@ -144,8 +147,8 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
     if (n.route) { navigate(n.route); setOpen(false); }
   }
 
-  function formatAge(ts: string) {
-    const diff = Date.now() - new Date(ts).getTime();
+  function formatAge(ts: string, now: number = Date.now()) {
+    const diff = now - new Date(ts).getTime();
     const m = Math.floor(diff / 60000);
     if (m < 1) return t('time.justNow');
     if (m < 60) return t('time.minutesAgo', { count: m });
@@ -186,14 +189,16 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
       {/* Right: sync + actions + profile. On a phone the company picker + sync
           dot take their own row so they never sit on top of the icons. */}
       <div className="flex items-center gap-1.5 max-[390px]:gap-1 md:gap-2 flex-wrap md:flex-nowrap justify-end w-full md:w-auto" style={{ position: 'relative' }}>
-        <div className="flex items-center justify-end min-w-0 w-full md:w-auto">
+        {(busyChrome.company || busyChrome.stamp) && (
+        <div className={`flex items-center justify-end min-w-0 ${busyChrome.company ? 'w-full' : ''} md:w-auto`}>
+          {busyChrome.company && (
           <label className="min-w-0">
             <span className="sr-only">{t('topbar.busyCompany', { defaultValue: 'Busy company' })}</span>
             <select
               value={busyCompany}
               onChange={(e) => setBusyCompany(e.target.value as typeof busyCompany)}
               aria-label={t('topbar.busyCompany', { defaultValue: 'Busy company' })}
-              className="h-8 w-full max-w-[9.5rem] sm:max-w-[11rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] font-medium text-slate-700"
+              className="h-8 max-sm:h-11 w-full max-w-[9.5rem] sm:max-w-[11rem] max-sm:max-w-[13rem] truncate rounded-lg border border-slate-200 bg-white px-2 text-[12px] max-sm:text-[14px] font-medium text-slate-700"
             >
               <option value="all">{t('topbar.busyAll', { defaultValue: 'All companies' })}</option>
               {BUSY_COMPANIES.map((company) => (
@@ -201,8 +206,10 @@ export function TopBar({ title, breadcrumb, subtitle, onMenu }: TopBarProps) {
               ))}
             </select>
           </label>
-          <BusySyncStamp formatAge={formatAge} />
+          )}
+          {busyChrome.stamp && <BusySyncStamp formatAge={formatAge} />}
         </div>
+        )}
 
         {/* Global quick-search (Cmd/Ctrl+K) */}
         <button

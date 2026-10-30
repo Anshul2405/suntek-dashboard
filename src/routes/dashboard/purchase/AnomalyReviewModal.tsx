@@ -8,6 +8,7 @@ import { callRpc } from '../../../lib/db';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import type { ReviewedAnomaly, AnomalyAction } from '../../../lib/store/anomalyKeys';
 import { labelForPeriod, type RegisterSide } from '../../../lib/store/parseStockFile';
+import { codeLabel } from '../../../lib/labels';
 
 /**
  * "Jun 2026 Purchase Register" — where one side of a comparison came from.
@@ -181,7 +182,7 @@ export function AnomalyReviewModal({ item, onClose, onSaved }: {
           </div>
           {res?.resolution_comment && (
             <div style={{ marginTop: 8, fontSize: 11.5, color: '#64748B' }}>
-              {t('stockAnomaly.lastAction', 'Last action')}: <strong>{res.action}</strong> · {res.resolved_by_name || '—'} · “{res.resolution_comment}”
+              {t('stockAnomaly.lastAction', 'Last action')}: <strong>{codeLabel(res.action)}</strong> · {res.resolved_by_name || '—'} · “{res.resolution_comment}”
               {res.corrected_value != null && <> · {t('stockAnomaly.correctedTo', 'corrected to')} <strong>{res.corrected_value}</strong></>}
             </div>
           )}
@@ -227,7 +228,7 @@ export function AnomalyReviewModal({ item, onClose, onSaved }: {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
               {history.map(h => (
                 <div key={h.id} style={{ fontSize: 11.5, color: '#64748B', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 8, padding: '6px 8px' }}>
-                  <strong style={{ color: '#334155' }}>{h.action}</strong> · {h.from_status || '—'} → {h.to_status} · {h.actor_name || '—'} · {formatDateTime(h.created_at)}
+                  <strong style={{ color: '#334155' }}>{codeLabel(h.action)}</strong> · {h.from_status ? codeLabel(h.from_status) : '—'} → {codeLabel(h.to_status)} · {h.actor_name || '—'} · {formatDateTime(h.created_at)}
                   {h.corrected_value != null && <> · {t('stockAnomaly.correctedTo', 'corrected to')} {h.corrected_value}</>}
                   <div>“{h.comment}”</div>
                 </div>

@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { normalizeDayRange, formatDate } from '../../lib/utils/formatting';
 import { cn } from '../../lib/utils/cn';
+import { DateInput } from '../ui/DateInput';
 
 /**
  * From / To calendar-day filter, shared by every list (Maintenance, Store Req,
@@ -27,15 +28,20 @@ export function DateRangeFilter({
   return (
     <div className={cn('flex flex-col gap-1', className)} data-testid="date-range-filter">
       <span className="text-[11px] text-slate-500 font-medium px-0.5">{label ?? t('common.dateRange', 'Date (from – to)')}</span>
-      <div className="flex items-center gap-1.5">
-        <input type="date" aria-label={t('common.fromDate', 'From')} value={from}
-          onChange={e => onChange({ from: e.target.value, to })} className={input} />
+      {/* Phones: the two boxes share the row (no box past the card edge). */}
+      <div className="flex items-center gap-1.5 max-sm:w-full">
+        <span className="max-sm:flex-1 max-sm:min-w-0">
+          <DateInput aria-label={t('common.fromDate', 'From')} value={from}
+            onChange={e => onChange({ from: e.target.value, to })} className={cn(input, 'max-sm:w-full')} />
+        </span>
         <span className="text-slate-400 text-xs">–</span>
-        <input type="date" aria-label={t('common.toDate', 'To')} value={to}
-          onChange={e => onChange({ from, to: e.target.value })} className={input} />
+        <span className="max-sm:flex-1 max-sm:min-w-0">
+          <DateInput aria-label={t('common.toDate', 'To')} value={to}
+            onChange={e => onChange({ from, to: e.target.value })} className={cn(input, 'max-sm:w-full')} />
+        </span>
         {(from || to) && (
           <button type="button" onClick={() => onChange({ from: '', to: '' })}
-            className="text-[11.5px] font-semibold text-slate-500 hover:text-slate-800 px-1"
+            className="text-[11.5px] font-semibold text-slate-500 hover:text-slate-800 px-1 max-sm:min-w-[44px] max-sm:min-h-[44px]"
             title={t('common.clearDates', 'Clear dates')}>✕</button>
         )}
       </div>

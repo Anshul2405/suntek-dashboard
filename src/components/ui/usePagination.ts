@@ -55,6 +55,11 @@ export function usePagination<T>(
     initialPage?: number;
     /** Called when page or page size changes, so a screen can keep them in the URL. */
     onChange?: (page: number, pageSize: number) => void;
+    /**
+     * When false the row set is still filling (first logs, then tickets). Do not
+     * clamp a restored page down to 1 just because the list is still short.
+     */
+    ready?: boolean;
   },
 ): { pageRows: T[]; controls: PaginationControls } {
   const [pageSize, setPageSizeRaw] = useState(opts?.initialPageSize ?? 10);
@@ -72,8 +77,14 @@ export function usePagination<T>(
     if (prev && (prev.key !== opts?.resetKey || prev.size !== pageSize)) setPage(1);
   }, [opts?.resetKey, pageSize]);
   // Keep the page in range if the list shrinks underneath us (not while it is
-  // still empty from loading — that would undo a restored page).
-  useEffect(() => { if (total > 0 && page > pageCount) setPage(pageCount); }, [page, pageCount, total]);
+  // still empty from loading, and not while a parent says the set is still
+  // filling — Activity Log paints manuals first, then tickets, and clamping
+  // there threw a restored page 3 back to 1).
+  const ready = opts?.ready;
+  useEffect(() => {
+    if (ready === false) return;
+    if (total > 0 && page > pageCount) setPage(pageCount);
+  }, [page, pageCount, total, ready]);
 
   const onChange = opts?.onChange;
   const onChangeRef = useRef(onChange);

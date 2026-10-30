@@ -17,7 +17,8 @@ import type { BlacklistEntry } from '../../contexts/BlacklistContext';
 import type { Database } from '../../lib/database.types';
 import { usePagination } from '../../components/ui/usePagination';
 import { TablePaginationV2 } from '../../components/v2';
-import { formatDate, formatDateTime } from '../../lib/utils/formatting';
+import { formatDate, formatDateTime, istToday } from '../../lib/utils/formatting';
+import { compactVehicleNo, isValidVehicleNo } from '../../lib/validate/vehicleNo';
 
 type BlacklistEventRow = Database['public']['Tables']['blacklist_events']['Row'];
 
@@ -121,7 +122,7 @@ export function Blacklist() {
   const [entries, setEntries] = useState<BlacklistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const today = new Date().toISOString().split('T')[0];
+  const today = istToday();
 
   const [showPanel, setShowPanel] = useState(false);
   const [form, setForm] = useState({ ...BLANK_FORM });
@@ -186,11 +187,14 @@ export function Blacklist() {
   const { pageRows: pagedEntries, controls: entryPager } = usePagination(fSort.sorted, { resetKey: `${filterType}|${filterSev}|${filterStatus}|${search}|${fSort.sort.key}|${fSort.sort.dir}` });
 
   // ── Save new entry ──────────────────────────────────────────────────────────
+  // A vehicle entry must carry an Indian registration number (stored compact).
+  const vehicleBad = form.type === 'vehicle' && !!form.name.trim() && !isValidVehicleNo(form.name);
   async function handleSave() {
-    if (!form.name.trim() || !form.reason.trim()) return;
+    if (!form.name.trim() || !form.reason.trim() || vehicleBad) return;
+    const savedName = form.type === 'vehicle' ? compactVehicleNo(form.name) : form.name.trim();
     const payload = {
       type: form.type,
-      name: form.name.trim(),
+      name: savedName,
       identifier: form.identifier.trim() || null,
       reason: form.reason.trim(),
       severity: form.severity,
@@ -207,7 +211,7 @@ export function Blacklist() {
     await logBlacklistEvent({
       blacklist_id: (created as { id: string } | null)?.id ?? null,
       event_type: 'added',
-      entity_name: form.name.trim(),
+      entity_name: savedName,
       entity_type: form.type,
       workflow: 'Blacklist', source: 'lifecycle',
       actor_id: activeProfile.id, actor_name: activeProfile.name, actor_role: activeProfile.roleLabel,
@@ -218,7 +222,7 @@ export function Blacklist() {
     insertRows('notifications', {
       target_roles: ['admin', 'unit_head'],
       title: `New blacklist entry added`,
-      body: `${TYPE_CFG[form.type].label} "${form.name.trim()}" blacklisted (${form.severity}) by ${activeProfile.name}`,
+      body: `${TYPE_CFG[form.type].label} "${savedName}" blacklisted (${form.severity}) by ${activeProfile.name}`,
       type: SEVERITY_NOTIF_TYPE[form.severity] ?? 'urgent',
       route: '/dashboard/blacklist',
       actor_name: activeProfile.name,
@@ -227,7 +231,7 @@ export function Blacklist() {
     }).then(() => {}, () => {});
 
     await notifyMentions(`${form.reason} ${form.notes}`, {
-      entityLabel: `Blacklist · ${form.name.trim()}`, route: '/dashboard/blacklist',
+      entityLabel: `Blacklist · ${savedName}`, route: '/dashboard/blacklist',
     });
 
     setSaved(true);
@@ -624,6 +628,7 @@ export function Blacklist() {
         <PanelRow>
           <PanelField label={`${t(`blacklist.nameLabel_${form.type}`)} *`}>
             <PanelInput value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder={typeLabels.namePlaceholder} />
+            {vehicleBad && <span style={{ fontSize: 11, color: '#DC2626' }}>{t('common.vehicleInvalid', 'Use an Indian vehicle number, like UP13ET7451, DL1CAB1234 or 22BH1234AB.')}</span>}
           </PanelField>
           <PanelField label={t(`blacklist.identifierLabel_${form.type}`)}>
             <PanelInput value={form.identifier} onChange={e => setForm(f => ({ ...f, identifier: e.target.value }))} placeholder={typeLabels.identifierPlaceholder} />
@@ -670,7 +675,7 @@ export function Blacklist() {
           saveLabel={t('blacklist.addBtnLabel')}
           successLabel={t('blacklist.entryAdded')}
           successSub={t('blacklist.entryAddedSub')}
-          disabled={!form.name.trim() || !form.reason.trim()}
+          disabled={!form.name.trim() || !form.reason.trim() || vehicleBad}
           requiredHint={t('blacklist.requiredNameReason')}
         />
       </SlidePanel>

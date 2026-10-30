@@ -15,6 +15,8 @@ import { matchAsset, type AssetLite } from '../../../lib/far/assets';
 import { createImportBatch, setImportBatchRowCount } from '../../../lib/imports/batches';
 import { FREQ_LABEL, calculateNextDue } from './maintenance/shared';
 import { fetchAllRows } from '../../../lib/fetchAll';
+import { istToday } from '../../../lib/utils/formatting';
+import { DateInput } from '../../../components/ui/DateInput';
 
 type Plant = { id: string; name: string };
 
@@ -42,7 +44,7 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
   const [stage, setStage] = useState<'form' | 'parsing' | 'review' | 'saving' | 'done' | 'error'>('form');
   const [err, setErr] = useState<string | null>(null);
   const [plantIds, setPlantIds] = useState<string[]>([]);   // factories this workbook applies to
-  const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [startDate, setStartDate] = useState(() => istToday());
   const [untilDate, setUntilDate] = useState('');
   const [templates, setTemplates] = useState<PMTemplate[]>([]);
   const [justification, setJustification] = useState('');
@@ -263,8 +265,8 @@ export function PMScheduleImport({ open, onClose, onImported }: { open: boolean;
               </div>
             )}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-              <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmStartDate', 'Start date')}</div><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
-              <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmContinueUntil', 'Continue until (optional)')}</div><input type="date" value={untilDate} onChange={e => setUntilDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
+              <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmStartDate', 'Start date')}</div><DateInput block value={startDate} onChange={e => setStartDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
+              <div style={{ flex: 1, minWidth: 130 }}><div style={label}>{t('far.pmContinueUntil', 'Continue until (optional)')}</div><DateInput block value={untilDate} onChange={e => setUntilDate(e.target.value)} style={{ ...input, width: '100%' }} /></div>
             </div>
             {err && stage === 'form' && (
               <div style={{ fontSize: 12, color: '#DC2626', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 8, marginBottom: 10 }}>{err}</div>

@@ -10,8 +10,12 @@ import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { Activity, Building2, Plus } from 'lucide-react';
 import { useUrlFilters } from '../../../lib/urlFilters';
-import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill, TablePaginationV2 } from '../../../components/v2';
+import { ButtonV2, DateRangeFilter, FilterBar, FilterSelect, SectionCard, StatusPill, TablePaginationV2, ThV2 as Th } from '../../../components/v2';
 import { usePagination } from '../../../components/ui/usePagination';
+import { useSortable } from '../../../components/ui/useSortable';
+import { useUrlTable } from '../../../lib/urlTable';
+import { incidentWhenWarning } from '../../../lib/incidentDate';
+import { DateTimeInput } from '../../../components/ui/DateInput';
 
 
 function TagPeople({
@@ -376,10 +380,35 @@ export function IncidentReports({
     return [r.what_text, r.who_text, r.where_text, r.how_text, r.solution_text, displayLocationName(r.plants?.name), r.plants?.name, r.reported_by, r.claimed_by, nameOf(r.claimed_by), tags]
       .some((v) => (v || '').toLowerCase().includes(needle));
   }), [rows, plantFilter, statusFilter, range.from, range.to, needle, people]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Sortable; page / size / sort live in the URL (?ip= ?isort=) so closing an
+  // incident opened from Activity Log or Back keeps the list where it was.
+  const incUrl = useUrlTable({ key: 'when', dir: 'desc' }, 'i');
+  const incSort = useSortable(shown, {
+    when: r => (r.occurred_at ? new Date(r.occurred_at) : null),
+    plant: r => displayLocationName(r.plants?.name),
+    what: r => r.what_text,
+    claimed: r => (r.claimed_by ? nameOf(r.claimed_by) : ''),
+  }, incUrl.sort, incUrl.onSort);
   // Paged like the other registers; a filter change goes back to page 1.
-  const { pageRows: shownPage, controls: incidentPager } = usePagination(shown, {
-    resetKey: `${q}|${plantFilter}|${statusFilter}|${fromDate}|${toDate}`,
+  const { pageRows: shownPage, controls: incidentPager } = usePagination(incSort.sorted, {
+    resetKey: `${q}|${plantFilter}|${statusFilter}|${fromDate}|${toDate}|${incSort.sort.key}|${incSort.sort.dir}`,
+    ...incUrl.paging,
+    ready: !loading,
   });
+
+  // The picker follows the device's date order; echo the pick in dd/mm/yyyy and
+  // flag a far-off date (2 Oct typed on a US-order device saved as 10 Feb).
+  const whenEcho = (when: string) => {
+    if (!when) return null;
+    const warn = incidentWhenWarning(when);
+    return (
+      <div style={{ fontSize: 11, marginTop: 4, color: warn ? '#B45309' : '#64748B', fontWeight: warn ? 700 : 400 }}>
+        {warn
+          ? t('incidents.whenCheck', { defaultValue: 'Saved as {{date}} — check the day and the month.', date: formatDateTime(new Date(when).toISOString()) })
+          : t('incidents.whenEcho', { defaultValue: 'Saved as {{date}}', date: formatDateTime(new Date(when).toISOString()) })}
+      </div>
+    );
+  };
 
   const field = (label: string, key: keyof typeof blank, area = false) => (
     <label style={{ display: 'block', marginBottom: 10 }}>
@@ -387,7 +416,10 @@ export function IncidentReports({
       {area ? (
         <textarea value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} rows={3} style={inputStyle} />
       ) : key === 'when' ? (
-        <input type="datetime-local" value={form.when} onChange={(e) => setForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
+        <>
+          <DateTimeInput value={form.when} onChange={(e) => setForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
+          {whenEcho(form.when)}
+        </>
       ) : (
         <input value={form[key]} onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))} style={inputStyle} />
       )}
@@ -400,7 +432,10 @@ export function IncidentReports({
       {area ? (
         <textarea value={editForm[key]} onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))} rows={3} style={inputStyle} />
       ) : key === 'when' ? (
-        <input type="datetime-local" value={editForm.when} onChange={(e) => setEditForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
+        <>
+          <DateTimeInput value={editForm.when} onChange={(e) => setEditForm((f) => ({ ...f, when: e.target.value }))} style={inputStyle} />
+          {whenEcho(editForm.when)}
+        </>
       ) : (
         <input value={editForm[key]} onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))} style={inputStyle} />
       )}
@@ -459,7 +494,7 @@ export function IncidentReports({
         <table className="dt2">
           <thead>
             <tr>
-              <th>{t('incidents.colWhen')}</th><th>{t('incidents.colPlant')}</th><th>{t('incidents.colWhat')}</th><th>{t('incidents.colClaimed')}</th><th>{t('incidents.colTagged')}</th><th>{t('incidents.colFiles')}</th>
+              <Th sortKey="when" s={incSort} firstDir="desc">{t('incidents.colWhen')}</Th><Th sortKey="plant" s={incSort}>{t('incidents.colPlant')}</Th><Th sortKey="what" s={incSort}>{t('incidents.colWhat')}</Th><Th sortKey="claimed" s={incSort}>{t('incidents.colClaimed')}</Th><th>{t('incidents.colTagged')}</th><th>{t('incidents.colFiles')}</th>
             </tr>
           </thead>
           <tbody>

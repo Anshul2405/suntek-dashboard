@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IndianRupee, Wallet, Boxes } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useQuery } from '@tanstack/react-query';
 import { SkeletonRows, ErrorState, EmptyState } from '../../components/ui/states';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
@@ -9,6 +10,7 @@ import { useSortable } from '../../components/ui/useSortable';
 import { StatCard, SectionCard, ThV2 as Th } from '../../components/v2';
 import { computeBatchCost, DEFAULT_COST_CONFIG, type CostConfig } from '../../lib/algorithms/costEngine';
 import type { Database } from '../../lib/database.types';
+import { displayLocationName } from '../../lib/plantLabels';
 
 type BatchRow = Database['public']['Tables']['active_batches']['Row'] & { plants?: { name: string | null } | null };
 
@@ -30,13 +32,17 @@ function fmtINR(v: number): string {
 export function CostIntelligence() {
   const { t } = useTranslation();
   const [config, setConfig] = useState<CostConfig>({ ...DEFAULT_COST_CONFIG });
+  // Plant-scoped (fail-closed): a user sees batches of their own plants only.
+  const { scopeQuery, ready: scopeReady, plantIds, isGlobal } = usePlantScope();
+  const scopeKey = isGlobal ? 'all' : plantIds.join(',');
 
   const { data, isLoading, isError, refetch } = useQuery<BatchRow[]>({
-    queryKey: ['cost-closed-batches'],
+    queryKey: ['cost-closed-batches', scopeKey],
+    enabled: scopeReady,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await scopeQuery(supabase
         .from('active_batches')
-        .select('*, plants(name)')
+        .select('*, plants(name)'))
         .eq('status', 'closed')
         .order('closed_at', { ascending: false })
         .returns<BatchRow[]>();
@@ -148,7 +154,7 @@ export function CostIntelligence() {
                 {cSort.sorted.map(({ batch, outputMT, reactorHours, cost }) => (
                   <tr key={batch.id}>
                     <td className="font-semibold">{batch.batch_no}</td>
-                    <td className="text-slate-500">{batch.plants?.name || '—'}</td>
+                    <td className="text-slate-500">{displayLocationName(batch.plants?.name) || '—'}</td>
                     <td className="num">{outputMT.toFixed(1)}</td>
                     <td className="num text-slate-500">{reactorHours.toFixed(1)}</td>
                     <td className="num text-slate-500">{fmtINR(cost.materialCost)}</td>

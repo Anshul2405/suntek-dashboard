@@ -6,21 +6,43 @@ import { useToast } from '../../../components/ui/toast';
 import { useRoleContext } from '../../../contexts/RoleContext';
 import { usePlantScope } from '../../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../../lib/access/pickerPlants';
-import { isAdminProfile } from '../../../lib/profiles';
+import { isAdminProfile, profileHasCapability } from '../../../lib/profiles';
 import { formatDate, istToday } from '../../../lib/utils/formatting';
 import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination, ButtonV2 } from '../../../components/v2';
 import { TableSearch, useTextFilter } from '../../../components/ui/TableSearch';
 import { AddPurchaseModal } from './AddPurchaseModal';
+import { PhotoUploader } from './maintenance/shared';
+import { uploadWorkflowImage } from '../../../lib/cloudinary';
+import { DateInput } from '../../../components/ui/DateInput';
+import { vehicleNoForSave } from '../../../lib/validate/vehicleNo';
+import { BUSY_COMPANIES } from '../../../lib/busyCompanies';
+import { useBusyPayees, type BusyCompany } from '../../../lib/busyPayees';
+import { useColumnLive } from '../../../lib/schemaProbe';
+import { useUrlFilters } from '../../../lib/urlFilters';
+import { missingBank } from '../../../lib/paymentFlow';
+import { isValidIfsc, normalizeIfsc } from '../../../lib/validate/ifsc';
+import { logActivity } from '../../../lib/activityWrite';
+import { useRights } from '../../../lib/access/useRights';
+import { ensureLateApproval } from '../../../lib/opsControls';
 import {
-  HEAD_OFFICE, canReceive, groupInTransit, isInTransit, isStorePart, placesOrFilter, type DispatchRow,
+  HEAD_OFFICE, billUrlFromRemarks, canReceive, dispatchSaveProblems, groupInTransit, isInTransit, isStorePart, placesOrFilter, withBillRemark, type DispatchRow,
 } from '../../../lib/dispatch';
 
-const input = 'block mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm w-full';
+const input = 'block mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm w-full max-sm:min-h-[44px] max-sm:text-[16px]';
 const label = 'text-xs text-slate-600 min-w-0';
+/** Receive / Save on a row: a plain link on desktop, a 44px button on phones. */
+const RECEIVE_BTN = 'text-xs font-bold text-emerald-700 whitespace-nowrap max-sm:min-h-[44px] max-sm:px-3 max-sm:rounded-lg max-sm:border max-sm:border-emerald-200 max-sm:bg-emerald-50 max-sm:text-[13px]';
 
 const BLANK = {
   kind: 'item' as 'item' | 'part',
+  company: '' as BusyCompany | '',
+  payee: '',
+  manual: false,
+  exceptionReason: '',
+  account_no: '',
+  ifsc: '',
+  bank: '',
   destination: '',
   date: '',
   item: '',
@@ -43,6 +65,8 @@ export function DispatchLog() {
   const { t } = useTranslation();
   const toast = useToast();
   const { activeProfile } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks (and Purchase-book tabs).
+  const rights = useRights();
   const { plants, allowedPlants, ready, isGlobal } = usePlantScope();
   const admin = isAdminProfile(activeProfile);
   const role = activeProfile.baseRoleId || activeProfile.id;
@@ -65,6 +89,7 @@ export function DispatchLog() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState(BLANK);
+  const [billBlob, setBillBlob] = useState<Blob | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -72,6 +97,11 @@ export function DispatchLog() {
   const [state, setState] = useState<'all' | 'transit' | 'received'>('all');
   const [receiving, setReceiving] = useState<{ id: string; date: string; name: string } | null>(null);
   const [stockFor, setStockFor] = useState<DispatchRow | null>(null);
+  // Company + payee need migration 0042. Until it is applied the form stays as
+  // it was (no company / payee) and says so.
+  const payeeLive = useColumnLive('dispatch_logs', 'company_code');
+  // Payees of the picked company, from its Busy feed (read only).
+  const { data: payees, isLoading: payeesLoading } = useBusyPayees(payeeLive ? form.company : '');
 
   // Not global and no plant: nothing to read (never fall back to every plant).
   const noPlaces = ready && !isGlobal && myPlaces.length === 0;
@@ -97,38 +127,78 @@ export function DispatchLog() {
 
   const openForm = () => {
     setForm({ ...BLANK, date: istToday(), sender: activeProfile.name, from: myPlaces[0] ?? '' });
+    setBillBlob(null);
     setSaveError(null);
     setShowForm(true);
   };
 
-  const canSave = !!form.destination && !!form.date && !!form.item.trim() && !!form.sender.trim() && !!form.from
-    && form.destination !== form.from && (form.kind === 'item' || !!form.supplier.trim());
+  // A typed vehicle number must be an Indian one; the box may stay empty.
+  const vehicleSave = vehicleNoForSave(form.vehicle_no);
+  const ifscBad = !!form.ifsc.trim() && !isValidIfsc(form.ifsc);
+  const formMissingBank = payeeLive && !!form.payee.trim() && missingBank({ account_no: form.account_no, ifsc: form.ifsc });
+  // Same rules the tests check (lib/dispatch.ts): company / payee / IFSC only with 0042.
+  const canSave = dispatchSaveProblems(form, { payeeLive, hasBill: !!billBlob }).length === 0;
 
   async function save() {
     if (!canSave) return;
+    // Back-date limit (User Management → Back-date limits). A future date is fine.
+    const allowedDate = await ensureLateApproval({
+      module: 'dispatch', entryDate: form.date, profile: activeProfile,
+      bufferDays: rights.backDays('dispatch', [plants.find(p => p.name === form.from)?.id]),
+    });
+    if (!allowedDate) { setSaveError(t('common.lateBlocked', 'Not saved: this date is further back than allowed. A request has gone to Management; once approved, save again with the same date.')); return; }
     setSaving(true);
     setSaveError(null);
     try {
+      let remarks = form.remarks.trim();
+      if (form.kind === 'part' && billBlob) {
+        const uploaded = await uploadWorkflowImage(billBlob, {
+          workflow: 'store-req', kind: 'bill', creator: activeProfile.name, entityId: form.item.trim().slice(0, 40),
+        });
+        remarks = withBillRemark(remarks, uploaded.secure_url);
+      }
       const { data, error } = await insertRows('dispatch_logs', {
         destination: form.destination,
         date: form.date,
         item: form.item.trim(),
         document_ref: form.document_ref.trim() || null,
-        vehicle_no: form.vehicle_no.trim().toUpperCase() || null,
+        vehicle_no: vehicleSave || null,
         sender: form.sender.trim(),
         receiver: form.receiver.trim() || null,
         from_location: form.from,
         supplier: form.kind === 'part' ? form.supplier.trim() : null,
         receive_date: null,
-        remarks: form.remarks.trim() || null,
+        remarks: remarks || null,
+        ...(payeeLive ? {
+          company_code: form.company || null,
+          payee: form.payee.trim(),
+          payee_source: form.manual ? 'manual' : 'busy',
+          exception_reason: form.manual ? form.exceptionReason.trim() : null,
+          account_no: form.account_no.replace(/\s+/g, '') || null,
+          ifsc: normalizeIfsc(form.ifsc) || null,
+          bank: form.bank.trim() || null,
+        } : {}),
       }).select('*').single();
       if (error) {
         setSaveError(error.message);
         return;
       }
-      if (data) setRows(prev => [data as DispatchRow, ...prev]);
+      if (data) {
+        const row = data as DispatchRow;
+        setRows(prev => [row, ...prev]);
+        // A line in the Activity Log that opens this dispatch (needs 0042).
+        void logActivity({
+          type: 'dispatch', date: row.date, done_by: row.sender, verified_by: null, photo_url: null,
+          equipment: `Dispatch: ${row.item || ''}`.trim(),
+          plant_id: plants.find(p => p.name === row.from_location)?.id ?? null,
+          note: `${row.from_location || '—'} → ${row.destination || '—'}${row.vehicle_no ? ` · ${row.vehicle_no}` : ''}`,
+        }, { type: 'dispatch', id: row.id }, { onlyIfLinked: true });
+      }
+      setBillBlob(null);
       setShowForm(false);
       toast.success(t('dispatch.savedInTransit', 'Saved. It shows as in transit until the receiving place fills the receive date.'));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -149,11 +219,16 @@ export function DispatchLog() {
   }
 
   const groups = useMemo(() => groupInTransit(rows), [rows]);
+  // Opened from Activity Log (?dispatch=<id>): that one row, "Show all" clears it.
+  const focus = useUrlFilters(['dispatch'] as const);
+  const focusId = focus.values.dispatch;
   const prepared = useMemo(
-    () => rows.filter(r => state === 'all' || (state === 'transit' ? isInTransit(r) : !isInTransit(r))),
-    [rows, state],
+    () => (focusId ? rows.filter(r => r.id === focusId)
+      : rows.filter(r => state === 'all' || (state === 'transit' ? isInTransit(r) : !isInTransit(r)))),
+    [rows, state, focusId],
   );
   const filtered = useTextFilter(prepared, q, r => [
+    r.payee, BUSY_COMPANIES.find(c => c.code === r.company_code)?.short,
     r.item, r.document_ref, r.vehicle_no, r.sender, r.receiver, r.from_location, r.destination, r.supplier, r.remarks,
     formatDate(r.date), r.receive_date ? formatDate(r.receive_date) : '',
   ]);
@@ -164,8 +239,10 @@ export function DispatchLog() {
   const receiveAction = (row: DispatchRow) => {
     if (!canReceive(row, myPlaceSet, admin)) return null;
     if (isStorePart(row)) {
+      // Receiving a bought part books stock through Add purchase — same permission.
+      if (!admin && !profileHasCapability(activeProfile, 'add_stock_purchase')) return null;
       return (
-        <button type="button" className="text-xs font-bold text-emerald-700 whitespace-nowrap" onClick={() => setStockFor(row)}>
+        <button type="button" className={RECEIVE_BTN} onClick={() => setStockFor(row)}>
           {t('dispatch.receiveIntoStock', 'Receive into stock')}
         </button>
       );
@@ -173,19 +250,19 @@ export function DispatchLog() {
     if (receiving?.id === row.id) {
       return (
         <div className="flex flex-wrap items-center gap-2">
-          <input type="date" className="border border-slate-200 rounded-lg px-2 py-1 text-xs" value={receiving.date} max={istToday()}
+          <DateInput className="border border-slate-200 rounded-lg px-2 py-1 text-xs w-32 max-sm:w-40" value={receiving.date}
             onChange={e => setReceiving({ ...receiving, date: e.target.value })} />
-          <input className="border border-slate-200 rounded-lg px-2 py-1 text-xs w-28" value={receiving.name}
+          <input className="border border-slate-200 rounded-lg px-2 py-1 text-xs w-28 max-sm:w-40 max-sm:min-h-[44px] max-sm:text-[16px]" value={receiving.name}
             placeholder={t('dispatch.receiverName', 'Receiver name')}
             onChange={e => setReceiving({ ...receiving, name: e.target.value })} />
-          <button type="button" className="text-xs font-bold text-emerald-700" disabled={!receiving.date}
+          <button type="button" className={RECEIVE_BTN} disabled={!receiving.date}
             onClick={() => void markReceived(row, receiving.date, receiving.name)}>{t('dispatch.saveReceived', 'Save')}</button>
-          <button type="button" className="text-xs text-slate-500" onClick={() => setReceiving(null)}>{t('common.cancel', 'Cancel')}</button>
+          <button type="button" className="text-xs text-slate-500 max-sm:min-h-[44px] max-sm:px-3" onClick={() => setReceiving(null)}>{t('common.cancel', 'Cancel')}</button>
         </div>
       );
     }
     return (
-      <button type="button" className="text-xs font-bold text-emerald-700 whitespace-nowrap"
+      <button type="button" className={RECEIVE_BTN}
         onClick={() => setReceiving({ id: row.id, date: istToday(), name: row.receiver || activeProfile.name })}>
         {t('dispatch.markReceived', 'Mark received')}
       </button>
@@ -203,8 +280,8 @@ export function DispatchLog() {
           <div className="text-sm font-bold">{t('dispatch.title', 'Dispatch — live')}</div>
           <p className="text-xs text-slate-500 mt-0.5">{t('dispatch.hint', 'Anything sent from one place to another. The sender saves it and it is in transit; the receiving place fills the receive date. Parts for a maintenance ticket are followed on the ticket, not here.')}</p>
         </div>
-        {myPlaces.length > 0 && !showForm && (
-          <ButtonV2 variant="primary" onClick={openForm}>{t('dispatch.add', 'New dispatch')}</ButtonV2>
+        {myPlaces.length > 0 && !showForm && rights.can('dispatch', 'add') && (
+          <ButtonV2 variant="primary" className="max-sm:w-full" onClick={openForm}>{t('dispatch.add', 'New dispatch')}</ButtonV2>
         )}
       </div>
 
@@ -220,7 +297,20 @@ export function DispatchLog() {
               {t('dispatch.kindPartLong', 'Part bought for the store (no ticket)')}
             </label>
           </div>
+          {!payeeLive && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+              {t('dispatch.needs0042', 'Busy company and payee are saved once migration 0042 is applied. Until then a dispatch is saved without them.')}
+            </p>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {payeeLive && (
+              <label className={label}>{t('dispatch.company', 'Busy company *')}
+                <select className={input} value={form.company} onChange={e => setForm(f => ({ ...f, company: e.target.value as BusyCompany | '', payee: '', account_no: '', ifsc: '', bank: '' }))}>
+                  <option value="">{t('payments.pickCompany', 'Pick the company first…')}</option>
+                  {BUSY_COMPANIES.map(c => <option key={c.code} value={c.code}>{c.short} ({c.code})</option>)}
+                </select>
+              </label>
+            )}
             <label className={label}>{t('dispatch.from', 'From')}
               <select className={input} value={form.from} onChange={e => setForm(f => ({ ...f, from: e.target.value }))}>
                 {myPlaces.map(p => <option key={p} value={p}>{p}</option>)}
@@ -232,8 +322,50 @@ export function DispatchLog() {
                 {destinations.filter(p => p !== form.from).map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </label>
+            {payeeLive && (
+              <>
+                <label className={`${label} sm:col-span-2 lg:col-span-3`}>{t('dispatch.payee', 'Payee *')}
+                  {form.manual ? (
+                    <input className={input} value={form.payee} disabled={!form.company} onChange={e => setForm(f => ({ ...f, payee: e.target.value }))} />
+                  ) : (
+                    <select className={input} value={form.payee} disabled={!form.company} onChange={e => {
+                      const p = (payees ?? []).find(x => x.name === e.target.value);
+                      // Bank details only from Busy — never made up. Blank stays blank.
+                      setForm(f => ({ ...f, payee: e.target.value, account_no: p?.accountNo || '', ifsc: p?.ifsc || '', bank: p?.bank || '' }));
+                    }}>
+                      <option value="">{!form.company ? t('payments.pickCompanyFirst', 'Pick the company first') : payeesLoading ? '…' : (payees?.length ? t('payments.pickPayee', 'Pick a payee from Busy…') : t('payments.noBusyPayees', 'No payees in this company’s Busy feed'))}</option>
+                      {(payees ?? []).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                    </select>
+                  )}
+                  <span className="flex items-center gap-2 mt-1">
+                    <input type="checkbox" checked={form.manual} disabled={!form.company} onChange={e => setForm(f => ({ ...f, manual: e.target.checked, payee: '', account_no: '', ifsc: '', bank: '' }))} />
+                    {t('payments.notInBusy', 'Payee not in Busy (exception)')}
+                  </span>
+                </label>
+                {form.manual && (
+                  <label className={`${label} sm:col-span-2 lg:col-span-3`}>{t('payments.exceptionReason', 'Why is this payee not in Busy? *')}
+                    <input className={input} value={form.exceptionReason} onChange={e => setForm(f => ({ ...f, exceptionReason: e.target.value }))} />
+                  </label>
+                )}
+                <label className={label}>{t('payments.account', 'A/c number')}
+                  <input className={input} inputMode="numeric" autoComplete="off" value={form.account_no} onChange={e => setForm(f => ({ ...f, account_no: e.target.value }))} />
+                </label>
+                <label className={label}>{t('payments.ifsc', 'IFSC')}
+                  <input className={input} autoComplete="off" value={form.ifsc} aria-invalid={ifscBad || undefined}
+                    style={ifscBad ? { borderColor: '#DC2626' } : undefined}
+                    onChange={e => setForm(f => ({ ...f, ifsc: e.target.value }))} />
+                  {ifscBad && <span className="block text-[11px] text-red-600 mt-1">{t('common.ifscInvalid', 'IFSC is 11 characters: 4 letters, 0, then 6 letters or digits (e.g. UTIB0000123).')}</span>}
+                </label>
+                <label className={label}>{t('payments.bank', 'Bank')}
+                  <input className={input} value={form.bank} onChange={e => setForm(f => ({ ...f, bank: e.target.value }))} />
+                </label>
+                {formMissingBank && (
+                  <p className="text-xs text-amber-700 sm:col-span-2 lg:col-span-3">{t('dispatch.missingBankHint', 'Busy has no account no / IFSC for this payee. Leave them blank or type them from the bill — never guess.')}</p>
+                )}
+              </>
+            )}
             <label className={label}>{t('dispatch.date', 'Date')}
-              <input type="date" className={input} value={form.date} max={istToday()} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+              <DateInput className={input} value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
             </label>
             <label className={`${label} sm:col-span-2`}>{form.kind === 'part' ? t('dispatch.partName', 'Part and quantity') : t('dispatch.item', 'Document / item description')}
               <input className={input} value={form.item} onChange={e => setForm(f => ({ ...f, item: e.target.value }))} />
@@ -248,7 +380,10 @@ export function DispatchLog() {
               </label>
             )}
             <label className={label}>{t('dispatch.vehicle', 'Vehicle number')}
-              <input className={input} value={form.vehicle_no} placeholder="UP13ET7451" onChange={e => setForm(f => ({ ...f, vehicle_no: e.target.value }))} />
+              <input className={input} value={form.vehicle_no} placeholder="UP13ET7451" aria-invalid={vehicleSave === null || undefined}
+                style={vehicleSave === null ? { borderColor: '#DC2626' } : undefined}
+                onChange={e => setForm(f => ({ ...f, vehicle_no: e.target.value }))} />
+              {vehicleSave === null && <span className="block text-[11px] text-red-600 mt-1">{t('common.vehicleInvalid', 'Use an Indian vehicle number, like UP13ET7451, DL1CAB1234 or 22BH1234AB.')}</span>}
             </label>
             <label className={label}>{t('dispatch.sender', 'Sender name')}
               <input className={input} value={form.sender} onChange={e => setForm(f => ({ ...f, sender: e.target.value }))} />
@@ -261,16 +396,20 @@ export function DispatchLog() {
             </label>
           </div>
           {form.kind === 'part' && (
-            <p className="text-xs text-slate-500 mt-2">{t('dispatch.partHint', 'On arrival the receiving plant opens Receive into stock, which is the same Add purchase used in the Stock register.')}</p>
+            <>
+              <PhotoUploader onBlobReady={setBillBlob} label={t('dispatch.bill', 'Supplier bill *')} hint={t('dispatch.billHint', 'The purchaser has the bill — attach it with the vehicle number.')} />
+              <p className="text-xs text-slate-500 mt-2">{t('dispatch.partHint', 'On arrival the receiving plant opens Receive into stock, which is the same Add purchase used in the Stock register.')}</p>
+            </>
           )}
           {saveError && (
             <p className="text-xs text-red-600 mt-2">{t('dispatch.saveFailed', { defaultValue: 'Not saved: {{msg}}. If the table refuses every row it is waiting for SQL (migration 0038).', msg: saveError })}</p>
           )}
-          <div className="flex gap-2 mt-3">
-            <ButtonV2 variant="primary" disabled={!canSave || saving} onClick={() => void save()}>
+          {/* Phones: Save stays under the thumb (pinned above the home indicator). */}
+          <div className="flex gap-2 mt-3 max-sm:sticky max-sm:bottom-0 max-sm:z-10 max-sm:-mx-3 max-sm:px-3 max-sm:pt-2 max-sm:pb-[max(8px,env(safe-area-inset-bottom))] max-sm:bg-white max-sm:border-t max-sm:border-slate-200" data-testid="dispatch-save-bar">
+            <ButtonV2 variant="primary" className="max-sm:flex-1" disabled={!canSave || saving} onClick={() => void save()}>
               {saving ? t('common.saving', 'Saving…') : t('dispatch.saveInTransit', 'Save — in transit')}
             </ButtonV2>
-            <ButtonV2 onClick={() => setShowForm(false)}>{t('common.cancel', 'Cancel')}</ButtonV2>
+            <ButtonV2 className="max-sm:flex-1" onClick={() => setShowForm(false)}>{t('common.cancel', 'Cancel')}</ButtonV2>
           </div>
         </div>
       )}
@@ -296,6 +435,7 @@ export function DispatchLog() {
                     <div className="flex flex-wrap items-center gap-2">{kindBadge(r)}<span className="font-semibold break-words">{r.item || '—'}</span></div>
                     <div className="text-xs text-slate-500 mt-0.5 break-words">
                       {r.from_location || '—'} → {r.destination || '—'} · {r.sender || '—'}{r.supplier ? ` · ${r.supplier}` : ''}
+                      {billUrlFromRemarks(r.remarks) ? <> · <a className="text-emerald-700 font-semibold" href={billUrlFromRemarks(r.remarks)!} target="_blank" rel="noreferrer">{t('dispatch.billLink', 'Bill')}</a></> : null}
                     </div>
                   </div>
                   {receiveAction(r)}
@@ -306,17 +446,63 @@ export function DispatchLog() {
         </div>
       )}
 
+      {focusId && (
+        <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900 flex flex-wrap items-center gap-2">
+          {busyLoading ? '…' : prepared.length ? t('dispatch.focusOne', 'The dispatch from the Activity Log.') : t('dispatch.focusGone', 'That dispatch is not in your list — deleted, or not for your places.')}
+          <button type="button" className="font-semibold underline" onClick={() => focus.set({ dispatch: '' })}>{t('storereq.linkShowAll', 'Show all')}</button>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="w-full sm:w-72">
           <TableSearch value={q} onChange={setQ} placeholder={t('dispatch.search', 'Search item, vehicle, person…')} />
         </div>
-        <select className="border border-slate-200 rounded-lg px-3 py-2 text-sm" value={state} onChange={e => setState(e.target.value as typeof state)}>
+        <select className="border border-slate-200 rounded-lg px-3 py-2 text-sm max-sm:w-full max-sm:min-h-[44px] max-sm:text-[16px]" value={state} onChange={e => setState(e.target.value as typeof state)}>
           <option value="all">{t('dispatch.stateAll', 'All')}</option>
           <option value="transit">{t('dispatch.stateTransit', 'In transit')}</option>
           <option value="received">{t('dispatch.stateReceived', 'Received')}</option>
         </select>
       </div>
-      <div className="overflow-x-auto">
+      {/* Phones and tablets (below 1024px, where the sidebar leaves no room for the one-line table): one card per dispatch. */}
+      <div className="lg:hidden flex flex-col gap-2" data-testid="dispatch-cards">
+        {page.pageRows.map(r => (
+          <div key={r.id} className="rounded-xl border border-slate-200 p-3 text-sm">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="whitespace-nowrap">{formatDate(r.date)}</span>
+              <span className="font-semibold text-slate-700 whitespace-nowrap">{r.vehicle_no || '—'}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 mt-1">{kindBadge(r)}<span className="font-semibold break-words">{r.item || '—'}</span></div>
+            {r.document_ref ? <div className="text-xs text-slate-400">{r.document_ref}</div> : null}
+            <div className="text-xs text-slate-600 mt-1 break-words">{r.from_location || '—'} → {r.destination || '—'}</div>
+            {(r.company_code || r.payee) && (
+              <div className="text-xs text-slate-400 break-words">
+                {[BUSY_COMPANIES.find(c => c.code === r.company_code)?.short, r.payee, r.payee_source === 'manual' ? t('dispatch.manualPayee', 'not in Busy') : null].filter(Boolean).join(' · ')}
+              </div>
+            )}
+            <div className="text-xs text-slate-500 mt-1 break-words">
+              {t('dispatch.senderShort', 'Sender')}: {r.sender || '—'} · {t('dispatch.receiverShort', 'Receiver')}: {r.receiver || '—'}
+            </div>
+            {(r.remarks) && (
+              <div className="text-xs text-slate-500 mt-0.5 break-words">{billUrlFromRemarks(r.remarks)
+                ? <a className="text-emerald-700 font-semibold" href={billUrlFromRemarks(r.remarks)!} target="_blank" rel="noreferrer">{t('dispatch.billLink', 'Bill')}</a>
+                : r.remarks}</div>
+            )}
+            <div className="mt-2">
+              {r.receive_date
+                ? <span className="text-xs text-slate-500">{t('dispatch.receiveDate', 'Receive date')}: {formatDate(r.receive_date)}</span>
+                : <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge" style={{ background: '#FFEDD5', color: '#C2410C' }}>{t('dispatch.stateTransit', 'In transit')}</span>
+                    {receiveAction(r)}
+                  </div>}
+            </div>
+          </div>
+        ))}
+        {page.pageRows.length === 0 && (
+          <div className="text-center text-slate-400 py-4 text-sm">
+            {busyLoading ? '…' : filtersOn ? t('dispatch.noMatch', 'No dispatch rows match these filters.') : t('dispatch.empty', 'No live dispatch yet. The workbook sheet below is the older log.')}
+          </div>
+        )}
+      </div>
+      <div className="overflow-x-auto max-lg:hidden">
         <table className="dt2 text-sm">
           <thead>
             <tr>
@@ -334,7 +520,14 @@ export function DispatchLog() {
             {page.pageRows.map(r => (
               <tr key={r.id}>
                 <td className="whitespace-nowrap">{formatDate(r.date)}</td>
-                <td>{r.from_location || '—'} → {r.destination || '—'}</td>
+                <td>
+                  {r.from_location || '—'} → {r.destination || '—'}
+                  {(r.company_code || r.payee) && (
+                    <div className="text-xs text-slate-400">
+                      {[BUSY_COMPANIES.find(c => c.code === r.company_code)?.short, r.payee, r.payee_source === 'manual' ? t('dispatch.manualPayee', 'not in Busy') : null].filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                </td>
                 <td><div className="flex flex-wrap items-center gap-2">{kindBadge(r)}<span>{r.item || '—'}</span></div>{r.document_ref ? <div className="text-xs text-slate-400">{r.document_ref}</div> : null}</td>
                 <td className="whitespace-nowrap">{r.vehicle_no || '—'}</td>
                 <td>{r.sender || '—'}</td>
@@ -347,7 +540,9 @@ export function DispatchLog() {
                     </div>
                   )}
                 </td>
-                <td>{r.remarks || '—'}</td>
+                <td>{billUrlFromRemarks(r.remarks)
+                  ? <a className="text-emerald-700 font-semibold" href={billUrlFromRemarks(r.remarks)!} target="_blank" rel="noreferrer">{t('dispatch.billLink', 'Bill')}</a>
+                  : (r.remarks || '—')}</td>
               </tr>
             ))}
             {page.pageRows.length === 0 && (

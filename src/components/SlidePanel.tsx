@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { MentionTextarea } from './mentions/MentionTextarea';
+import { DateInput, type DateInputProps } from './ui/DateInput';
 
 // ── Slide-in drawer ───────────────────────────────────────────────────────────
 
@@ -142,6 +143,11 @@ const textareaStyle: React.CSSProperties = { ...inputStyle, resize: 'vertical', 
 
 export function PanelInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} style={inputStyle} />;
+}
+
+/** Panel date box: dd/mm/yyyy on every device, value YYYY-MM-DD. */
+export function PanelDateInput(props: DateInputProps) {
+  return <DateInput block {...props} style={inputStyle} />;
 }
 
 /** Password field with a show/hide eye toggle, styled to match panel inputs. Use

@@ -101,7 +101,8 @@ export function AuditLog() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <StatCard className="col-span-12 md:col-span-4" icon={<Activity />}
           label={t('audit.totalActivities')} value={loading ? '…' : logs.length}
-          caption={t('audit.totalActivitiesSub')} />
+          caption={t('audit.totalActivitiesSub')}
+          onView={() => setSearchQuery('')} viewLabel={t('audit.viewAll', 'See all')} />
         <StatCard className="col-span-12 md:col-span-4" icon={<Users />} tone="blue" valueTone="blue"
           label={t('audit.activeSessions')} value={loading ? '…' : activeSessionsCount}
           caption={t('audit.activeSessionsSub')} />
@@ -230,10 +231,6 @@ export function AuditLog() {
         )}
       </SectionCard>
 
-      {/* Footer */}
-      <div className="text-center text-[11px] text-slate-400 mt-8">
-        Suntek Operations · CaratSense · v0.2 (28-Apr revision)
-      </div>
     </div>
   );
 }

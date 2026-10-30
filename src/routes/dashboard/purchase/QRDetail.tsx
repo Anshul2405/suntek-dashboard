@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { formatDate } from '../../../lib/utils/formatting';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { safeBack } from '../../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import { QRCodeCanvas, QRCodeSVG } from 'qrcode.react';
 import {
@@ -16,6 +17,7 @@ import { ButtonV2, StatusPill, InfoBanner } from '../../../components/v2';
 import { assetQrUrl, downloadDataUrl, printQrLabel, safeFileName, makeQrToken } from '../../../lib/far/qr';
 import { updateRows } from '../../../lib/db';
 import type { Database } from '../../../lib/database.types';
+import { displayLocationName } from '../../../lib/plantLabels';
 
 type AssetRow = Database['public']['Tables']['fixed_assets']['Row'] & { plants?: { name: string | null } | null };
 
@@ -46,6 +48,9 @@ export function QRDetail() {
   const { t } = useTranslation();
   const { qrKey } = useParams<{ qrKey: string }>();
   const navigate = useNavigate();
+  // Back to the QR list as it was (search, filters, page), else the plain list.
+  const [searchParams] = useSearchParams();
+  const backTo = safeBack(searchParams.get('back')) || '/dashboard/purchase/qr';
   const { can, activeProfile } = useRoleContext();
   const toast = useToast();
   const canvasWrapRef = useRef<HTMLDivElement>(null);
@@ -118,7 +123,7 @@ export function QRDetail() {
       <div className="card2 p-6">
         <ErrorState title={t('far.qrAssetNotFound', 'Asset not found')} message={t('far.qrLinkNoMatch', "This QR link doesn't match any asset in the register.")} />
         <div className="flex justify-center mt-4">
-          <ButtonV2 variant="outline" icon={<ArrowLeft />} onClick={() => navigate('/dashboard/purchase/qr')}>{t('far.qrBackToQrCodes', 'Back to QR Codes')}</ButtonV2>
+          <ButtonV2 variant="outline" icon={<ArrowLeft />} onClick={() => navigate(backTo)}>{t('far.qrBackToQrCodes', 'Back to QR Codes')}</ButtonV2>
         </div>
       </div>
     );
@@ -137,7 +142,7 @@ export function QRDetail() {
           <span className="text-slate-600 font-medium">{label}</span><span className="text-slate-300">›</span>
           <span className="text-slate-600 font-medium">{t('nav.qrCode', 'QR Code')}</span>
         </div>
-        <ButtonV2 variant="outline" icon={<ArrowLeft />} onClick={() => navigate('/dashboard/purchase/qr')}>
+        <ButtonV2 variant="outline" icon={<ArrowLeft />} onClick={() => navigate(backTo)}>
           {t('far.qrBackToAsset', 'Back to asset')}
         </ButtonV2>
       </div>
@@ -203,7 +208,7 @@ export function QRDetail() {
           <DetailRow icon={<Tag />} label={t('far.qrThAssetName', 'Asset Name')} value={label} />
           <DetailRow icon={<CreditCard />} label={t('far.qrAssetId', 'Asset ID')} value={asset.identification_mark || `#${asset.id.slice(0, 8)}`} />
           <DetailRow icon={<LayoutGrid />} label={t('far.qrCategory', 'Category')} value={asset.account_head || asset.make || '—'} />
-          <DetailRow icon={<MapPin />} label={t('far.qrLocation', 'Location')} value={asset.plants?.name || '—'} />
+          <DetailRow icon={<MapPin />} label={t('far.qrLocation', 'Location')} value={displayLocationName(asset.plants?.name) || '—'} />
           <DetailRow icon={<Clock />} label={t('far.thStatus', 'Status')} value={<StatusPill tone="green" label={t('far.qrActive', 'Active')} />} />
           <DetailRow icon={<CalendarDays />} label={t('far.qrInstalledOn', 'Installed On')} value={asset.purchase_date ? fmtDate(asset.purchase_date) : (asset.year ?? '—')} />
           <DetailRow icon={<Wrench />} label={t('far.qrLastMaintenance', 'Last Maintenance')} value={fmtDate(lastMaint)} />

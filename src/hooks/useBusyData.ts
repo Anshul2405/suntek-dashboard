@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { buildSalesDesks, type CompanyDeskInput, type DeskSummary, type SalesDesk } from '../lib/salesDesks';
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -72,7 +73,11 @@ export interface Movement {
   sub: string;
   amt: string;
   col: string;
+  /** Display label from the feed: "24 Oct", or "35 min ago" on the today feed. */
   when: string;
+  /** Voucher date yyyy-mm-dd and entry time (ISO) — sent by newer Busy pushes; sort on these. */
+  date?: string;
+  at?: string | null;
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -263,8 +268,15 @@ export function savedBusy<T>(path: string, company: BusyCompanyCode) {
   };
 }
 
-function useBusyQuery<T>(key: readonly unknown[], path: string, opts: { stale?: number; retry?: boolean } = {}) {
-  const { code } = useBusyCompany();
+function useBusyQuery<T>(
+  key: readonly unknown[],
+  path: string,
+  opts: { stale?: number; retry?: boolean; company?: BusyCompanyCode } = {},
+) {
+  const { code: picked } = useBusyCompany();
+  // A caller with no company picker on screen pins the company so a choice made
+  // on another page cannot silently filter it.
+  const code = opts.company ?? picked;
   return useQuery<T>({
     queryKey: [...key, code],
     queryFn: () => fetchBusy<T>(path, code),
@@ -297,7 +309,12 @@ export function useBusyHeartbeat() {
       if (error) throw error;
       const beat = data?.payload as BusyHeartbeat | undefined;
       if (!beat) return null;
-      return { ...beat, at: beat.at || data!.updated_at };
+      // The newer of the PC's own stamp and the row's write time: a PC clock or
+      // payload that stops changing must not freeze "Busy · n min ago".
+      const rowAt = data!.updated_at as string | undefined;
+      const at = [beat.at, rowAt].filter((x): x is string => !!x && !Number.isNaN(Date.parse(x)))
+        .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? beat.at;
+      return { ...beat, at };
     },
     staleTime: 30_000,
     refetchInterval: 60_000,
@@ -338,8 +355,32 @@ export interface SalesSiteDesk {
   top: { name: string; salesMTD: number }[];
 }
 
+/**
+ * Sales desks for the picked company (or all four): NKG · Kolkata and SHD.
+ * NKG and Kolkata are one branch (lib/salesDesks.ts): the whole 0010 book plus
+ * parties named Kolkata / Calcutta / NKG in the other books. Built from the
+ * read-only feed until the Busy PC reader applies the same rule.
+ */
 export function useSalesSites() {
-  return useBusyQuery<{ shd: SalesSiteDesk; kolkata: SalesSiteDesk }>(['busy-sales-sites'], '/api/sales/sites', { retry: false });
+  const { code } = useBusyCompany();
+  return useQuery<Record<SalesDesk, DeskSummary>>({
+    queryKey: ['busy-sales-desks', code],
+    queryFn: async () => {
+      const codes = code === 'all' ? BUSY_COMPANIES.map((c) => c.code) : [code];
+      const parts: CompanyDeskInput[] = await Promise.all(codes.map(async (c) => {
+        const [sites, mtd, customers] = await Promise.all([
+          fetchBusy<CompanyDeskInput['sites']>('/api/sales/sites', c).catch(() => null),
+          fetchBusy<{ totalSalesMTD?: number } | null>('/api/sales/mtd', c).catch(() => null),
+          fetchBusy<{ name: string; mtdRevenue?: number | null }[]>('/api/customers/list', c).catch(() => null),
+        ]);
+        return { code: c, sites, totalSalesMTD: mtd?.totalSalesMTD ?? null, customers: Array.isArray(customers) ? customers : null };
+      }));
+      return buildSalesDesks(parts);
+    },
+    staleTime: STALE,
+    refetchInterval: SAFETY_REFETCH,
+    retry: false,
+  });
 }
 
 export function useSalesContracts() {
@@ -355,12 +396,27 @@ export interface BusyPurchase {
   amount: number;
 }
 
+/** A Busy manufacturing voucher (VchType 5) — Busy's number, NOT the plant batch-sheet number. */
+export interface BusyBatchVoucher {
+  batchNo: string;
+  date: string;
+  amount: number;
+  party: string | null;
+  /** Company short, on All-companies reads only (busyMerge). */
+  company?: string | null;
+}
+
+/** Manufacturing vouchers from the last Busy read, for the company picked in the top bar. Read only. */
+export function useBusyBatches() {
+  return useBusyQuery<BusyBatchVoucher[]>(['busy-batches'], '/api/batches/recent', { retry: false });
+}
+
 export function useBusyPurchases() {
   return useBusyQuery<BusyPurchase[]>(['busy-purchases'], '/api/purchases/recent', { retry: false });
 }
 
-export function useRecentMovements(days = 3) {
-  return useBusyQuery<Movement[]>(['busy-movements', days], `/api/movements/recent?days=${days}`, { stale: 60 * 1000 });
+export function useRecentMovements(days = 3, company?: BusyCompanyCode) {
+  return useBusyQuery<Movement[]>(['busy-movements', days], `/api/movements/recent?days=${days}`, { stale: 60 * 1000, company });
 }
 
 export interface AnalyticsKPIs {

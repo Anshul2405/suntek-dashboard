@@ -82,6 +82,8 @@ export function IconMenu({ size = 18, className }: IconProps) {
 
 /** Shared className for top-bar icon buttons */
 export const TB_ICON_BTN =
-  'tb-icon-btn w-9 h-9 max-[390px]:w-8 max-[390px]:h-8 shrink-0 flex items-center justify-center relative cursor-pointer';
+  // Phones: the icon stays 36px (one row of icons) but the tap area is 44px —
+  // an invisible ring round each button (inset is from the padding box).
+  'tb-icon-btn w-9 h-9 shrink-0 flex items-center justify-center relative cursor-pointer max-sm:before:absolute max-sm:before:-inset-[5px]';
 
 export const TB_ICON_BTN_ACTIVE = 'tb-icon-btn--on';

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -48,8 +48,17 @@ export function useSortable<T>(
   rows: T[],
   accessors: Record<string, (row: T) => SortVal>,
   initial?: { key: string; dir: SortDir },
+  /** Called after the user changes the sort (not on mount) — e.g. to keep it in the URL. */
+  onChange?: (sort: { key: string | null; dir: SortDir }) => void,
 ): { sorted: T[]; sort: { key: string | null; dir: SortDir }; onSort: Sortable['onSort'] } {
   const [sort, setSort] = useState<{ key: string | null; dir: SortDir }>(initial ?? { key: null, dir: 'asc' });
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; });
+  const firstSort = useRef(true);
+  useEffect(() => {
+    if (firstSort.current) { firstSort.current = false; return; }
+    onChangeRef.current?.(sort);
+  }, [sort]);
   // Accessors are recreated each render; keep them in a ref so the memo depends
   // only on the rows + sort state, not object identity.
   const accRef = useRef(accessors);

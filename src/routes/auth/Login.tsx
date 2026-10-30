@@ -64,7 +64,6 @@ export function Login() {
             Batch sheets, maintenance, and store — built for units across Jharkhand, Odisha, Sikandrabad, and HQ.
           </p>
           <ul className="mt-8 space-y-2.5 text-[13px] text-white/65">
-            <li className="flex gap-2"><span className="text-[#FF8A00]">▸</span> L0 Admin provisions L1–L4 roles</li>
             <li className="flex gap-2"><span className="text-[#FF8A00]">▸</span> Batch OCR + evidence photos</li>
             <li className="flex gap-2"><span className="text-[#FF8A00]">▸</span> Maintenance → store indent chain</li>
           </ul>
@@ -159,19 +158,6 @@ export function Login() {
             )}
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-2">
-            {[
-              { role: 'L0', label: 'Admin' },
-              { role: 'L1', label: 'Management' },
-              { role: 'L2', label: 'Unit Head' },
-              { role: 'L3', label: 'Managers' },
-              { role: 'L4', label: 'Ops & Foremen' },
-            ].map(({ role, label }) => (
-              <span key={role} className="login-tier-chip">
-                <strong>{role}</strong> {label}
-              </span>
-            ))}
-          </div>
         </div>
       </main>
     </div>

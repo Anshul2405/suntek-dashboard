@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { displayLocationName, locationInPlants } from '../../lib/plantLabels';
 import { VoiceSearch } from '../../components/search/VoiceSearch';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { hereForBack, withBack } from '../../lib/backLink';
+import { useNavigate } from 'react-router-dom';
+import { hereNow, withBack } from '../../lib/backLink';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -13,7 +13,7 @@ import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { STORE_REQ_WAITING, STORE_REQ_QUEUE_ROUTE, STORE_REQ_SCOPE, isMyApproval, canDecideStoreReq, waitingCountsAsMyQueue } from '../../lib/store/requisitionQueue';
-import { isAdminProfile } from '../../lib/profiles';
+import { isAdminProfile, profileCanAccess } from '../../lib/profiles';
 import { useMyIdentity } from '../../lib/useMyIdentity';
 import { reqNoLabel } from '../../lib/ticketNo';
 import { formatDateTime } from '../../lib/utils/formatting';
@@ -26,6 +26,7 @@ type ReqRow = Database['public']['Tables']['store_requisitions']['Row'] & { plan
 import {
   useOverviewKPIs, useTopCustomers, useRecentMovements, useAnalyticsKPIs, fmtINR,
 } from '../../hooks/useBusyData';
+import { sortMovements } from '../../lib/busyMerge';
 import { DSOGauge, RingProgress, MiniBarChart, BulletCompare, DeltaBadge, OverdueAgingBar } from '../../components/charts/AnalyticsViz';
 import { KpiInfoButton } from '../../components/KpiInfoButton';
 import { StockSnapshot } from '../../components/overview/StockSnapshot';
@@ -45,7 +46,7 @@ const ALERT_ROUTE: Record<string, string> = {
 const MOVE_ROUTE: Record<string, string> = {
   batch:    '/dashboard/batches',
   sales:    '/dashboard/sales',
-  purchase: '/dashboard/purchase/purchase',
+  purchase: '/dashboard/purchase/purchase?ctx=ops',
   maint:    '/dashboard/purchase/maint',
   stock:    '/dashboard/stock',
 };
@@ -111,7 +112,6 @@ const fmtDT = (d: string | null) => formatDateTime(d);
 
 export function Overview() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { t } = useTranslation();
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [moveFilter, setMoveFilter] = useState('all');
@@ -142,6 +142,7 @@ export function Overview() {
   const { activeProfile } = useRoleContext();
   const [approvalView, setApprovalView] = useState<'mine' | 'all'>('all');
   const isAdmin = isAdminProfile(activeProfile);
+  const activeBatchRoute = profileCanAccess(activeProfile, '/dashboard/predictive-qc') ? '/dashboard/predictive-qc' : null;
   useEffect(() => { if (isAdmin) setApprovalView('all'); }, [isAdmin]);
   const canDecide = canDecideStoreReq(activeProfile, isAdmin);
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
@@ -168,17 +169,30 @@ export function Overview() {
 
   useEffect(() => {
     (async () => {
-      const [alertsRes, tanksRes, drumsRes, maintRes, batchesRes] = await Promise.all([
+      const [alertsRes, tanksRes, drumsRes] = await Promise.all([
         supabase.from('alerts').select('*').eq('is_resolved', false).order('created_at', { ascending: false }).returns<AlertRow[]>(),
         supabase.from('tanks').select('*').order('sort_order', { ascending: true }).returns<TankRow[]>(),
         supabase.from('cpm_drum_stock').select('*').returns<DrumRow[]>(),
-        supabase.from('maintenance_tickets').select('*', { count: 'exact', head: true }).eq('type', 'emergency').neq('status', 'closed'),
-        supabase.from('active_batches').select('started_at').eq('status', 'active').returns<{ started_at: string }[]>(),
       ]);
       setAlerts(alertsRes.data || []);
       setAlertsLoaded(true);
       setTanks(tanksRes.data || []);
       setDrumRows(drumsRes.data || []);
+    })();
+  }, []);
+
+  // Open Maintenance + Active Batches: same plant / unit scope as the lists the
+  // tiles open, so the number matches what the click shows.
+  useEffect(() => {
+    if (!scopeReady) return;
+    let alive = true;
+    (async () => {
+      const [maintRes, batchesRes] = await Promise.all([
+        scopeQuery(supabase.from('maintenance_tickets').select('id', { count: 'exact', head: true }), { unitCol: 'unit_id' })
+          .eq('type', 'emergency').neq('status', 'closed'),
+        scopeQuery(supabase.from('active_batches').select('started_at')).eq('status', 'active').returns<{ started_at: string }[]>(),
+      ]);
+      if (!alive) return;
       setOpenMaint(maintRes.error ? null : (maintRes.count ?? 0));
 
       const batches = batchesRes.data || [];
@@ -190,7 +204,8 @@ export function Overview() {
         setAvgBatchHours(null);
       }
     })();
-  }, []);
+    return () => { alive = false; };
+  }, [scopeQuery, scopeReady]);
 
   // Tanks and drum stock carry a location name, not a plant id: a plant-scoped
   // user only sees the locations of their own plants (none for Madan).
@@ -206,9 +221,21 @@ export function Overview() {
 
   // Movements feed
   const movementsSource = busyMovements && busyMovements.length > 0 ? busyMovements : [];
-  const filteredMoves = movementsSource
+  // Newest first by the voucher date (a single company comes in entry order;
+  // all companies are merged the same way in busyMerge). Keys are the voucher,
+  // not the row position, so rows do not swap content when the order changes.
+  const filteredMoves = sortMovements(movementsSource)
     .filter(m => moveFilter === 'all' || m.type === moveFilter)
     .filter(m => (m.title + m.sub).toLowerCase().includes(moveSearch.toLowerCase()));
+  const moveKeys = (() => {
+    const seen = new Map<string, number>();
+    return filteredMoves.map(m => {
+      const base = `${m.title}|${m.sub}|${m.date ?? m.when}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return n ? `${base}#${n}` : base;
+    });
+  })();
 
   const displayCustomers = topCustomers && topCustomers.length > 0
     ? topCustomers.map(c => ({ name: c.name, mtdVal: fmtINR(c.mtdRevenue).replace('₹ ', '') }))
@@ -220,9 +247,9 @@ export function Overview() {
     { icon: <CheckSquare />,  label: t('overview.qaApprove', 'Approve Requests'),   to: '/dashboard/purchase/storereq' },
     { icon: <ShoppingCart />, label: t('overview.qaPO', 'Purchase Orders'),         to: '/dashboard/purchase/purchase' },
     { icon: <Wrench />,       label: t('overview.qaMaint', 'Raise Maintenance'),    to: '/dashboard/purchase/maint' },
-    { icon: <FlaskConical />, label: t('overview.qaBatch', 'Record Production'),    to: '/dashboard/batches' },
+    { icon: <FlaskConical />, label: t('nav.createBatchSheet', 'Create Batch Sheet'), to: '/dashboard/batch-entry?tab=create-sheet' },
     { icon: <Truck />,        label: t('overview.qaSales', 'Sales & Dispatch'),     to: '/dashboard/sales' },
-    { icon: <Boxes />,        label: t('overview.qaStock', 'View Stock'),           to: '/dashboard/stock' },
+    { icon: <Boxes />,        label: t('overview.qaStock', 'Store Register'),       to: '/dashboard/purchase/storereq?tab=stock' },
   ];
 
   return (
@@ -240,7 +267,7 @@ export function Overview() {
             data-tone={toneForCount(pendingStoreReq)}
             onClick={() => navigate(STORE_REQ_QUEUE_ROUTE)}
           >
-            <div className="ops-shift-label">{t('overview.pendingApprovals', 'Pending Approvals')}</div>
+            <div className="ops-shift-label">{t('overview.storeReqWaiting', 'Store requests waiting')}</div>
             <div className="ops-shift-val">{pendingStoreReq ?? '…'}</div>
             <div className="ops-shift-cap">
               {pendingStoreReq == null ? '\u00a0' : pendingStoreReq ? t('overview.requiresAction', 'Requires your action →') : t('overview.allClear', 'All clear')}
@@ -250,19 +277,24 @@ export function Overview() {
             type="button"
             className="ops-shift-tile"
             data-tone={toneForCount(openMaint)}
-            onClick={() => navigate('/dashboard/purchase/maint')}
+            // Opens exactly what the number counts: open emergency tickets.
+            onClick={() => navigate('/dashboard/purchase/maint?tab=emergency&status=grp:open')}
           >
             <div className="ops-shift-label">{t('overview.openMaintenance', 'Open Maintenance')}</div>
             <div className="ops-shift-val">{openMaint ?? '…'}</div>
             <div className="ops-shift-cap">
-              {openMaint == null ? '\u00a0' : openMaint ? t('overview.ticketsInProgress', 'Tickets in progress') : t('overview.noOpenTickets', 'No open tickets')}
+              {openMaint == null ? '\u00a0' : openMaint ? t('overview.openEmergencyTickets', 'Open emergency tickets') : t('overview.noOpenTickets', 'No open tickets')}
             </div>
           </button>
           <button
             type="button"
             className="ops-shift-tile"
             data-tone={activeBatchCount == null ? undefined : activeBatchCount > 0 ? 'warn' : 'ok'}
-            onClick={() => navigate('/dashboard/batches')}
+            // Counts running active_batches (plant-scoped). Predictive QC lists exactly
+            // those (same query); Batch Sheet lists production sheets — a different
+            // number. Without Predictive QC access the tile is not a link.
+            onClick={activeBatchRoute ? () => navigate(activeBatchRoute) : undefined}
+            style={activeBatchRoute ? undefined : { cursor: 'default' }}
           >
             <div className="ops-shift-label">{t('overview.activeBatches', 'Active Batches')}</div>
             <div className="ops-shift-val">{activeBatchCount ?? '…'}</div>
@@ -270,7 +302,9 @@ export function Overview() {
               {activeBatchCount == null
                 ? '\u00a0'
                 : avgBatchHours != null
-                  ? t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' })
+                  ? (avgBatchHours >= 48
+                    ? t('overview.avgElapsedDays', { days: Math.round(avgBatchHours / 24), defaultValue: 'avg {{days}} days running' })
+                    : t('overview.avgElapsed', { hours: avgBatchHours, defaultValue: 'avg {{hours}}h elapsed' }))
                   : t('overview.acrossFactories', { count: allowedPlants.length })}
             </div>
           </button>
@@ -285,10 +319,10 @@ export function Overview() {
               document.getElementById('ov-alerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }}
           >
-            <div className="ops-shift-label">{t('overview.openAlerts', 'Open Alerts')}</div>
+            <div className="ops-shift-label">{t('overview.openAlerts', 'Open plant alerts')}</div>
             <div className="ops-shift-val">{alertsLoaded ? alerts.length : '…'}</div>
             <div className="ops-shift-cap">
-              {!alertsLoaded ? '\u00a0' : alerts.length ? t('overview.acrossModules', 'Across all modules') : t('overview.allQuiet', 'All quiet')}
+              {!alertsLoaded ? '\u00a0' : alerts.length ? t('overview.acrossModules', 'Alerts list · Busy anomalies and PM overdue are counted separately') : t('overview.allQuiet', 'No open plant alerts')}
             </div>
           </button>
         </div>
@@ -391,22 +425,16 @@ export function Overview() {
             delta={kpis ? t('overview.invoicesFy', { count: kpis.salesInvoiceCount }) : undefined}
           />
           <KpiBlock
-            label={t('overview.purchasePaidMtd', 'Purchase Paid (MTD)')}
+            label={t('overview.purchasePaidMtd', 'Purchase invoiced · MTD')}
             value={kpis ? fmtINR(kpis.purchaseMTD) : '…'}
             delta={t('overview.inclMarineIns', 'incl. marine insurance')}
-            info={{ title: 'Purchase MTD', what: 'Total purchase amount paid to suppliers in the current month, all plants consolidated.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14, Cancelled=0, current month' }}
+            info={{ title: 'Purchase MTD', what: 'Purchase invoices booked in Busy this month (invoice value, not payments), for the company picked above.', source: 'BUSY DB', tables: ['Tran1'], filter: 'VchType=14, Cancelled=0, current month' }}
           />
           <KpiBlock
             label={t('overview.debtorsOutstanding', 'Debtors Outstanding')}
             value={kpis ? fmtINR(kpis.debtorsOutstanding) : '…'}
             delta={analytics ? `DSO ${analytics.dso}d` : undefined}
             deltaTone={analytics && analytics.dso > 30 ? 'orange' : 'green'}
-          />
-          <KpiBlock
-            label={t('overview.pendingApprovals', 'Pending Approvals')}
-            value={pendingStoreReq ?? '…'}
-            delta={pendingStoreReq == null ? '' : pendingStoreReq ? t('overview.requiresActionShort', 'Requires action') : t('overview.noChange', '— No change')}
-            deltaTone={pendingStoreReq ? 'orange' : 'slate'}
           />
         </div>
       </div>
@@ -416,7 +444,7 @@ export function Overview() {
         <div className="px-5 pt-5 pb-1">
           <OpsHead
             title={t('overview.pendingApprovals', 'Pending Approvals')}
-            sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting on Unit Head / Admin')}
+            sub={t('overview.pendingApprovalsSub', 'Store requisitions waiting at any stage — store check, unit head, Vijay ji or purchaser')}
             right={
               <div className="flex items-center gap-2">
                 {!isAdmin ? (
@@ -463,7 +491,7 @@ export function Overview() {
                 <tr><td colSpan={7} className="text-center text-slate-400 py-6">…</td></tr>
               )}
               {shownPending.map(r => (
-                <tr key={r.id} onClick={() => navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereForBack(location)))} style={{ cursor: 'pointer' }}>
+                <tr key={r.id} onClick={() => navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereNow()))} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
                       <Package size={13} className="text-slate-400" /> {t('overview.storeReq', 'Store Requisition')}
@@ -480,7 +508,7 @@ export function Overview() {
                       <ButtonV2
                         size="sm" variant="outline"
                         className="text-green-700 border-green-200 hover:bg-green-50 hover:border-green-300"
-                        onClick={(e) => { e.stopPropagation(); navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereForBack(location))); }}
+                        onClick={(e) => { e.stopPropagation(); navigate(withBack(`/dashboard/purchase/storereq?queue=pending&req=${r.id}`, hereNow())); }}
                       >
                         {t('overview.review', 'Review')}
                       </ButtonV2>
@@ -510,7 +538,7 @@ export function Overview() {
             <div className="flex items-center gap-3">
               <DSOGauge value={analytics.dso} />
               <div>
-                <div className="text-xs text-slate-500 leading-snug">{t('overview.targetUnder30')}<br/>{t('overview.turnover')} <strong className="text-slate-700">{analytics.debtorTurnover}×</strong></div>
+                <div className="text-xs text-slate-500 leading-snug">{t('overview.dsoNowVsTarget', { dso: Math.round(analytics.dso), defaultValue: 'Now {{dso}} d · target under 30 d' })}<br/>{t('overview.turnover')} <strong className="text-slate-700">{analytics.debtorTurnover}×</strong></div>
                 <div className="mt-2">
                   <DeltaBadge value={-(analytics.dso - 30)} unit={t('overview.dGap')} />
                 </div>
@@ -640,8 +668,8 @@ export function Overview() {
 
         {/* Movements feed */}
         <div className="col-span-12 lg:col-span-8 ops-surface p-5" style={{ position: 'relative' }}>
-          <KpiInfoButton info={{ title: "Today's Movements Feed", what: 'Real-time activity feed showing sales, purchase, batch, stock, and maintenance events from the last 3 days. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'VchType in (9,14,16,19), last 3 days' }} />
-          <OpsHead title={t('overview.todaysMovements')} />
+          <KpiInfoButton info={{ title: 'Recent Movements Feed', what: 'Busy vouchers (sales, purchase, batch, stock transfer, journal) dated today or in the last 3 days, newest first. Click any row to navigate to the source module.', source: 'BUSY DB', tables: ['Tran1', 'Master1'], filter: 'Cancelled = 0 · Date ≥ today − 3 days · per company, top 30' }} />
+          <OpsHead title={t('overview.recentMovements', 'Recent movements · today + last 3 days')} />
 
           {/* Search */}
           <div className="relative mb-3">
@@ -658,7 +686,9 @@ export function Overview() {
 
           {/* Filter chips */}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {['all','purchase','sales','batch','stock','maint'].map(f => (
+            {/* Busy sends sales / purchase / batch / stock / journal — never maintenance,
+                so a Maint. chip could only ever show an empty list. */}
+            {['all','purchase','sales','batch','stock'].map(f => (
               <div
                 key={f}
                 className={`chip${moveFilter === f ? ' active' : ''}`}
@@ -673,7 +703,7 @@ export function Overview() {
           <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
             {filteredMoves.length > 0 ? filteredMoves.map((m, i) => (
               <div
-                key={i}
+                key={moveKeys[i]}
                 className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors"
                 onClick={() => navigate(MOVE_ROUTE[m.type] ?? '/dashboard')}
               >
@@ -691,7 +721,7 @@ export function Overview() {
               </div>
             )) : (
               <div className="ops-empty rounded-xl border border-dashed border-slate-200">
-                <strong>{t('overview.noMovementsMatch')}</strong>
+                <strong>{movementsSource.length === 0 ? t('overview.noMovementsYet', 'No Busy movements today or in the last 3 days.') : t('overview.noMovementsMatch')}</strong>
                 <span>{t('overview.noMovementsHint', 'Sales, purchases, and batch closes from BUSY will stream here.')}</span>
               </div>
             )}

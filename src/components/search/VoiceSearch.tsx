@@ -54,7 +54,7 @@ export function VoiceSearch({ open, onClose }: { open: boolean; onClose: () => v
     onClose();
     const q = text.trim();
     const route = matchVoiceRoute(q);
-    if (route && profileCanAccess(activeProfile, route)) navigate(route);
+    if (route && profileCanAccess(activeProfile, route.split('?')[0])) navigate(route);
     else openPalette(q);
   }
 

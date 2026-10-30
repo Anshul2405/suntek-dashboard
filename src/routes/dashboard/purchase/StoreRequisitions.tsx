@@ -3,7 +3,8 @@ import { patchUrlParams } from '../../../lib/urlParams';
 import { displayLocationName } from '../../../lib/plantLabels';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { safeBack, withBack } from '../../../lib/backLink';
+import { hereNow, safeBack, withBack } from '../../../lib/backLink';
+import { useUrlTable } from '../../../lib/urlTable';
 import { ListChecks, Package, Recycle, Plus, FileText, Hourglass, PackageCheck, Zap, Building2, Activity } from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { fetchActivePlants } from '../../../lib/plants';
@@ -35,6 +36,12 @@ import { RepairScrapPanel } from './RepairScrapPanel';
 import type { Database } from '../../../lib/database.types';
 import { useColumnLive } from '../../../lib/schemaProbe';
 import { useBuyers, personMatches, isListedBuyer } from '../../../lib/procurementPeople';
+import { PhotoUploader } from './maintenance/shared';
+import { uploadWorkflowImage } from '../../../lib/cloudinary';
+import { withBillRemark } from '../../../lib/dispatch';
+import { codeLabel } from '../../../lib/labels';
+import { isValidVehicleNo, vehicleNoForSave } from '../../../lib/validate/vehicleNo';
+import { useRights } from '../../../lib/access/useRights';
 
 // ticket_id is added by migration NN_requisition_ticket_link.sql; typed here until
 // database.types.ts is regenerated so requisitions raised from a maintenance ticket
@@ -88,6 +95,8 @@ export function StoreRequisitions() {
   // ?tab= keeps the active tab deep-linkable (single route → no RBAC change).
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeProfile } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks (and Purchase-book tabs).
+  const rights = useRights();
   const isTechnical =
     activeProfile.id === 'factory_operator' || activeProfile.baseRoleId === 'factory_operator';
   const rawTab = searchParams.get('tab');
@@ -97,7 +106,8 @@ export function StoreRequisitions() {
     : (rawTab === 'stock' || rawTab === 'scrap' ? rawTab : 'requirements');
   const setTab = (k: StoreTab) => {
     if (isTechnical && k !== 'stock') return;
-    setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', k); return p; }, { replace: true });
+    // A tab is a different list: its page / sort start fresh.
+    patchUrlParams(setSearchParams, { tab: k, p: '', sort: '', dir: '' });
   };
   const notifyMentions = useMentionNotifier();
   const screenBlacklist = useBlacklistGuard();
@@ -114,6 +124,7 @@ export function StoreRequisitions() {
     || (row.buyer_name ? personMatches(row.buyer_name, activeProfile.name) : isListedBuyer(buyers, activeProfile.name));
   const [buyerPick, setBuyerPick] = useState('');
   const [transit, setTransit] = useState({ supplier: '', vehicle: '' });
+  const [transitBill, setTransitBill] = useState<Blob | null>(null);
   const waitingIsMine = waitingCountsAsMyQueue(activeProfile, isAdmin);
   const me = useMyIdentity();
   const [open, setOpen] = useState(false);
@@ -143,7 +154,7 @@ export function StoreRequisitions() {
   const [form, setForm] = useState({ item: '', plant: '', qty: '', unit: 'nos', priority: 'Normal', notes: '' });
 
   function openRow(r: ReqRow) {
-    if (r.ticket_id) navigate(`/dashboard/purchase/maint?ticket=${r.ticket_id}&back=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+    if (r.ticket_id) navigate(withBack(`/dashboard/purchase/maint?ticket=${r.ticket_id}`, hereNow()));
     else setDetailReq(r);
   }
 
@@ -173,6 +184,7 @@ export function StoreRequisitions() {
   // Fetches ticket_no for linked tickets so the list shows STK0042, not a UUID fragment.
   const ticketNoForId = useTicketNos(items.map(r => r.ticket_id));
   const filtered = useTextFilter(listed, search, r => [r.item, r.plants?.name, displayLocationName(r.plants?.name), reqNoLabel(r), r.status, r.ticket_id ? ticketNoForId(r.ticket_id) : '']);
+  const urlTable = useUrlTable();
   const reqSort = useSortable(filtered, {
     reqno: r => r.id,
     ticket: r => r.ticket_id ?? null,
@@ -180,8 +192,10 @@ export function StoreRequisitions() {
     plant: r => r.plants?.name,
     qty: r => r.qty,
     stage: r => r.status,
-  });
-  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${approvalView}|${reqSort.sort.key}|${reqSort.sort.dir}` });
+  }, urlTable.sort, urlTable.onSort);
+  // Page, size and sort live in the URL too: opening a linked ticket and closing
+  // it came back on page 1. Not clamped until the list has loaded.
+  const { pageRows, controls } = usePagination(reqSort.sorted, { resetKey: `${JSON.stringify(filters.values)}|${approvalView}|${reqSort.sort.key}|${reqSort.sort.dir}`, ...urlTable.paging, ready: !loading });
 
   async function load() {
     try {
@@ -306,10 +320,14 @@ export function StoreRequisitions() {
   async function markInTransit(row: ReqRow) {
     if (!canBuyRow(row)) return;
     const supplier = transit.supplier.trim();
-    const vehicle = transit.vehicle.trim().toUpperCase();
-    if (!supplier || !vehicle) return;
+    const vehicle = vehicleNoForSave(transit.vehicle);
+    if (!supplier || !vehicle || !transitBill) return;
     setDeciding(true);
     try {
+      const uploaded = await uploadWorkflowImage(transitBill, {
+        workflow: 'store-req', subfolder: row.id, entityId: row.id, kind: 'bill', creator: activeProfile.name,
+      });
+      const remarks = withBillRemark(`Store req #${reqNoLabel(row)}`, uploaded.secure_url);
       const { data, error } = await insertRows('dispatch_logs', {
         destination: row.plants?.name || null,
         date: istToday(),
@@ -321,7 +339,7 @@ export function StoreRequisitions() {
         from_location: null,
         supplier,
         receive_date: null,
-        remarks: `Store req #${reqNoLabel(row)}`,
+        remarks,
       }).select('id').single();
       if (error) { toast.error(error.message); return; }
       const patch = { status: 'in_transit' as const, supplier, vehicle_no: vehicle, dispatch_id: (data as { id: string } | null)?.id ?? null };
@@ -330,6 +348,7 @@ export function StoreRequisitions() {
       setItems(prev => prev.map(r => (r.id === row.id ? { ...r, ...patch } : r)));
       setDetailReq(prev => (prev && prev.id === row.id ? { ...prev, ...patch } : prev));
       setTransit({ supplier: '', vehicle: '' });
+      setTransitBill(null);
       toast.success(t('storereq.transit_ok', 'Marked in transit — it is on Dispatch by vehicle.'));
       insertRows('notifications', {
         target_roles: ['admin', 'store_manager_maint', 'warehouse_manager', 'unit_head'],
@@ -338,10 +357,12 @@ export function StoreRequisitions() {
         type: 'info',
         route: '/dashboard/purchase/book?tab=dispatch',
         actor_name: activeProfile.name || '',
-        actor_role: activeProfile.id,
+        actor_role: activeProfile.baseRoleId || activeProfile.id,
         read_by: [],
         plant_id: row.plant_id || null,
       }).then(() => {}, () => {});
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setDeciding(false);
     }
@@ -392,14 +413,14 @@ export function StoreRequisitions() {
           : ['admin', 'unit_head', 'store_manager_maint', 'store_manager_chl'],
         title: t('storereq.decide_notif_title', {
           defaultValue: 'Store req {{status}}: {{item}}',
-          status,
+          status: codeLabel(status),
           item: row.item,
         }),
         body: `${reqNoLabel(row)} · ${row.plants?.name ?? ''}`,
         type: status === 'rejected' ? 'urgent' : 'info',
         route: '/dashboard/purchase/storereq',
         actor_name: activeProfile.name || '',
-        actor_role: activeProfile.id,
+        actor_role: activeProfile.baseRoleId || activeProfile.id,
         read_by: [],
         plant_id: row.plant_id || null,
       }).then(() => {}, () => {});
@@ -411,6 +432,13 @@ export function StoreRequisitions() {
   // Summary tiles for the Requirements tab (computed from the loaded rows).
   // Same waiting set as Overview's Pending Approvals and ?queue=pending.
   const pendingCount   = items.filter(r => isWaitingReq(r.status)).length;
+  // The cards count every request in scope; on "My approvals" the list showed
+  // fewer than the card. A card click lists exactly what it counts (All view).
+  const showCounted = (patch?: { status?: string; urgency?: string }) => {
+    setApprovalView('all');
+    if (patch) filters.only(patch); else filters.reset();
+    document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' });
+  };
   const readyCount     = items.filter(r => ['approved', 'dispatched'].includes(r.status)).length;
   const urgentCount    = items.filter(r => ['high', 'plant_stopper'].includes(r.urgency ?? '')).length;
 
@@ -443,22 +471,22 @@ export function StoreRequisitions() {
         <StatCard className="col-span-6 lg:col-span-3" icon={<FileText />} tone="blue"
           label={t('storereq.stat_total', 'Total Requirements')} value={loading ? '…' : String(items.length)}
           caption={t('storereq.stat_total_sub', 'Open requests')}
-          onView={() => { filters.reset(); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => showCounted()}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Hourglass />} tone="amber"
           label={t('storereq.stat_pending', 'Pending Approval')} value={loading ? '…' : String(pendingCount)}
           caption={t('storereq.stat_pending_sub', 'Awaiting approval')}
-          onView={() => { filters.only({ status: 'pending' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => showCounted({ status: 'pending' })}
           viewLabel={t('storereq.viewPending', 'See pending')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<PackageCheck />} tone="green"
           label={t('storereq.stat_ready', 'Ready to Fulfil')} value={loading ? '…' : String(readyCount)}
           caption={t('storereq.stat_ready_sub', 'Approved & in progress')}
-          onView={() => { filters.only({ status: 'ready' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => showCounted({ status: 'ready' })}
           viewLabel={t('common.view', 'View')} />
         <StatCard className="col-span-6 lg:col-span-3" icon={<Zap />} tone="purple" valueTone={urgentCount > 0 ? 'orange' : 'default'}
           label={t('storereq.stat_urgent', 'Urgent')} value={loading ? '…' : String(urgentCount)}
           caption={t('storereq.stat_urgent_sub', 'High priority requests')}
-          onView={() => { filters.only({ urgency: 'urgent' }); document.getElementById('open-reqs')?.scrollIntoView({ behavior: 'smooth' }); }}
+          onView={() => showCounted({ urgency: 'urgent' })}
           viewLabel={t('storereq.viewUrgent', 'See urgent')} />
       </div>
 
@@ -469,7 +497,7 @@ export function StoreRequisitions() {
         flush
         title={t('storereq.open_req_title')}
         subtitle={t('storereq.open_req_subtitle')}
-        actions={
+        actions={rights.can('store_req', 'add') &&
           <ButtonV2 variant="accent" icon={<Plus />} onClick={() => { setForm(f => ({ ...f, plant: f.plant || (plantOptions.length === 1 ? plantOptions[0].id : '') })); setOpen(true); }}>
             {t('storereq.raise_request_btn')}
           </ButtonV2>
@@ -528,7 +556,7 @@ export function StoreRequisitions() {
                 <thead>
                   <tr>
                     <Th sortKey="reqno" s={reqSort}>{t('storereq.col_req_no')}</Th><Th sortKey="ticket" s={reqSort}>{t('storereq.col_ticket', 'Ticket #')}</Th><Th sortKey="item" s={reqSort}>{t('storereq.col_item')}</Th><Th sortKey="plant" s={reqSort}>{t('storereq.col_plant')}</Th><Th sortKey="qty" s={reqSort} firstDir="desc" className="num">{t('storereq.col_qty')}</Th>
-                    <Th sortKey="stage" s={reqSort}>{t('storereq.col_stage')}</Th><th>{t('storereq.col_awaiting')}</th><th>{t('storereq.col_decision')}</th><th>{t('storereq.col_pic')}</th>
+                    <Th sortKey="stage" s={reqSort}>{t('storereq.col_stage')}</Th><th>{t('storereq.col_decision')}</th><th>{t('storereq.col_pic')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -554,7 +582,6 @@ export function StoreRequisitions() {
                         <td>
                           <span className="badge" style={{ background: s.bg, color: s.color }}>{t('storereq.stage_' + stageKey)}</span>
                         </td>
-                        <td className="text-slate-500">{isWaitingReq(stageKey) ? t('storereq.awaiting_' + stageKey) : '—'}</td>
                         <td className="font-semibold">{t('storereq.decision_' + (isWaitingReq(stageKey) ? 'pending' : stageKey))}</td>
                         <td onClick={e => e.stopPropagation()}><PicBadge url={r.photo_url} onOpen={() => r.photo_url && setLightbox([{ url: r.photo_url, label: r.item }])} /></td>
                       </tr>
@@ -737,7 +764,9 @@ export function StoreRequisitions() {
                 <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <PanelInput placeholder={t('storereq.supplier_ph', 'Supplier')} value={transit.supplier} onChange={e => setTransit(f => ({ ...f, supplier: e.target.value }))} />
                   <PanelInput placeholder={t('storereq.vehicle_ph', 'Vehicle number')} value={transit.vehicle} onChange={e => setTransit(f => ({ ...f, vehicle: e.target.value }))} />
-                  <ButtonV2 variant="primary" disabled={deciding || !transit.supplier.trim() || !transit.vehicle.trim()} onClick={() => void markInTransit(detailReq)}>
+                  {transit.vehicle.trim() && !isValidVehicleNo(transit.vehicle) && <span style={{ fontSize: 11, color: '#DC2626' }}>{t('common.vehicleInvalid', 'Use an Indian vehicle number, like UP13ET7451, DL1CAB1234 or 22BH1234AB.')}</span>}
+                  <PhotoUploader onBlobReady={setTransitBill} label={t('storereq.bill_label', 'Supplier bill *')} hint={t('storereq.bill_hint', 'The purchaser has the bill — attach it with the vehicle number.')} />
+                  <ButtonV2 variant="primary" disabled={deciding || !transit.supplier.trim() || !isValidVehicleNo(transit.vehicle) || !transitBill} onClick={() => void markInTransit(detailReq)}>
                     {t('storereq.mark_transit_btn', 'Bought — mark in transit')}
                   </ButtonV2>
                   <p style={{ fontSize: 11.5, color: '#64748B' }}>{t('storereq.transit_hint', 'It shows on Purchase book → Dispatch by vehicle. The plant receives it into stock there.')}</p>

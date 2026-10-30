@@ -10,6 +10,12 @@ describe('backLink', () => {
   it('keeps filters in the origin', () => {
     expect(hereForBack({ pathname: '/dashboard/todo', search: '?q=pump' })).toBe('/dashboard/todo?q=pump');
   });
+  it('keeps the activity log page in back=', () => {
+    const here = hereForBack({ pathname: '/dashboard/purchase/activity', search: '?p=3' });
+    expect(here).toBe('/dashboard/purchase/activity?p=3');
+    expect(withBack('/dashboard/purchase/maint?ticket=1', here))
+      .toContain('back=%2Fdashboard%2Fpurchase%2Factivity%3Fp%3D3');
+  });
   it('accepts only in-app dashboard paths', () => {
     expect(safeBack('/dashboard')).toBe('/dashboard');
     expect(safeBack('/dashboard/purchase/far?fy=2026')).toBe('/dashboard/purchase/far?fy=2026');

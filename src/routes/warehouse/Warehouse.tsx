@@ -1,315 +1,298 @@
-import React, { useState, useRef } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MentionTextarea } from '../../components/mentions';
-import { useMentionNotifier } from '../../lib/mentions';
-import { useBlacklistGuard } from '../../lib/blacklist/guard';
+import { usePlantScope } from '../../contexts/PlantScopeContext';
+import { useRoleContext } from '../../contexts/RoleContext';
+import { plantsForPicker } from '../../lib/access/pickerPlants';
+import { updateRows } from '../../lib/db';
+import { useToast } from '../../components/ui/toast';
+import { formatDate, formatDateTime } from '../../lib/utils/formatting';
+import { useUrlTable } from '../../lib/urlTable';
+import { useUrlFilters } from '../../lib/urlFilters';
+import { usePagination } from '../../components/ui/usePagination';
+import { TablePaginationV2 as TablePagination } from '../../components/v2';
+import { postMovement, useBatchLedger, type LedgerRow } from '../../lib/batch/useBatchLedger';
+import { onHandFor, signedQty, type MovementType } from '../../lib/batch/ledger';
 
 type Tab = 'stock' | 'req';
 
-interface Tank {
-  id: string;
-  label: string;
-  color: string;
-  defaultPct: number;
-}
+/** Movements a person posts here. Production is posted from Batch Sheet (once per sheet). */
+const MANUAL_TYPES: MovementType[] = ['opening', 'dispatch', 'transfer_out', 'return', 'adjustment'];
 
-interface DrumRow {
-  density: number;
-  location: string;
-  opening: number;
-}
+const inputCls = 'block mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm w-full';
+const labelCls = 'text-xs text-slate-600 min-w-0';
 
-const TANKS: Tank[] = [
-  { id: 'npg',  label: 'NPG Raw',        color: '#3B82F6', defaultPct: 60 },
-  { id: 'cp12', label: 'CP 1200 Storage', color: '#F59E0B', defaultPct: 25 },
-  { id: 'hcl',  label: 'HCL Byproduct',  color: '#10B981', defaultPct: 85 },
-];
+const BLANK = { type: 'dispatch' as MovementType, plantId: '', batchNo: '', qty: '', kg: '', sign: 1 as 1 | -1, location: '', dispatchRef: '', toPlantId: '', note: '' };
 
-const DRUM_ROWS: DrumRow[] = [
-  { density: 1200, location: 'SCPL', opening: 23 },
-  { density: 1300, location: 'SCPL', opening: 197 },
-  { density: 1400, location: 'SCPL', opening: 118 },
-];
-
-const URGENCY_OPTIONS = [
-  { value: 'low',    label: 'Low (Routine)' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high',   label: 'High (Plant Stopper)' },
-];
-
-/* ─── Tank slider widget ─── */
-function TankWidget({ tank }: { tank: Tank }) {
+/**
+ * Warehouse console on the batch-wise stock ledger (batch_stock_movements).
+ * On hand = sum of a batch's movements. Spares requisitions stay on Store
+ * Requisition — this screen does not keep a second requisition list.
+ */
+function LedgerPanel() {
   const { t } = useTranslation();
-  const [pct, setPct] = useState(tank.defaultPct);
-  const low = pct < 30;
+  const toast = useToast();
+  const { activeProfile } = useRoleContext();
+  const { allowedPlants, plants, ready, inScope } = usePlantScope();
+  const ledger = useBatchLedger();
+  const pickerPlants = plantsForPicker(allowedPlants, ready);
+  const [form, setForm] = useState(BLANK);
+  const [busy, setBusy] = useState(false);
+  const plantName = (id: string | null) => plants.find(p => p.id === id)?.name ?? '—';
 
-  return (
-    <div className="bg-white rounded-2xl p-5 text-center shadow-sm border border-slate-100">
-      <div className="font-bold text-slate-500 mb-4 text-sm">{tank.label}</div>
-      <div
-        className="relative w-24 h-48 bg-slate-100 rounded-t-lg mx-auto overflow-hidden mb-4"
-        style={{ border: `2px solid ${low ? '#FCA5A5' : '#CBD5E1'}`, borderBottom: 'none' }}
-      >
-        <div
-          className="absolute bottom-0 left-0 right-0 transition-all duration-500"
-          style={{ height: `${pct}%`, background: low ? '#EF4444' : tank.color, opacity: 0.82 }}
-        />
-        <div
-          className="absolute inset-0 flex items-center justify-center font-bold text-lg z-10"
-          style={{ color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}
-        >
-          {pct}%
-        </div>
-      </div>
-      {low && <div className="text-xs font-bold text-red-500 mb-2">⚠ {t('warehouse.lowLevel')}</div>}
-      <input
-        type="range" min={0} max={100} value={pct}
-        onChange={e => setPct(Number(e.target.value))}
-        className="w-full"
-      />
-      <div className="text-xs text-slate-400 mt-1">{t('warehouse.pctFilled', { pct })}</div>
-    </div>
-  );
-}
+  // On hand for the user's own plants (incoming-transfer rows of other plants are not stock here).
+  const stockUrl = useUrlTable();
+  const stock = useMemo(() => [...ledger.onHand.values()]
+    .filter(o => o.plant_id && inScope(o.plant_id))
+    .sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || '')), [ledger.onHand, inScope]);
 
-/* ─── Drum row with editable physical count ─── */
-function DrumRowInput({ row }: { row: DrumRow }) {
-  const { t } = useTranslation();
-  const [count, setCount] = useState(row.opening);
-  const variance = count - row.opening;
-  const hasVariance = count !== row.opening;
+  // Drums by density (latest density seen for the batch) — the visual matrix, from the ledger.
+  const byDensity = useMemo(() => {
+    const densityOf = new Map<string, number>();
+    for (const r of ledger.rows) {
+      const k = `${r.batch_no.trim().toUpperCase()}|${r.plant_id ?? ''}`;
+      if (r.density != null && !densityOf.has(k)) densityOf.set(k, Number(r.density));
+    }
+    const out = new Map<string, number>();
+    for (const o of stock) {
+      const d = densityOf.get(`${o.batch_no}|${o.plant_id ?? ''}`);
+      const key = d != null ? String(d) : t('warehouse.densityUnknown', 'Density not recorded');
+      out.set(key, (out.get(key) ?? 0) + o.drums);
+    }
+    return [...out.entries()];
+  }, [ledger.rows, stock, t]);
 
-  return (
-    <tr className="border-b last:border-0">
-      <td className="p-4 font-bold">{row.density}</td>
-      <td className="p-4 text-slate-500">{row.location}</td>
-      <td className="p-4 text-slate-400 font-mono">{row.opening}</td>
-      <td className="p-4">
-        <input
-          type="number"
-          value={count}
-          onChange={e => setCount(Number(e.target.value))}
-          className="w-24 p-2 border rounded-lg text-sm font-mono font-bold focus:outline-none focus:ring-2 transition"
-          style={{ borderColor: hasVariance ? '#FCA5A5' : '#E2E8F0' }}
-        />
-      </td>
-      <td className="p-4">
-        {hasVariance && (
-          <span
-            className="text-xs font-bold px-2 py-0.5 rounded-full"
-            style={{
-              background: variance < 0 ? '#FEE2E2' : '#DCFCE7',
-              color:      variance < 0 ? '#DC2626' : '#16A34A',
-            }}
-          >
-            {variance > 0 ? '+' : ''}{variance} {t('warehouse.drumsUnit')}
-          </span>
-        )}
-      </td>
-    </tr>
-  );
-}
+  // Keyed on nothing that a save changes: posting a movement (a batch going to
+  // zero drops a row) used to throw the user back to page 1. Page in the URL.
+  const page = usePagination(stock, { resetKey: 'stock', ...stockUrl.paging, ready: ledger.loaded });
+  const recent = ledger.rows.slice(0, 30);
+  const batchOptions = stock.filter(o => !form.plantId || o.plant_id === form.plantId).map(o => o.batch_no);
 
-/* ─── Requisition form ─── */
-function RequisitionForm() {
-  const { t } = useTranslation();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [item, setItem]           = useState('');
-  const [qty, setQty]             = useState('');
-  const [urgency, setUrgency]     = useState('low');
-  const [remarks, setRemarks]     = useState('');
-  const notifyMentions = useMentionNotifier();
-  const screenBlacklist = useBlacklistGuard();
-  const [photoName, setPhotoName] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState(false);
+  const qtyNum = Number(form.qty);
+  const canPost = ledger.live && !!form.plantId && !!form.batchNo.trim() && Number.isFinite(qtyNum) && qtyNum > 0
+    && (form.type !== 'transfer_out' || (!!form.toPlantId && form.toPlantId !== form.plantId));
 
-  const submittingRef = useRef(false);
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (submittingRef.current) return; // double-submit guard
-    submittingRef.current = true;
+  async function post() {
+    if (!canPost) return;
+    setBusy(true);
     try {
-      await new Promise(r => setTimeout(r, 800));
-      await notifyMentions(remarks, { entityLabel: `Warehouse requisition · ${item || 'item'}`, route: '/warehouse/requisition' });
-      await screenBlacklist(
-        [{ value: item, label: 'Item' }, { value: remarks, label: 'Remarks' }],
-        { workflow: 'Warehouse Requisition', source: 'entry', entityLabel: `Warehouse requisition · ${item || 'item'}` },
-      );
-      setSubmitted(true);
+      const batchNo = form.batchNo.trim().toUpperCase();
+      const qty = signedQty(form.type, qtyNum, form.sign);
+      const kg = form.kg.trim() ? Math.sign(qty) * Math.abs(Number(form.kg)) : null;
+      const res = await postMovement({
+        batch_no: batchNo,
+        plant_id: form.plantId,
+        movement_type: form.type,
+        qty,
+        qty_kg: kg != null && Number.isFinite(kg) ? kg : null,
+        location: form.location.trim() || null,
+        dispatch_ref: form.type === 'dispatch' ? form.dispatchRef.trim() || null : null,
+        to_plant_id: form.type === 'transfer_out' ? form.toPlantId : null,
+        transfer_group: form.type === 'transfer_out' ? crypto.randomUUID() : null,
+        actor_name: activeProfile.name,
+        note: form.note.trim() || null,
+      });
+      if (!res.ok) { toast.error(res.error || 'error'); return; }
+      if (res.already) { toast.info(t('warehouse.alreadyPosted', 'That movement was already posted.')); return; }
+      // A batch dispatched down to nothing is marked dispatched on its sheet.
+      if (form.type === 'dispatch') {
+        const before = onHandFor(ledger.onHand, batchNo, form.plantId)?.drums ?? 0;
+        if (before + qty <= 0) {
+          await updateRows('production_batch_sheets', { stage: 'dispatched' })
+            .eq('batch_no', batchNo).eq('plant_id', form.plantId).eq('stage', 'in_stock');
+        }
+      }
+      toast.success(t('warehouse.posted', 'Saved to the batch ledger.'));
+      setForm({ ...BLANK, plantId: form.plantId, type: form.type });
+      ledger.reload();
     } finally {
-      submittingRef.current = false;
+      setBusy(false);
     }
   }
 
-  if (submitted) {
+  async function receive(row: LedgerRow) {
+    if (!row.to_plant_id || !row.transfer_group) return;
+    setBusy(true);
+    try {
+      const res = await postMovement({
+        batch_no: row.batch_no, plant_id: row.to_plant_id, movement_type: 'transfer_in',
+        qty: Math.abs(Number(row.qty)), qty_kg: row.qty_kg != null ? Math.abs(Number(row.qty_kg)) : null,
+        density: row.density, from_plant_id: row.plant_id, transfer_group: row.transfer_group,
+        actor_name: activeProfile.name, note: null,
+      });
+      if (!res.ok) { toast.error(res.error || 'error'); return; }
+      toast.success(res.already ? t('warehouse.alreadyReceived', 'Already received.') : t('warehouse.received', 'Transfer received into stock.'));
+      ledger.reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const typeLabel = (ty: MovementType) => ({
+    opening: t('warehouse.mvOpening', 'Opening balance'),
+    production: t('warehouse.mvProduction', 'Production'),
+    dispatch: t('warehouse.mvDispatch', 'Dispatch'),
+    transfer_in: t('warehouse.mvTransferIn', 'Transfer in'),
+    transfer_out: t('warehouse.mvTransferOut', 'Transfer out'),
+    return: t('warehouse.mvReturn', 'Return'),
+    adjustment: t('warehouse.mvAdjustment', 'Adjustment'),
+  })[ty];
+
+  if (!ledger.live) {
     return (
-      <div className="max-w-2xl bg-white rounded-2xl p-10 shadow-sm border border-slate-100 text-center">
-        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5">
-            <path d="M20 6 9 17l-5-5"/>
-          </svg>
-        </div>
-        <h3 className="text-xl font-extrabold mb-1">{t('warehouse.requisitionRaised')} ✓</h3>
-        <p className="text-sm text-slate-500 mb-6">{t('warehouse.sentToApprovalQueue', { name: 'Vijay Ji' })}</p>
-        <button
-          onClick={() => { setItem(''); setQty(''); setRemarks(''); setPhotoName(null); setSubmitted(false); }}
-          className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700"
-        >
-          {t('warehouse.raiseAnother')}
-        </button>
+      <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        {t('warehouse.ledgerNotApplied', 'The batch stock ledger is not switched on yet (migration 0041). Nothing on this screen is saved until it is.')}
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl bg-white rounded-2xl p-8 shadow-sm border border-slate-100">
-      <h2 className="text-xl font-bold mb-6">{t('warehouse.raiseStoreRequisition')}</h2>
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-bold text-slate-600 mb-1">{t('warehouse.itemRequired')} *</label>
-          <input
-            required value={item} onChange={e => setItem(e.target.value)}
-            type="text" placeholder={t('warehouse.itemPlaceholder')}
-            className="w-full p-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 text-sm"
-          />
+    <div className="flex flex-col gap-5">
+      <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+        <div className="text-base font-bold mb-1">{t('warehouse.onHandTitle', 'Batch stock on hand')}</div>
+        <p className="text-xs text-slate-500 mb-3">{t('warehouse.onHandHint', 'Each figure is the sum of that batch’s movements (production, dispatch, transfers, returns, adjustments). A batch with no movements is not counted as stock.')}</p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {byDensity.length === 0
+            ? <span className="text-sm text-slate-400">{t('warehouse.noMovementsYet', 'No movements yet.')}</span>
+            : byDensity.map(([d, drums]) => (
+              <span key={d} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"><strong>{d}</strong> · {drums} {t('warehouse.drumsUnit')}</span>
+            ))}
         </div>
-        <div className="grid grid-cols-2 gap-5">
-          <div>
-            <label className="block text-sm font-bold text-slate-600 mb-1">{t('warehouse.quantity')} *</label>
-            <input
-              required value={qty} onChange={e => setQty(e.target.value)}
-              type="text" placeholder={t('warehouse.quantityPlaceholder')}
-              className="w-full p-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-bold text-slate-600 mb-1">{t('warehouse.urgency')} *</label>
-            <select
-              value={urgency} onChange={e => setUrgency(e.target.value)}
-              className="w-full p-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 bg-white text-sm"
-            >
-              {URGENCY_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}
-                  style={o.value === 'high' ? { color: '#DC2626', fontWeight: 700 } : {}}
-                >
-                  {t(`warehouse.urgency_${o.value}`)}
-                </option>
+        <div className="overflow-x-auto">
+          <table className="dt2 text-sm">
+            <thead><tr>
+              <th>{t('warehouse.colBatch', 'Batch')}</th><th>{t('warehouse.colPlant', 'Plant')}</th>
+              <th className="num">{t('warehouse.colDrums', 'Drums')}</th><th className="num">{t('warehouse.colKg', 'Kg')}</th>
+              <th>{t('warehouse.colLast', 'Last movement')}</th>
+            </tr></thead>
+            <tbody>
+              {!ledger.loaded && <tr><td colSpan={5} className="text-center text-slate-400 py-4">…</td></tr>}
+              {ledger.loaded && stock.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-4">{t('warehouse.noMovementsYet', 'No movements yet.')}</td></tr>}
+              {page.pageRows.map(o => (
+                <tr key={`${o.batch_no}|${o.plant_id}`}>
+                  <td className="font-mono font-bold">{o.batch_no}</td>
+                  <td>{plantName(o.plant_id)}</td>
+                  <td className={`num tabular-nums ${o.drums < 0 ? 'text-red-600' : ''}`}>{o.drums}</td>
+                  <td className="num tabular-nums">{o.kg ?? '—'}</td>
+                  <td className="text-xs text-slate-500">{o.lastAt ? formatDate(o.lastAt) : '—'} · {o.movements}</td>
+                </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+        {stock.length > 0 && <TablePagination controls={page.controls} />}
+        <p className="text-[11px] text-slate-400 mt-2">{t('warehouse.tanksNote', 'Tank levels are not in the ledger yet, so no tank figures are shown here. Busy dispatch / sales batch numbers are not linked yet.')}</p>
+      </div>
+
+      {ledger.incoming.length > 0 && (
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+          <div className="text-base font-bold mb-2">{t('warehouse.incomingTitle', 'Transfers coming to your plant')}</div>
+          {ledger.incoming.map(r => (
+            <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5 border-t border-slate-100 text-sm">
+              <span><strong className="font-mono">{r.batch_no}</strong> · {Math.abs(Number(r.qty))} {t('warehouse.drumsUnit')} · {plantName(r.plant_id)} → {plantName(r.to_plant_id)} · {formatDate(r.at)}</span>
+              {r.to_plant_id && inScope(r.to_plant_id) && (
+                <button type="button" disabled={busy} className="text-xs font-bold text-emerald-700" onClick={() => void receive(r)}>{t('warehouse.receive', 'Receive')}</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+        <div className="text-base font-bold mb-3">{t('warehouse.postTitle', 'Post a movement')}</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <label className={labelCls}>{t('warehouse.mvType', 'Movement')}
+            <select className={inputCls} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as MovementType }))}>
+              {MANUAL_TYPES.map(ty => <option key={ty} value={ty}>{typeLabel(ty)}</option>)}
             </select>
-          </div>
-        </div>
-        <div>
-          <label className="block text-sm font-bold text-slate-600 mb-1">{t('warehouse.reasonRemarks')}</label>
-          <MentionTextarea
-            value={remarks} onChange={setRemarks} rows={3}
-            placeholder={t('warehouse.remarksPlaceholder')}
-            className="w-full p-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 resize-none text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-bold text-slate-600 mb-1">
-            {t('warehouse.photoProof')} <span className="font-normal text-slate-400">{t('warehouse.optional')}</span>
           </label>
-          <input
-            ref={fileRef} type="file" accept="image/*" capture="environment"
-            className="hidden" onChange={e => setPhotoName(e.target.files?.[0]?.name ?? null)}
-          />
-          <div
-            onClick={() => fileRef.current?.click()}
-            className="border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-slate-400 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors"
-            style={{ borderColor: photoName ? '#6EE7B7' : '#CBD5E1' }}
-          >
-            {photoName ? (
-              <div className="flex items-center gap-2 text-emerald-600 font-semibold text-sm">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20 6 9 17l-5-5"/>
-                </svg>
-                {photoName}
-              </div>
-            ) : (
-              <>
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mb-2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                </svg>
-                <span className="text-sm font-medium">{t('warehouse.uploadPhotoHint')}</span>
-              </>
-            )}
-          </div>
+          <label className={labelCls}>{t('warehouse.plant', 'Plant')}
+            <select className={inputCls} value={form.plantId} onChange={e => setForm(f => ({ ...f, plantId: e.target.value }))}>
+              <option value="">{t('warehouse.pickPlant', 'Pick a plant…')}</option>
+              {pickerPlants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <label className={labelCls}>{t('warehouse.batchNo', 'Batch no')}
+            <input className={inputCls} list="ledger-batches" value={form.batchNo} placeholder="P26-12" onChange={e => setForm(f => ({ ...f, batchNo: e.target.value }))} />
+            <datalist id="ledger-batches">{batchOptions.map(b => <option key={b} value={b} />)}</datalist>
+          </label>
+          <label className={labelCls}>{t('warehouse.qtyDrums', 'Drums')}
+            <input className={inputCls} inputMode="decimal" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} />
+          </label>
+          {form.type === 'adjustment' && (
+            <label className={labelCls}>{t('warehouse.direction', 'Direction')}
+              <select className={inputCls} value={form.sign} onChange={e => setForm(f => ({ ...f, sign: Number(e.target.value) as 1 | -1 }))}>
+                <option value={1}>{t('warehouse.add', 'Add (+)')}</option>
+                <option value={-1}>{t('warehouse.remove', 'Remove (−)')}</option>
+              </select>
+            </label>
+          )}
+          {form.type === 'transfer_out' && (
+            <label className={labelCls}>{t('warehouse.toPlant', 'To plant')}
+              <select className={inputCls} value={form.toPlantId} onChange={e => setForm(f => ({ ...f, toPlantId: e.target.value }))}>
+                <option value="">{t('warehouse.pickPlant', 'Pick a plant…')}</option>
+                {plants.filter(p => p.id !== form.plantId).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+          )}
+          {form.type === 'dispatch' && (
+            <label className={labelCls}>{t('warehouse.dispatchRef', 'Dispatch / invoice ref')}
+              <input className={inputCls} value={form.dispatchRef} onChange={e => setForm(f => ({ ...f, dispatchRef: e.target.value }))} />
+            </label>
+          )}
+          <label className={labelCls}>{t('warehouse.qtyKg', 'Kg (optional)')}
+            <input className={inputCls} inputMode="decimal" value={form.kg} onChange={e => setForm(f => ({ ...f, kg: e.target.value }))} />
+          </label>
+          <label className={labelCls}>{t('warehouse.location', 'Location (optional)')}
+            <input className={inputCls} value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} />
+          </label>
+          <label className={`${labelCls} sm:col-span-2`}>{t('warehouse.note', 'Note')}
+            <input className={inputCls} value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
+          </label>
         </div>
-        <button
-          type="submit"
-          className="w-full text-white font-bold py-4 rounded-xl mt-2 shadow-lg hover:opacity-90 transition-opacity text-sm"
-          style={{ background: '#2563EB', boxShadow: '0 8px 20px -4px rgba(37,99,235,0.35)' }}
-        >
-          {t('warehouse.submitToApprovalQueue', { name: 'Vijay Ji' })}
+        <p className="text-[11px] text-slate-400 mt-2">{t('warehouse.postHint', 'Production is posted from Batch Sheet (once per sheet). Mistakes are corrected with an adjustment — movements are never edited or deleted.')}</p>
+        <button type="button" disabled={!canPost || busy} onClick={() => void post()}
+          className="mt-3 bg-slate-800 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-slate-700 disabled:opacity-40">
+          {t('warehouse.postBtn', 'Save movement')}
         </button>
-      </form>
+      </div>
+
+      <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+        <div className="text-base font-bold mb-2">{t('warehouse.recentTitle', 'Latest movements')}</div>
+        <div className="overflow-x-auto">
+          <table className="dt2 text-sm">
+            <thead><tr>
+              <th>{t('warehouse.colWhen', 'When')}</th><th>{t('warehouse.colBatch', 'Batch')}</th><th>{t('warehouse.mvType', 'Movement')}</th>
+              <th className="num">{t('warehouse.colDrums', 'Drums')}</th><th>{t('warehouse.colPlant', 'Plant')}</th><th>{t('warehouse.colBy', 'By')}</th>
+            </tr></thead>
+            <tbody>
+              {recent.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-4">{ledger.loaded ? t('warehouse.noMovementsYet', 'No movements yet.') : '…'}</td></tr>}
+              {recent.map(r => (
+                <tr key={r.id}>
+                  <td className="text-xs whitespace-nowrap">{formatDateTime(r.at)}</td>
+                  <td className="font-mono">{r.batch_no}</td>
+                  <td>{typeLabel(r.movement_type)}{r.dispatch_ref ? <div className="text-xs text-slate-400">{r.dispatch_ref}</div> : null}{r.note ? <div className="text-xs text-slate-400">{r.note}</div> : null}</td>
+                  <td className={`num tabular-nums ${Number(r.qty) < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{Number(r.qty) > 0 ? '+' : ''}{Number(r.qty)}</td>
+                  <td>{plantName(r.plant_id)}{r.to_plant_id ? ` → ${plantName(r.to_plant_id)}` : ''}</td>
+                  <td className="text-xs">{r.actor_name || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
 
-/* ─── Shared content (used by both embedded and standalone) ─── */
-function WarehouseContent({
-  tab,
-  stockSubmitted,
-  setStockSubmitted,
-}: {
-  tab: Tab;
-  stockSubmitted: boolean;
-  setStockSubmitted: (v: boolean) => void;
-}) {
+/** Spares are requested on Store Requisition — one list, not a second queue here. */
+function RequisitionPointer() {
   const { t } = useTranslation();
   return (
-    <>
-      {tab === 'stock' && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xl font-bold">{t('warehouse.physicalTankLevels')}</h2>
-            <span className="text-sm text-slate-500">{t('warehouse.logVisuallyCheckedLevels')}</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-            {TANKS.map(tk => <TankWidget key={tk.id} tank={tk} />)}
-          </div>
-          <div className="flex items-center justify-between mt-8 mb-2">
-            <h2 className="text-xl font-bold">{t('warehouse.drumStockCp')}</h2>
-          </div>
-          <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
-            <table className="w-full text-left">
-              <thead className="bg-slate-50 border-b">
-                <tr>
-                  <th className="p-4 text-sm text-slate-500">{t('warehouse.colDensity')}</th>
-                  <th className="p-4 text-sm text-slate-500">{t('warehouse.colLocation')}</th>
-                  <th className="p-4 text-sm text-slate-500">{t('warehouse.colOpeningDrums')}</th>
-                  <th className="p-4 text-sm text-slate-500">{t('warehouse.colPhysicalCount')}</th>
-                  <th className="p-4 text-sm text-slate-500">{t('warehouse.colVariance')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {DRUM_ROWS.map(r => <DrumRowInput key={r.density} row={r} />)}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex justify-end mt-6">
-            {stockSubmitted ? (
-              <div className="flex items-center gap-2 text-emerald-600 font-bold">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M20 6 9 17l-5-5"/>
-                </svg>
-                {t('warehouse.dailyRegisterSubmitted')} ✓
-              </div>
-            ) : (
-              <button
-                onClick={() => setStockSubmitted(true)}
-                className="bg-slate-800 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-700 shadow-lg transition-colors"
-              >
-                {t('warehouse.submitDailyRegister')}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      {tab === 'req' && <RequisitionForm />}
-    </>
+    <div className="max-w-2xl bg-white rounded-2xl p-8 shadow-sm border border-slate-100">
+      <h2 className="text-xl font-bold mb-2">{t('warehouse.raiseStoreRequisition')}</h2>
+      <p className="text-sm text-slate-500 mb-4">{t('warehouse.reqOnStoreReq', 'Spares and consumables are requested on Store Requisition, where the unit head, Vijay ji and the purchaser act on them.')}</p>
+      <a href="/dashboard/purchase/storereq" className="inline-block bg-slate-800 text-white px-6 py-2.5 rounded-xl font-bold no-underline">{t('warehouse.openStoreReq', 'Open Store Requisition')}</a>
+    </div>
   );
 }
 
@@ -318,76 +301,38 @@ interface WarehouseProps {
   embedded?: boolean;
 }
 
-/* ─── Main export ─── */
 export function Warehouse({ embedded = false }: WarehouseProps) {
   const { t } = useTranslation();
-  const [tab, setTab]                   = useState<Tab>('stock');
-  const [stockSubmitted, setStockSubmitted] = useState(false);
+  // Tab in the URL (?wtab=req) so Back / refresh return to the same tab.
+  const tabParam = useUrlFilters(['wtab', 'p'] as const);
+  const tab: Tab = tabParam.values.wtab === 'req' ? 'req' : 'stock';
+  const setTab = (tb: Tab) => tabParam.set({ wtab: tb === 'req' ? 'req' : '', p: '' });
+  const tabs = (
+    <div className="flex gap-1 mb-5">
+      {(['stock', 'req'] as Tab[]).map(tb => (
+        <button
+          key={tb}
+          onClick={() => setTab(tb)}
+          className="px-4 py-2 rounded-full text-sm font-semibold transition-colors"
+          style={tab === tb ? { background: '#0F172A', color: '#fff' } : { background: '#F1F5F9', color: '#64748B' }}
+        >
+          {tb === 'stock' ? t('warehouse.batchStockTab', 'Batch stock') : t('warehouse.raiseRequisition')}
+        </button>
+      ))}
+    </div>
+  );
+  const content = tab === 'stock' ? <LedgerPanel /> : <RequisitionPointer />;
 
-  // ── Embedded mode: no standalone header, fits inside DashboardLayout ────────
   if (embedded) {
-    return (
-      <div style={{ fontFamily: 'inherit' }}>
-        {/* Pill tab switcher matching dashboard style */}
-        <div className="flex gap-1 mb-5">
-          {(['stock', 'req'] as Tab[]).map(tb => (
-            <button
-              key={tb}
-              onClick={() => setTab(tb)}
-              className="px-4 py-2 rounded-full text-sm font-semibold transition-colors"
-              style={tab === tb
-                ? { background: '#0F172A', color: '#fff' }
-                : { background: '#F1F5F9', color: '#64748B' }
-              }
-            >
-              {tb === 'stock' ? t('warehouse.dailyStockEntry') : t('warehouse.raiseRequisition')}
-            </button>
-          ))}
-        </div>
-        <WarehouseContent tab={tab} stockSubmitted={stockSubmitted} setStockSubmitted={setStockSubmitted} />
-      </div>
-    );
+    return <div style={{ fontFamily: 'inherit' }}>{tabs}{content}</div>;
   }
-
-  // ── Standalone mode: full-screen with own header ────────────────────────────
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#F1F5F9', fontFamily: 'inherit' }}>
-      <header className="bg-white px-8 p-4 border-b flex items-center justify-between shadow-sm shrink-0 flex-wrap gap-3">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center font-bold text-xl">S</div>
-          <div>
-            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t('warehouse.consoleTitle')}</div>
-            <div className="text-lg font-bold">SCPL Plant</div>
-          </div>
-        </div>
-        <div className="flex gap-6 items-center flex-wrap">
-          <button
-            onClick={() => setTab('stock')}
-            className="pb-1 text-sm font-medium transition-colors"
-            style={{
-              borderBottom: tab === 'stock' ? '2px solid #3B82F6' : '2px solid transparent',
-              color: tab === 'stock' ? '#2563EB' : '#64748B',
-              fontWeight: tab === 'stock' ? 700 : 500,
-            }}
-          >
-            {t('warehouse.dailyStockEntry')}
-          </button>
-          <button
-            onClick={() => setTab('req')}
-            className="pb-1 text-sm font-medium transition-colors"
-            style={{
-              borderBottom: tab === 'req' ? '2px solid #3B82F6' : '2px solid transparent',
-              color: tab === 'req' ? '#2563EB' : '#64748B',
-              fontWeight: tab === 'req' ? 700 : 500,
-            }}
-          >
-            {t('warehouse.raiseRequisition')}
-          </button>
-        </div>
+      <header className="bg-white px-8 p-4 border-b flex items-center gap-4 shadow-sm shrink-0">
+        <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center font-bold text-xl">S</div>
+        <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t('warehouse.consoleTitle')}</div>
       </header>
-      <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
-        <WarehouseContent tab={tab} stockSubmitted={stockSubmitted} setStockSubmitted={setStockSubmitted} />
-      </main>
+      <main className="p-6 max-w-6xl w-full mx-auto">{tabs}{content}</main>
     </div>
   );
 }

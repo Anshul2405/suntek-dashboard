@@ -11,12 +11,13 @@ import { usePagination } from '../../../components/ui/usePagination';
 import { TablePaginationV2 as TablePagination } from '../../../components/v2';
 import { useTextFilter } from '../../../components/ui/TableSearch';
 import { TableSearch } from '../../../components/ui/TableSearch';
-import { formatDate } from '../../../lib/utils/formatting';
+import { isBogusWorkbookDate, sortWorkbookRows, workbookDateLabel } from '../../../lib/workbookDates';
 import { DispatchLog } from './DispatchLog';
 import { BookPayments } from './BookPayments';
 
-const BOOK_TABS = ['purchases', 'payments', 'paraffin', 'requirements', 'dispatch', 'kolkata', 'shd'] as const;
-type BookTab = (typeof BOOK_TABS)[number];
+import { BOOK_ROUTE, BOOK_TABS, pickTab, type BookTab } from '../../../lib/access/rights';
+import { useRights } from '../../../lib/access/useRights';
+import { patchUrlParams } from '../../../lib/urlParams';
 
 type Row = Record<string, string | number | boolean | null>;
 
@@ -104,20 +105,6 @@ const COLUMNS: Record<BookTab, Array<{ key: string; label: string; money?: boole
   ],
 };
 
-const WORKBOOK_DATE = /^(\d{2})\.(\d{2})\.(\d{4})$/;
-
-function dateKey(value: unknown): number {
-  const m = WORKBOOK_DATE.exec(String(value || ''));
-  if (!m) return 0;
-  return Number(m[3] + m[2] + m[1]);
-}
-
-/** The workbook writes dates as 22.10.2026; show them like every other screen. */
-function bookDate(value: unknown): string {
-  const m = WORKBOOK_DATE.exec(String(value ?? '').trim());
-  return m ? formatDate(`${m[3]}-${m[2]}-${m[1]}`) : String(value ?? '');
-}
-
 function isBookTab(value: string): value is BookTab {
   return (BOOK_TABS as readonly string[]).includes(value);
 }
@@ -125,12 +112,14 @@ function isBookTab(value: string): value is BookTab {
 function cellText(value: Row[string], money?: boolean): string {
   if (value == null || value === '') return '—';
   if (money && typeof value === 'number') return fmtINR(value);
-  return bookDate(value);
+  return workbookDateLabel(value);
 }
 
-export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab) => void }) {
+export function PurchaseBook({ tab, onTab, allowed = BOOK_TABS }: { tab: string; onTab: (tab: BookTab) => void; allowed?: readonly BookTab[] }) {
   const { t } = useTranslation();
-  const active: BookTab = isBookTab(tab) ? tab : 'purchases';
+  // Only granted tabs exist here (User Management → Menu rights). The page
+  // already sent an ungranted ?tab= to the first granted one.
+  const active: BookTab = isBookTab(tab) && allowed.includes(tab) ? tab : allowed[0];
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
   const [hideChlorine, setHideChlorine] = useState(true);
@@ -192,7 +181,8 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
     let list = source;
     if (active === 'purchases' && hideChlorine) list = list.filter(r => !r.chlorine);
     if (status !== 'all') list = list.filter(r => r.status === status);
-    return [...list].sort((a, b) => dateKey(b.date) - dateKey(a.date));
+    // Newest first; typo years (24.04.2036, 29.08.2029) sink to the bottom.
+    return sortWorkbookRows(list, 'date');
   }, [source, active, hideChlorine, status]);
 
   const columns = COLUMNS[active];
@@ -209,15 +199,18 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
 
   return (
     <>
-      <InfoBanner className="mb-4">
-        {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.')}
-      </InfoBanner>
+      {/* Only Purchases has Busy tiles; other tabs say "Workbook sheet" over their table. */}
+      {active === 'purchases' && (
+        <InfoBanner className="mb-4">
+          {t('book.bannerLive', 'Tiles and tables marked Busy come straight from Busy, read only. The sheets below are the Purchase 2026-27 workbook. Supplier spellings are folded together. The workbook sheets carry no account numbers.')}
+        </InfoBanner>
+      )}
 
       <SegmentTabs
         className="mb-4"
         value={active}
         onChange={changeTab}
-        items={BOOK_TABS.map(key => ({
+        items={allowed.map(key => ({
           key,
           label: ({
             purchases: t('book.tabPurchases', 'Purchases'),
@@ -225,7 +218,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
             paraffin: t('book.tabParaffin', 'Paraffin payments'),
             requirements: t('book.tabRequirements', 'Requirements'),
             dispatch: t('book.tabDispatch', 'Dispatch'),
-            kolkata: t('book.tabKolkata', 'Kolkata'),
+            kolkata: t('book.tabKolkata', 'NKG · Kolkata'),
             shd: t('book.tabShd', 'SHD'),
           })[key],
           count: rows[key].length,
@@ -259,7 +252,7 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
             <StatCard
               label={t('book.marineCoverWorkbook', 'Marine cover · workbook')}
               value={fmtINR(meta.marineBalance)}
-              caption={t('book.marineAsOf', { defaultValue: 'Running balance on {{date}}', date: bookDate(meta.marineAsOf) })}
+              caption={t('book.marineAsOf', { defaultValue: 'Running balance on {{date}}', date: workbookDateLabel(meta.marineAsOf) })}
             />
           </div>
         </div>
@@ -272,15 +265,18 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
       {active === 'payments' && (
         <div className="grid grid-cols-12 gap-4 mb-4">
           <div className="col-span-12 sm:col-span-6">
-            <StatCard label={t('book.statusUpdated', 'Updated in Busy')} value={String(meta.paymentCounts.updated ?? 0)} caption={t('book.colourCyan', 'Cyan amount cell on the Payments sheet')} />
+            <StatCard label={t('book.wbUpdatedTile', 'Workbook history · updated in Busy')} value={String(meta.paymentCounts.updated ?? 0)} caption={t('book.colourCyan', 'Cyan amount cell on the Payments sheet')} />
           </div>
           <div className="col-span-12 sm:col-span-6">
-            <StatCard label={t('book.statusInput', 'Input done')} value={String(meta.paymentCounts.input ?? 0)} caption={t('book.colourInput', 'Orange amount cell — typed, not yet updated in Busy')} />
+            <StatCard label={t('book.wbInputTile', 'Workbook history · input done')} value={String(meta.paymentCounts.input ?? 0)} caption={t('book.colourInput', 'Orange amount cell — typed, not yet updated in Busy')} />
           </div>
         </div>
       )}
 
       <div className="text-sm font-bold mb-2">{t('book.workbookSheet', 'Workbook sheet (history, read only)')}</div>
+      {active === 'purchases' && (
+        <p className="text-xs text-slate-500 -mt-1 mb-2">{t('book.workbookNotFiltered', 'The Busy company picker at the top changes the Busy tiles and invoices above, not this sheet.')}</p>
+      )}
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="w-full sm:w-72">
           <TableSearch value={q} onChange={setQ} placeholder={t('book.search', 'Search this sheet…')} />
@@ -330,6 +326,9 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
                   return (
                     <td key={col.key} className={col.money ? 'num' : col.key === 'date' ? 'whitespace-nowrap' : undefined}>
                       {cellText(value, col.money)}
+                      {col.key === 'date' && isBogusWorkbookDate(value) && (
+                        <div className="text-[10.5px] text-slate-400 font-normal">{t('book.dateLooksWrong', 'date looks wrong')}</div>
+                      )}
                     </td>
                   );
                 })}
@@ -351,12 +350,32 @@ export function PurchaseBook({ tab, onTab }: { tab: string; onTab: (tab: BookTab
 }
 
 export function PurchaseBookPage() {
+  const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
-  const tab = params.get('tab') || 'purchases';
+  const rights = useRights();
+  const allowed = useMemo(() => rights.tabs(BOOK_ROUTE).filter(isBookTab), [rights]);
+  const asked = params.get('tab') || allowed[0] || '';
+  // A tab this person is not granted (typed ?tab=dispatch, an old link) goes to
+  // their first granted tab — never shown, never a blank page.
+  const ok = pickTab(asked, allowed) === asked;
+  useEffect(() => {
+    if (!rights.loaded || ok || !allowed.length) return;
+    patchUrlParams(setParams, { tab: allowed[0] });
+  }, [rights.loaded, ok, allowed, setParams]);
+  if (!rights.loaded) return <div className="card2 p-5"><SkeletonRows rows={6} /></div>;
+  if (!allowed.length) {
+    return (
+      <div className="card2 p-6 text-sm text-slate-600">
+        {t('book.noTabs', 'No Purchase book tab is granted to you. Ask Admin to tick the tabs you need in User Management → Menu rights.')}
+      </div>
+    );
+  }
+  if (!ok) return <div className="card2 p-5"><SkeletonRows rows={6} /></div>;
   return (
     <PurchaseBook
-      tab={tab}
-      onTab={next => setParams(prev => { const p = new URLSearchParams(prev); p.set('tab', next); return p; }, { replace: true })}
+      tab={asked}
+      allowed={allowed}
+      onTab={next => patchUrlParams(setParams, { tab: next })}
     />
   );
 }

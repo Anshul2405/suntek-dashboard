@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ExtractedSalesSheet, ExtractedPurchaseSheet } from '../../lib/nvidiaOcr';
 import { ProgressBar, useFakeProgress } from '../../components/ui/ProgressBar';
+import { isValidVehicleNo } from '../../lib/validate/vehicleNo';
 
 // Pure presentational panels for the BatchLogger Sales/Purchase OCR upload flow.
 // All saving happens in the parent via the onSaved/onClose callbacks.
@@ -142,6 +143,8 @@ export function SalesReviewPanel({ data, imageUrl, onSaved, onCancel }: { data: 
   const [customer, setCustomer] = React.useState(data.customerName ?? '');
   const [date, setDate] = React.useState(data.date ?? '');
   const [vehicle, setVehicle] = React.useState(data.vehicleNumber ?? '');
+  // The OCR read must still be an Indian number before the sheet is saved.
+  const vehicleBad = !!vehicle.trim() && !isValidVehicleNo(vehicle);
   const inp = 'w-full p-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-green-400 focus:outline-none bg-white';
   const headerFields: [string, string, string, (v: string) => void][] = [
     ['dc', t('ocr.dcNumber', 'DC Number'), dcNumber, setDcNumber],
@@ -176,6 +179,7 @@ export function SalesReviewPanel({ data, imageUrl, onSaved, onCancel }: { data: 
               <div key={key}>
                 <div className="text-xs font-bold text-slate-400 uppercase mb-1">{label}</div>
                 <input value={val} onChange={e => set(e.target.value)} className={inp} />
+                {key === 'vehicle' && vehicleBad && <div className="text-[11px] text-red-600 mt-1">{t('common.vehicleInvalid', 'Use an Indian vehicle number, like UP13ET7451, DL1CAB1234 or 22BH1234AB.')}</div>}
               </div>
             ))}
           </div>
@@ -204,7 +208,7 @@ export function SalesReviewPanel({ data, imageUrl, onSaved, onCancel }: { data: 
       <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-3 shrink-0">
         <button onClick={onCancel} className="py-2 px-4 rounded-xl border-2 border-slate-200 text-sm font-bold text-slate-500">↩ {t('ocr.reupload', 'Re-upload')}</button>
         <div className="flex-1" />
-        <button onClick={onSaved} className="py-2 px-6 rounded-xl text-sm font-bold text-white" style={{ background: '#16a34a' }}>
+        <button onClick={onSaved} disabled={vehicleBad} className="py-2 px-6 rounded-xl text-sm font-bold text-white disabled:opacity-50" style={{ background: '#16a34a' }}>
           {t('ocr.saveSalesToDb', 'Save Sales Sheet to DB')}
         </button>
       </div>

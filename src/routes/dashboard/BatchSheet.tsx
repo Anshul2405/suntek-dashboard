@@ -1,19 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { insertRows } from '../../lib/db';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { FileSpreadsheet, FileText, Plus } from 'lucide-react';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows } from '../../components/ui/states';
-import { formatDateTime, inIstDayRange } from '../../lib/utils/formatting';
+import { formatDateTime, inIstDayRange, istToday } from '../../lib/utils/formatting';
 import { useUrlFilters } from '../../lib/urlFilters';
 import { plantsForPicker } from '../../lib/access/pickerPlants';
-import { DateRangeFilter, FilterBar, FilterSelect, TablePaginationV2 } from '../../components/v2';
+import { DateRangeFilter, FilterBar, FilterSelect, TablePaginationV2, ThV2 as Th } from '../../components/v2';
+import { useSortable } from '../../components/ui/useSortable';
 import { Building2, FlaskConical, Layers } from 'lucide-react';
 import { useRoleContext } from '../../contexts/RoleContext';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { canViewBatchFacet, canViewBatchOilRatio, canViewBatchRegister, isAdminProfile } from '../../lib/profiles';
-import { canViewPhoto, useOpsSettings } from '../../lib/opsControls';
+import { canDeleteModule, canViewPhoto, useOpsSettings } from '../../lib/opsControls';
 import { fetchAllRows } from '../../lib/fetchAll';
 import { parseTypedOilRatio } from '../../components/ProductionBatchSheetForm';
 import { isProductionSheetBatchNo, parseReactorBatchSeq } from '../../lib/batch/reactorCatalog';
@@ -25,6 +27,12 @@ import { useTextFilter } from '../../components/ui/TableSearch';
 import { usePagination } from '../../components/ui/usePagination';
 import { patchUrlParams } from '../../lib/urlParams';
 import { displayLocationName } from '../../lib/plantLabels';
+import { postProduction, useBatchLedger } from '../../lib/batch/useBatchLedger';
+import { onHandFor } from '../../lib/batch/ledger';
+import { useBusyBatches } from '../../hooks/useBusyData';
+import { BusyBatchVouchers } from '../../components/batch/BusyBatchVouchers';
+import { useUrlTable } from '../../lib/urlTable';
+import { useRights } from '../../lib/access/useRights';
 
 interface ProductionSheetRow {
   id: string;
@@ -106,22 +114,32 @@ export function BatchSheet() {
   const { t } = useTranslation();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeProfile } = useRoleContext();
+  const { activeProfile, activePersonId } = useRoleContext();
+  // User Management → Add / Edit / Delete ticks.
+  const rights = useRights();
   const ops = useOpsSettings();
   const seeSheetPhoto = canViewPhoto(ops, activeProfile, 'sheet');
   const seeBucketPhoto = canViewPhoto(ops, activeProfile, 'bucket');
   const seeHeatPhoto = canViewPhoto(ops, activeProfile, 'heat');
   const { scopeQuery, allowedPlants, ready: scopeReady, inScope } = usePlantScope();
   const role = activeProfile.id;
-  const canCreateSheet = canViewBatchFacet(activeProfile, 'sheet');
+  const canCreateSheet = canViewBatchFacet(activeProfile, 'sheet') && rights.can('batch', 'add');
   const isFactoryAccountant = role === 'accountant_delhi' || role === 'accountant_other'
     || isAdminProfile(activeProfile);
   // Cleanup of dummy / wrong sheets — admin, accountants, unit heads, Technical.
-  const canDeleteSheet = isFactoryAccountant
-    || role === 'unit_head'
-    || role === 'factory_operator'
-    || activeProfile.baseRoleId === 'unit_head'
-    || activeProfile.baseRoleId === 'factory_operator';
+  // Once Access & backup's "Who can edit or delete" is saved, its Batch ticks
+  // decide instead. A sheet already in stock or dispatched is admin-only.
+  const isBatchAdmin = isAdminProfile(activeProfile);
+  // Fail-closed: before the saved ticks are read, only Admin may delete.
+  const canDeleteSheet = !ops.loaded
+    ? isBatchAdmin
+    : ops.enforced
+    ? canDeleteModule(ops, activeProfile, 'batch', activePersonId)
+    : (isFactoryAccountant
+      || role === 'unit_head'
+      || role === 'factory_operator'
+      || activeProfile.baseRoleId === 'unit_head'
+      || activeProfile.baseRoleId === 'factory_operator');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [prodSheets, setProdSheets] = useState<ProductionSheetRow[]>([]);
   // False until the first load returns — the empty state must not flash meanwhile.
@@ -169,14 +187,21 @@ export function BatchSheet() {
   // Paged — ~800 sheets painted at once made the page ~81,000px tall on a phone.
   // Page / size live in the URL (?p=&ps=) like the Activity Log, so back= and a
   // refresh land on the same page; a filter change snaps back to page 1.
-  const { pageRows: pageSheets, controls: sheetPager } = usePagination(filteredSheets, {
-    resetKey: `${search}|${plantFilter}|${reactorFilter}|${gradeFilter}|${fromDate}|${toDate}`,
-    initialPage: Number(searchParams.get('p')) || 1,
-    initialPageSize: Number(searchParams.get('ps')) || 10,
-    onChange: (page, size) => patchUrlParams(setSearchParams, {
-      p: page > 1 ? String(page) : '',
-      ps: size !== 10 ? String(size) : '',
-    }),
+  // Column sort kept in the URL too (?sort=&dir=); default newest first.
+  const sheetUrl = useUrlTable({ key: 'created', dir: 'desc' });
+  const sheetSort = useSortable(filteredSheets, {
+    batch: r => r.batch_no,
+    plant: r => displayLocationName(r.plants?.name),
+    reactor: r => r.reactors?.code ?? r.reactors?.name,
+    density: r => (r.density == null ? null : Number(r.density)),
+    grade: r => r.oil_grade,
+    created: r => (r.created_at ? new Date(r.created_at) : null),
+  }, sheetUrl.sort, sheetUrl.onSort);
+  const { pageRows: pageSheets, controls: sheetPager } = usePagination(sheetSort.sorted, {
+    resetKey: `${search}|${plantFilter}|${reactorFilter}|${gradeFilter}|${fromDate}|${toDate}|${sheetSort.sort.key}|${sheetSort.sort.dir}`,
+    ...sheetUrl.paging,
+    // Not clamped against the empty list before the first load returns.
+    ready: sheetsLoaded,
   });
 
   const loadProductionSheets = useCallback(async () => {
@@ -251,15 +276,13 @@ export function BatchSheet() {
     if (!highlightBatchNo || prodSheets.length === 0) return;
     const rowId = `prod-sheet-${highlightBatchNo.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     // Paged list: open the page that holds the new sheet before scrolling to it.
-    const idx = filteredSheets.findIndex(r => r.batch_no === highlightBatchNo);
+    const idx = sheetSort.sorted.findIndex(r => r.batch_no === highlightBatchNo);
     if (idx >= 0) sheetPager.setPage(Math.floor(idx / sheetPager.pageSize) + 1);
     const scrollTmr = window.setTimeout(() => {
       document.getElementById(rowId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 80);
     const tmr = window.setTimeout(() => {
-      const next = new URLSearchParams(searchParams);
-      next.delete('highlight');
-      setSearchParams(next, { replace: true });
+      patchUrlParams(setSearchParams, { highlight: '' });
     }, 3500);
     return () => { clearTimeout(tmr); clearTimeout(scrollTmr); };
     // Only re-run when the highlight target or sheet list identity changes — not on every searchParams mutate.
@@ -279,7 +302,38 @@ export function BatchSheet() {
     };
   }, [scopeReady, loadProductionSheets]);
 
+  // Batch ledger (0041): production is posted once per sheet and moves it to in_stock.
+  const ledger = useBatchLedger();
+  // Busy manufacturing vouchers (read only) for the company in the top bar.
+  const busyBatches = useBusyBatches();
+  const busyVoucherNos = useMemo(
+    () => new Set((busyBatches.data ?? []).map(v => (v.batchNo || '').trim().toUpperCase()).filter(Boolean)),
+    [busyBatches.data],
+  );
+  const plantBatchNos = useMemo(() => new Set(prodSheets.map(r => r.batch_no.trim().toUpperCase())), [prodSheets]);
+  const canPostProduction = canCreateSheet || isBatchAdmin;
+  async function handlePostProduction(row: ProductionSheetRow) {
+    if (!row.plant_id) return;
+    const raw = window.prompt(t('batchProd.postProductionPrompt', { defaultValue: 'Drums produced in batch {{batchNo}}:', batchNo: row.batch_no }));
+    if (raw == null) return;
+    const drums = Number(raw.trim());
+    if (!Number.isFinite(drums) || drums <= 0) {
+      toast.error(t('batchProd.postProductionBadQty', 'Enter the number of drums (above 0).'));
+      return;
+    }
+    const res = await postProduction({ id: row.id, batch_no: row.batch_no, plant_id: row.plant_id, density: row.density, stage: row.stage }, drums, activeProfile.name);
+    if (!res.ok) { toast.error(res.error || 'error'); return; }
+    if (res.already) toast.info(t('batchProd.productionAlreadyPosted', 'Production for this batch was already posted.'));
+    else toast.success(t('batchProd.productionPosted', { defaultValue: '{{n}} drums posted to the batch ledger.', n: drums }));
+    setProdSheets(prev => prev.map(r => (r.id === row.id && r.stage === 'created' ? { ...r, stage: 'in_stock' } : r)));
+    ledger.reload();
+  }
+
   async function deleteSheet(row: ProductionSheetRow) {
+    if (row.stage !== 'created' && !isBatchAdmin) {
+      toast.error(t('batchProd.deleteLocked', 'This sheet is in stock or dispatched — only an admin can delete it.'));
+      return;
+    }
     if (!canDeleteSheet) {
       toast.error(t('batchProd.deleteForbidden', 'You do not have permission to delete batch sheets.'));
       return;
@@ -300,6 +354,12 @@ export function BatchSheet() {
         return;
       }
       setProdSheets((prev) => prev.filter((r) => r.id !== row.id));
+      // Keep a trace in the Activity Log (shown shaded as deleted).
+      insertRows('activity_logs', {
+        type: 'batch_sheet_deleted', date: istToday(), done_by: activeProfile.name, verified_by: null,
+        equipment: `Batch ${row.batch_no}`, plant_id: row.plant_id ?? null, photo_url: null,
+        note: `Batch sheet ${row.batch_no} deleted by ${activeProfile.name}`,
+      }).then(() => {}, () => {});
       toast.success(t('batchProd.deleted', 'Batch sheet deleted'));
     } finally {
       setDeletingId(null);
@@ -350,7 +410,7 @@ export function BatchSheet() {
             <Link
               data-tour="create-sheet-btn"
               to="/dashboard/batch-entry?tab=create-sheet"
-              className="btn-accent rounded-lg px-4 py-2 font-semibold text-[13px] no-underline inline-flex items-center gap-1.5"
+              className="btn-accent rounded-lg px-4 py-2 font-semibold text-[13px] no-underline inline-flex items-center gap-1.5 max-sm:min-h-[44px]"
             >
               <Plus size={14} aria-hidden /> {t('nav.createBatchSheet', 'Create Batch Sheet')}
             </Link>
@@ -383,23 +443,24 @@ export function BatchSheet() {
           <table className="dt2">
             <thead>
               <tr>
-                <th>{t('batchProd.thBatchNo', 'Batch no')}</th>
-                <th>{t('batchProd.thPlant', 'Plant')}</th>
-                <th>{t('batchProd.thReactor', 'Reactor')}</th>
-                <th className="num">{t('batchProd.thDensity', 'Density')}</th>
-                <th>{t('batchProd.thGrade', 'Grade')}</th>
+                <Th sortKey="batch" s={sheetSort}>{t('batchProd.thBatchNo', 'Batch no')}</Th>
+                <Th sortKey="plant" s={sheetSort}>{t('batchProd.thPlant', 'Plant')}</Th>
+                <Th sortKey="reactor" s={sheetSort}>{t('batchProd.thReactor', 'Reactor')}</Th>
+                <Th sortKey="density" s={sheetSort} firstDir="desc" className="num">{t('batchProd.thDensity', 'Density')}</Th>
+                <Th sortKey="grade" s={sheetSort}>{t('batchProd.thGrade', 'Grade')}</Th>
+                <th className="num">{t('batchProd.thOnHand', 'On hand (drums)')}</th>
                 <th>{t('batchProd.detailPhotos', 'Photos')}</th>
-                <th>{t('batchProd.thCreated', 'Created')}</th>
+                <Th sortKey="created" s={sheetSort} firstDir="desc">{t('batchProd.thCreated', 'Created')}</Th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {!sheetsLoaded && (
-                <tr><td colSpan={8}><SkeletonRows rows={4} /></td></tr>
+                <tr><td colSpan={9}><SkeletonRows rows={4} /></td></tr>
               )}
               {sheetsLoaded && prodSheets.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 px-4">
+                  <td colSpan={9} className="text-center py-12 px-4">
                     <div className="mx-auto max-w-sm">
                       <div className="text-sm font-heading font-semibold text-slate-700">
                         {t('batchProd.emptyTitle', 'No production batch sheets yet')}
@@ -421,7 +482,7 @@ export function BatchSheet() {
               )}
               {sheetsLoaded && prodSheets.length > 0 && filteredSheets.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-10 px-4 text-sm text-slate-500">
+                  <td colSpan={9} className="text-center py-10 px-4 text-sm text-slate-500">
                     {t('common.noRowsMatchFilters', 'No rows match these filters')}
                   </td>
                 </tr>
@@ -441,11 +502,25 @@ export function BatchSheet() {
                     className={`${isHighlight ? 'bg-amber-50 ring-2 ring-inset ring-amber-400' : ''} cursor-pointer hover:bg-slate-50`}
                     onClick={() => setDetailRow(row)}
                   >
-                    <td className="font-bold font-mono">{row.batch_no}</td>
-                    <td>{row.plants?.name ?? '—'}</td>
+                    <td className="font-bold font-mono">
+                      {row.batch_no}
+                      {busyVoucherNos.has(row.batch_no.trim().toUpperCase()) && (
+                        <div className="text-[10px] font-normal text-slate-400">{t('batchProd.alsoOnBusy', { defaultValue: 'also on Busy as {{no}}', no: row.batch_no })}</div>
+                      )}
+                    </td>
+                    <td>{displayLocationName(row.plants?.name) || '—'}</td>
                     <td>{row.reactors?.code ?? '—'}</td>
                     <td className="num">{row.density}</td>
                     <td className="text-xs font-semibold">{gradeLabel}</td>
+                    <td className="num" title={t('batchProd.onHandTitle', 'Sum of this batch’s ledger movements')}>
+                      {!ledger.live ? <span className="text-slate-300">—</span>
+                        : !ledger.loaded ? '…'
+                        : (() => {
+                          const oh = onHandFor(ledger.onHand, row.batch_no, row.plant_id ?? null);
+                          return oh ? <span className="font-semibold tabular-nums">{oh.drums}</span>
+                            : <span className="text-[10px] text-slate-400">{t('batchProd.noMovements', 'no movements yet')}</span>;
+                        })()}
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="flex flex-col gap-0.5">
                         {sheetUrls[0] && <a href={sheetUrls[0]} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-[var(--accent-deep)]">Sheet ×{sheetUrls.length}</a>}
@@ -463,10 +538,19 @@ export function BatchSheet() {
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-2 justify-end flex-wrap">
+                        {ledger.live && row.source === 'native' && row.stage === 'created' && !ledger.postedSheets.has(row.id) && canPostProduction && row.plant_id && (
+                          <button
+                            type="button"
+                            onClick={() => void handlePostProduction(row)}
+                            className="text-[11px] max-sm:text-[13px] max-sm:min-h-[44px] max-sm:px-2 font-bold text-emerald-700 hover:underline"
+                          >
+                            {t('batchProd.postProduction', 'Post production')}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); openTds(row); }}
-                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 hover:text-amber-700"
+                          className="inline-flex items-center gap-1 text-[11px] max-sm:text-[13px] max-sm:min-h-[44px] max-sm:px-2 font-bold text-slate-700 hover:text-amber-700"
                           title={t('batchProd.tdsHint', 'Generate Technical Data Sheet')}
                         >
                           <FileSpreadsheet size={12} /> TDS
@@ -474,17 +558,17 @@ export function BatchSheet() {
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); openCoa(row); }}
-                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 hover:text-amber-700"
+                          className="inline-flex items-center gap-1 text-[11px] max-sm:text-[13px] max-sm:min-h-[44px] max-sm:px-2 font-bold text-slate-700 hover:text-amber-700"
                           title={t('batchProd.coaHintBtn', 'Enter / print Certificate of Analysis')}
                         >
                           <FileText size={12} /> COA
                         </button>
-                        {canDeleteSheet && (
+                        {canDeleteSheet && (row.stage === 'created' || isBatchAdmin) && (
                           <button
                             type="button"
                             disabled={deletingId === row.id}
                             onClick={(e) => { e.stopPropagation(); deleteSheet(row); }}
-                            className="text-[11px] font-bold text-red-600 hover:underline disabled:opacity-50"
+                            className="text-[11px] max-sm:text-[13px] max-sm:min-h-[44px] max-sm:px-2 font-bold text-red-600 hover:underline disabled:opacity-50"
                           >
                             {deletingId === row.id
                               ? t('batchProd.deleting', 'Deleting…')
@@ -505,6 +589,13 @@ export function BatchSheet() {
         )}
       </div>
 
+      <BusyBatchVouchers
+        rows={busyBatches.data}
+        loading={busyBatches.isLoading}
+        error={busyBatches.isError}
+        plantBatchNos={plantBatchNos}
+      />
+
       {detailRow && (
         <div
           onClick={() => setDetailRow(null)}
@@ -518,7 +609,7 @@ export function BatchSheet() {
               <div>
                 <div style={{ fontSize: 16, fontWeight: 800 }}>{detailRow.batch_no}</div>
                 <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>
-                  {detailRow.plants?.name ?? '—'} · {detailRow.reactors?.code ?? '—'}
+                  {displayLocationName(detailRow.plants?.name) || '—'} · {detailRow.reactors?.code ?? '—'}
                 </div>
               </div>
               <button type="button" onClick={() => setDetailRow(null)} style={{ border: 'none', background: '#F1F5F9', width: 32, height: 32, borderRadius: 999, cursor: 'pointer' }}>✕</button>

@@ -17,14 +17,14 @@
  * the notifications feed). To add a workflow, append one descriptor here.
  */
 import { supabase } from '../supabase';
+import { TODO_ROW_CAP } from './rowCap';
+import { istToday } from '../utils/formatting';
 import { ticketNoLabel, ticketSearchTerms, reqNoLabel } from '../ticketNo';
 import { STATUS_CFG, daysFromNow, dueDateLabel, formatDate } from '../../routes/dashboard/purchase/maintenance/shared';
 import type { AppNotification } from '../../contexts/NotificationsContext';
 import { loadBuyers, isListedBuyer, personMatches } from '../procurementPeople';
 
 export type TodoTone = 'red' | 'amber' | 'blue' | 'green' | 'purple' | 'slate';
-
-const ROW_CAP = 500;
 
 /** A table cell — plain text (or number), a coloured chip, or empty. */
 export type TodoCell = string | number | { badge: { text: string; tone: TodoTone } } | null | undefined;
@@ -195,7 +195,7 @@ export function buildUrgentItems(
   isCompleted: (n: AppNotification) => boolean = () => false,
 ): TodoItem[] {
   const isUrgent = (n: AppNotification) => n.type === 'urgent' || n.type === 'critical';
-  return notifications.filter((n) => isUrgent(n) && !isCompleted(n)).slice(0, ROW_CAP).map((n) => ({
+  return notifications.filter((n) => isUrgent(n) && !isCompleted(n)).slice(0, TODO_ROW_CAP).map((n) => ({
     id: n.id,
     route: n.route || '/dashboard',
     title: n.title,
@@ -231,12 +231,12 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       const tickets = ctx.scopeQuery(
         supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_unit_head', 'pending_purchase']),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
 
       const reqs = ctx.scopeQuery(
         supabase.from('store_requisitions').select('id,item,qty,urgency,status,remarks,created_at,plant_id').in('status', ['pending', 'pending_approval']),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<
+      ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<
         { id: string; item: string; qty: number | null; urgency: string | null; remarks: string | null; created_at: string | null; plant_id: string | null }[]
       >();
 
@@ -271,22 +271,8 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
     },
   },
 
-  // ── Purchase Manager: bill upload & dispatch ──────────────────────────────
-  {
-    key: 'purchase-bill',
-    titleKey: 'todo.section.purchaseBill',
-    icon: '🧾',
-    tone: 'purple',
-    columns: TICKET_COLS('todo.col.action'),
-    appliesTo: (ctx) => hasRole(ctx, 'purchase_manager'),
-    fetch: async (ctx) => {
-      const { data } = await ctx.scopeQuery(
-        supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_purchase_manager'),
-        { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
-      return (data ?? []).map((t) => ticketItem(ctx, t, { badge: { text: 'Bill & dispatch', tone: 'purple' } }));
-    },
-  },
+  // Purchase Manager bill queue removed: the purchaser uploads the bill with
+  // vehicle / BUSY details. Leftover pending_purchase_manager tickets sit in Buying.
 
   // ── Vijay ji (management): approve buying a part that is not in store ────
   {
@@ -301,11 +287,11 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         ctx.scopeQuery(
           supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_vijay'),
           { unitCol: 'unit_id' },
-        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>(),
+        ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>(),
         ctx.scopeQuery(
           supabase.from('store_requisitions').select('id,item,qty,created_at,plant_id').eq('status', 'pending_vijay'),
           { unitCol: 'unit_id' },
-        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<BuyReqRow[]>(),
+        ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<BuyReqRow[]>(),
       ]);
       return [
         ...(tk ?? []).map((t) => ticketItem(ctx, t, { idPrefix: 'vj_', badge: { text: 'Approve buy', tone: 'purple' } })),
@@ -329,13 +315,13 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       if (!admin && !isListedBuyer(buyers, ctx.personName)) return [];
       const [{ data: tk }, { data: rq }] = await Promise.all([
         ctx.scopeQuery(
-          supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('status', 'pending_buyer'),
+          supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_buyer', 'pending_purchase', 'pending_purchase_manager']),
           { unitCol: 'unit_id' },
-        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>(),
+        ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>(),
         ctx.scopeQuery(
           supabase.from('store_requisitions').select('id,item,qty,created_at,plant_id,buyer_name').eq('status', 'pending_buyer'),
           { unitCol: 'unit_id' },
-        ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<BuyReqRow[]>(),
+        ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<BuyReqRow[]>(),
       ]);
       const mine = (rq ?? []).filter((r) => admin || !r.buyer_name || personMatches(r.buyer_name, ctx.personName));
       return [
@@ -358,7 +344,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       const { data } = await ctx.scopeQuery(
         supabase.from('maintenance_tickets').select(TICKET_SELECT).in('status', ['pending_store', 'pending_handover']),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) => ticketItem(ctx, t, {
         badge: { text: t.status === 'pending_handover' ? 'Handover' : 'Store check', tone: 'amber' },
       }));
@@ -380,7 +366,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
           .eq('type', 'emergency').eq('assigned_to', ctx.personName)
           .in('status', ['open', 'in_progress', 'pending_defective_return']),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) =>
         ticketItem(ctx, t, { badge: { text: statusLabel(t.status), tone: 'blue' } }));
     },
@@ -400,7 +386,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         supabase.from('maintenance_tickets').select(TICKET_SELECT)
           .eq('raised_by', ctx.personName).eq('status', 'changes_requested'),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('created_at', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) =>
         ticketItem(ctx, t, { badge: { text: 'Action needed', tone: 'red' } }));
     },
@@ -426,7 +412,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         supabase.from('maintenance_tickets').select(TICKET_SELECT)
           .eq('type', 'periodic').eq('assigned_to', ctx.personName).eq('status', 'open'),
         { unitCol: 'unit_id' },
-      ).order('due_date', { ascending: true }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('due_date', { ascending: true }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) => {
         const days = daysFromNow(t.due_date);
         const due = dueDateLabel(days);
@@ -454,11 +440,10 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
     appliesTo: (ctx) => !!ctx.accountId,
     fetch: async (ctx) => {
       if (!ctx.accountId) return [];
-      const now = new Date();
-      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const todayIso = istToday();
       const { data } = await supabase.from('night_duty').select('id,duty_date,status,plant_id')
         .eq('technician_id', ctx.accountId).eq('status', 'scheduled').gte('duty_date', todayIso)
-        .order('duty_date', { ascending: true }).limit(ROW_CAP)
+        .order('duty_date', { ascending: true }).limit(TODO_ROW_CAP)
         .returns<{ id: string; duty_date: string; status: string; plant_id: string | null }[]>();
       return (data ?? []).map((d) => {
         const isTonight = d.duty_date === todayIso;
@@ -499,7 +484,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
       if (!ctx.personName) return [];
       const { data } = await supabase.from('anomaly_flags').select('id,title,route,severity,status,plant,created_at')
         .eq('assigned_to', ctx.personName).in('status', ['open', 'acknowledged'])
-        .order('created_at', { ascending: false }).limit(ROW_CAP)
+        .order('created_at', { ascending: false }).limit(TODO_ROW_CAP)
         .returns<{ id: string; title: string; route: string | null; severity: string; status: string; plant: string | null; created_at: string | null }[]>();
       return (data ?? []).map((a) => ({
         id: a.id,
@@ -552,7 +537,7 @@ export const TODO_SECTIONS: TodoSectionDef[] = [
         supabase.from('maintenance_tickets').select(TICKET_SELECT).eq('raised_by', ctx.personName)
           .in('status', ['pending_store', 'pending_unit_head', 'pending_vijay', 'pending_buyer', 'pending_purchase', 'pending_purchase_manager', 'pending_handover']),
         { unitCol: 'unit_id' },
-      ).order('created_at', { ascending: false }).limit(ROW_CAP).returns<TicketRow[]>();
+      ).order('created_at', { ascending: false }).limit(TODO_ROW_CAP).returns<TicketRow[]>();
       return (data ?? []).map((t) =>
         ticketItem(ctx, t, { badge: { text: statusLabel(t.status), tone: 'slate' } }));
     },

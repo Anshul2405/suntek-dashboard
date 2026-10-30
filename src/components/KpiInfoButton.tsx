@@ -68,6 +68,8 @@ export function KpiInfoButton({ info, style }: { info: KpiMeta; style?: React.CS
           setShow(false);
         }}
         onClick={(e) => { e.stopPropagation(); if (show) setShow(false); else openTooltip(); }}
+        // Phones: an invisible 44px tap area round the 18px dot.
+        className="relative max-sm:before:absolute max-sm:before:-inset-[14px]"
         style={{
           width: 18, height: 18, borderRadius: '50%',
           background: 'rgba(148,163,184,0.15)',

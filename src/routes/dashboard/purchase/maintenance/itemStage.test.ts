@@ -28,11 +28,12 @@ describe('ticket part stages', () => {
     expect(itemStageOf(req({ store_decision: 'available', unit_head_approval: 'approved' }), true)).toBe('handover');
   });
 
-  it('not in store: unit head → Vijay → purchaser → bill → handover', () => {
+  it('not in store: unit head → Vijay → purchaser (BUSY ref + bill) → handover', () => {
     expect(itemStageOf(req({ store_decision: 'unavailable' }), true)).toBe('unit_head');
     expect(itemStageOf(req(notInStore), true)).toBe('vijay');
     expect(itemStageOf(req({ ...notInStore, vijay_approval: 'approved', buyer_name: 'Sagar sir' }), true)).toBe('purchase');
-    expect(itemStageOf(req({ ...notInStore, vijay_approval: 'approved', busy_transaction_ref: 'P/1' }), true)).toBe('purchase_manager');
+    expect(itemStageOf(req({ ...notInStore, vijay_approval: 'approved', busy_transaction_ref: 'P/1' }), true)).toBe('purchase');
+    expect(itemStageOf(req({ ...notInStore, vijay_approval: 'approved', busy_transaction_ref: 'P/1', handover_invoice_url: 'https://bill' }), true)).toBe('handover');
     expect(itemStageOf(req({ ...notInStore, vijay_approval: 'approved', busy_transaction_ref: 'P/1', bill_verified: true }), true)).toBe('handover');
     expect(itemStageOf(req({ ...notInStore, vijay_approval: 'rejected' }), true)).toBe('rejected');
   });
@@ -43,7 +44,7 @@ describe('ticket part stages', () => {
   });
 
   it('a part already bought before the migration is not sent back to Vijay', () => {
-    expect(itemStageOf(req({ ...notInStore, busy_transaction_ref: 'P/1' }), true)).toBe('purchase_manager');
+    expect(itemStageOf(req({ ...notInStore, busy_transaction_ref: 'P/1' }), true)).toBe('purchase');
   });
 
   it('without migration 0038 the old path still moves (unit head → purchase)', () => {

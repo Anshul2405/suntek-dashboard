@@ -24,13 +24,14 @@
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
 import { History, Trash2, AlertTriangle, FileSpreadsheet, ShieldAlert, Download } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { usePlantScope } from '../../contexts/PlantScopeContext';
 import { plantsForPicker } from '../../lib/access/pickerPlants';
+import { useUrlFilters } from '../../lib/urlFilters';
+import { useUrlTable } from '../../lib/urlTable';
 import { useRoleContext } from '../../contexts/RoleContext';
-import { profileHasCapability } from '../../lib/profiles';
+import { profileHasCapability, isAdminProfile } from '../../lib/profiles';
 import { useStepUp } from '../../lib/useStepUp';
 import { useToast } from '../../components/ui/toast';
 import { SkeletonRows, ErrorState } from '../../components/ui/states';
@@ -83,7 +84,7 @@ const RANGES = [
 export function UploadHistory() {
   const { t } = useTranslation();
   const { activeProfile } = useRoleContext();
-  const { plants, allowedPlants, stores, storeQuery, ready } = usePlantScope();
+  const { plants, allowedPlants, stores, allowedStores, storeQuery, ready } = usePlantScope();
   // The factory filter lists only factories this user may see; `plants` stays for labels.
   const pickerPlants = useMemo(() => plantsForPicker(allowedPlants, ready), [allowedPlants, ready]);
   const toast = useToast();
@@ -91,9 +92,13 @@ export function UploadHistory() {
 
   // Deletion is capability-gated in the RPC too — this only decides whether the
   // affordance is even shown. Never the only check.
-  const canDelete = profileHasCapability(activeProfile, 'delete_import_batch');
+  // Deleting uploaded data is admin-only (the RPC also checks the capability).
+  const canDelete = isAdminProfile(activeProfile) && profileHasCapability(activeProfile, 'delete_import_batch');
 
-  const [tab, setTab] = useState<'uploads' | 'audit'>('uploads');
+  // Tab in the URL too (?utab=audit), so Back keeps it.
+  const tabParam = useUrlFilters(['utab'] as const);
+  const tab: 'uploads' | 'audit' = tabParam.values.utab === 'audit' ? 'audit' : 'uploads';
+  const setTab = (k: 'uploads' | 'audit') => tabParam.set({ utab: k === 'audit' ? 'audit' : '' });
   const [batches, setBatches] = useState<ImportBatchRow[]>([]);
   const [deletions, setDeletions] = useState<DeletionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,16 +116,25 @@ export function UploadHistory() {
   // narrowed to the register the user was looking at — arriving at an unfiltered
   // list of every upload across every factory would make them do the filtering
   // again, at the exact moment they are trying to undo one specific file.
-  const [params] = useSearchParams();
-  const [search, setSearch] = useState('');
-  const [plantFilter, setPlantFilter] = useState('all');
-  const [storeFilter, setStoreFilter] = useState(() => params.get('store') ?? 'all');
-  const [moduleFilter, setModuleFilter] = useState(() => params.get('module') ?? 'all');
-  const [uploaderFilter, setUploaderFilter] = useState('all');
-  const [rangeFilter, setRangeFilter] = useState<string>('all');
-  const [showDeleted, setShowDeleted] = useState(false);
+  // Every filter lives in the URL (not only the seeded store / module), so
+  // leaving for the Stock Register and coming back keeps them.
+  const f = useUrlFilters(['q', 'plant', 'store', 'module', 'uploader', 'range', 'deleted'] as const);
+  const search = f.values.q;
+  const plantFilter = f.values.plant || 'all';
+  const storeFilter = f.values.store || 'all';
+  const moduleFilter = f.values.module || 'all';
+  const uploaderFilter = f.values.uploader || 'all';
+  const rangeFilter = f.values.range || 'all';
+  const showDeleted = f.values.deleted === '1';
+  const pick = (key: 'plant' | 'store' | 'module' | 'uploader' | 'range') => (v: string) => f.set({ [key]: v === 'all' ? '' : v });
+  const setSearch = (q: string) => f.set({ q });
+  const setPlantFilter = pick('plant');
+  const setStoreFilter = pick('store');
+  const setModuleFilter = pick('module');
+  const setUploaderFilter = pick('uploader');
+  const setRangeFilter = pick('range');
+  const setShowDeleted = (v: boolean) => f.set({ deleted: v ? '1' : '' });
 
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Confirmation dialog state. `previews` holds the LIVE counts from the RPC —
   // never a number computed here, so what the admin is shown is what will go.
@@ -196,6 +210,7 @@ export function UploadHistory() {
     });
   }, [batches, search, plantFilter, storeFilter, moduleFilter, uploaderFilter, rangeFilter, showDeleted, plantName, loadedAt]);
 
+  const url = useUrlTable({ key: 'created_at', dir: 'desc' });
   const sort = useSortable(filtered, {
     created_at: b => b.created_at,
     module: b => b.module,
@@ -203,9 +218,11 @@ export function UploadHistory() {
     file_name: b => b.file_name ?? '',
     row_count: b => b.row_count,
     uploaded_by_name: b => b.uploaded_by_name ?? '',
-  }, { key: 'created_at', dir: 'desc' });
+  }, url.sort, url.onSort);
   const { pageRows, controls } = usePagination(sort.sorted, {
     resetKey: `${search}|${plantFilter}|${storeFilter}|${moduleFilter}|${uploaderFilter}|${rangeFilter}|${showDeleted}`,
+    ...url.paging,
+    ready: !loading,
   });
 
   const auditSort = useSortable(deletions, {
@@ -215,32 +232,6 @@ export function UploadHistory() {
     deleted_count: d => d.deleted_count,
   }, { key: 'deleted_at', dir: 'desc' });
   const audit = usePagination(auditSort.sorted, { resetKey: 'audit' });
-
-  /** Only live batches are deletable — a deleted one has nothing left to remove. */
-  const deletableFiltered = useMemo(
-    () => filtered.filter(b => b.status === 'active'), [filtered],
-  );
-  const selectedLive = useMemo(
-    () => [...selected].filter(id => batches.some(b => b.id === id && b.status === 'active')),
-    [selected, batches],
-  );
-
-  function toggle(id: string) {
-    setSelected(s => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
-  }
-  function toggleAllOnPage() {
-    const ids = pageRows.filter(b => b.status === 'active').map(b => b.id);
-    const allOn = ids.length > 0 && ids.every(id => selected.has(id));
-    setSelected(s => {
-      const n = new Set(s);
-      ids.forEach(id => (allOn ? n.delete(id) : n.add(id)));
-      return n;
-    });
-  }
 
   /**
    * Open the confirmation dialog, fetching the live count for every batch about
@@ -283,7 +274,6 @@ export function UploadHistory() {
         files: res.batches, rows: res.deleted_count,
       }));
       setConfirmIds(null);
-      setSelected(new Set());
       await load();
     } catch (e) {
       toast.error(describeDeleteError(e instanceof Error ? e.message : String(e)));
@@ -306,7 +296,8 @@ export function UploadHistory() {
       <div className="grid grid-cols-12 gap-4 mb-4">
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<FileSpreadsheet />} label={t('uploads.kpiFiles', 'Uploaded files')}
-            value={loading ? '…' : totals.live} caption={t('uploads.kpiFilesCap', 'live batches across your factories')} />
+            value={loading ? '…' : totals.live} caption={t('uploads.kpiFilesCap', 'live batches across your factories')}
+            onView={() => { f.reset(); setTab('uploads'); }} viewLabel={t('uploads.viewFiles', 'See the files')} />
         </div>
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<History />} label={t('uploads.kpiRows', 'Imported records')}
@@ -314,7 +305,8 @@ export function UploadHistory() {
         </div>
         <div className="col-span-12 sm:col-span-4">
           <StatCard className="h-full" icon={<Trash2 />} label={t('uploads.kpiDeleted', 'Deletions logged')}
-            value={loading ? '…' : totals.deleted} caption={t('uploads.kpiDeletedCap', 'permanent audit trail')} />
+            value={loading ? '…' : totals.deleted} caption={t('uploads.kpiDeletedCap', 'permanent audit trail')}
+            onView={() => setTab('audit')} viewLabel={t('uploads.viewDeletions', 'See the deletions')} />
         </div>
       </div>
 
@@ -338,8 +330,7 @@ export function UploadHistory() {
             onSearch={setSearch}
             searchPlaceholder={t('uploads.searchPh', 'Search file name, factory or uploader…')}
             onReset={() => {
-              setSearch(''); setPlantFilter('all'); setStoreFilter('all'); setModuleFilter('all');
-              setUploaderFilter('all'); setRangeFilter('all'); setShowDeleted(false);
+              f.reset();
             }}
           >
             <FilterSelect
@@ -349,11 +340,11 @@ export function UploadHistory() {
             />
             {/* Only meaningful for stock uploads — FAR and PM are factory-owned
                 and carry no store — so it appears once a store is in play. */}
-            {stores.length > 1 && (
+            {allowedStores.length > 1 && (
               <FilterSelect
                 label={t('uploads.filterStore', 'Store')} value={storeFilter} onChange={setStoreFilter}
                 options={[{ value: 'all', label: t('uploads.allStores', 'All stores') },
-                          ...stores.map(s => ({ value: s.id, label: s.name }))]}
+                          ...allowedStores.map(s => ({ value: s.id, label: s.name }))]}
               />
             )}
             <FilterSelect
@@ -382,27 +373,7 @@ export function UploadHistory() {
                   <input type="checkbox" checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} />
                   {t('uploads.showDeleted', 'Show already-deleted')}
                 </label>
-                {canDelete && (
-                  <>
-                    <ButtonV2
-                      variant="outline" icon={<Trash2 />} disabled={selectedLive.length === 0}
-                      onClick={() => askDelete(selectedLive)}
-                    >
-                      {t('uploads.deleteSelected', { defaultValue: 'Delete selected ({{n}})', n: selectedLive.length })}
-                    </ButtonV2>
-                    {/* Requirement §2: "Delete all uploads shown under the applied
-                        filters." Resolved to explicit ids here so the RPC deletes
-                        exactly what the admin can see — never a server-side filter
-                        that might match more. */}
-                    <ButtonV2
-                      variant="danger" icon={<Trash2 />} disabled={deletableFiltered.length === 0}
-                      onClick={() => askDelete(deletableFiltered.map(b => b.id))}
-                      title={t('uploads.deleteFilteredHint', 'Delete every upload currently listed by the filters above')}
-                    >
-                      {t('uploads.deleteFiltered', { defaultValue: 'Delete all filtered ({{n}})', n: deletableFiltered.length })}
-                    </ButtonV2>
-                  </>
-                )}
+                {/* No bulk delete: one upload at a time, from its row (confirm + capability). */}
               </div>
             }
           >
@@ -418,17 +389,6 @@ export function UploadHistory() {
               <table className="dt">
                 <thead>
                   <tr>
-                    {canDelete && (
-                      <th style={{ width: 36 }}>
-                        <input
-                          type="checkbox"
-                          aria-label={t('uploads.selectPage', 'Select all on this page')}
-                          checked={pageRows.some(b => b.status === 'active')
-                                   && pageRows.filter(b => b.status === 'active').every(b => selected.has(b.id))}
-                          onChange={toggleAllOnPage}
-                        />
-                      </th>
-                    )}
                     <Th sortKey="created_at" s={sort} firstDir="desc">{t('uploads.thWhen', 'Uploaded')}</Th>
                     <Th sortKey="file_name" s={sort}>{t('uploads.thFile', 'File name')}</Th>
                     <Th sortKey="module" s={sort}>{t('uploads.thModule', 'Module')}</Th>
@@ -442,7 +402,7 @@ export function UploadHistory() {
                 <tbody>
                   {pageRows.length === 0 ? (
                     <tr>
-                      <td colSpan={canDelete ? 9 : 8} className="text-center text-slate-400 py-8 text-sm">
+                      <td colSpan={8} className="text-center text-slate-400 py-8 text-sm">
                         {batches.length === 0
                           ? t('uploads.emptyAll', 'No bulk uploads recorded yet. Files imported from now on will appear here and can be removed if they are wrong.')
                           : t('uploads.emptyFiltered', 'No uploads match these filters.')}
@@ -453,15 +413,6 @@ export function UploadHistory() {
                     const sName = storeName(b.store_id);
                     return (
                       <tr key={b.id} style={isDeleted ? { opacity: 0.55 } : undefined}>
-                        {canDelete && (
-                          <td>
-                            <input
-                              type="checkbox" disabled={isDeleted}
-                              aria-label={t('uploads.selectRow', 'Select this upload')}
-                              checked={selected.has(b.id)} onChange={() => toggle(b.id)}
-                            />
-                          </td>
-                        )}
                         <td className="whitespace-nowrap">{fmtDT(b.created_at)}</td>
                         <td>
                           <div className="font-medium">{b.file_name || '—'}</div>
@@ -585,7 +536,7 @@ export function UploadHistory() {
       {confirmIds && (
         <div
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 900, padding: 16 }}
-          onClick={() => !deleting && setConfirmIds(null)}
+          onClick={() => { if (!deleting) setConfirmIds(null); }}
         >
           <div
             onClick={e => e.stopPropagation()}

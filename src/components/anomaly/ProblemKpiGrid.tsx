@@ -4,6 +4,7 @@ import { TrendingUp, TrendingDown } from 'lucide-react';
 import type { AnomalyKpi } from '../../lib/anomaly/types';
 import { KpiInfoButton } from '../KpiInfoButton';
 import { TILE_INFO } from '../../lib/anomaly/tileInfo';
+import { fmtINR } from '../../hooks/useBusyData';
 
 /**
  * Mirrors the main dashboard KPI grid in the neutral "Today's Work" card format.
@@ -22,11 +23,21 @@ export function ProblemKpiGrid({ kpis }: { kpis: AnomalyKpi[] }) {
           ? ((k.trend - k.baseline) / Math.abs(k.baseline)) * 100
           : null;
         const up = (delta ?? 0) >= 0;
+        // A change that rounds to 0.0% is no trend (e.g. a balance compared with itself).
+        const showDelta = delta != null && Math.abs(delta) >= 0.05;
+        // Format from the number, not the server string: a merged All-companies
+        // value came through as raw rupees ("253842342").
+        const shown = Number.isFinite(k.raw)
+          ? (k.fmt === 'pct' ? `${k.raw.toFixed(1)}%` : fmtINR(k.raw))
+          : k.value;
+        const label = k.key === 'salesMTD'
+          ? t('anomaly.kpiSalesMtdWindow', 'Sales MTD · anomaly scan’s daily series (can differ from Overview)')
+          : k.label;
         return (
           <div key={k.key} className="relative border border-slate-200 rounded-[10px] p-4 bg-white" style={{ flex: '1 1 210px', minWidth: 210 }}>
             {TILE_INFO[k.key] && <KpiInfoButton info={TILE_INFO[k.key]} />}
             <div className="text-[12.5px] text-slate-600 leading-snug flex items-center gap-1.5" style={{ paddingRight: 22 }}>
-              {k.label}
+              {label}
               {problem && (
                 <span style={{
                   fontSize: 9, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#DC2626',
@@ -35,9 +46,9 @@ export function ProblemKpiGrid({ kpis }: { kpis: AnomalyKpi[] }) {
               )}
             </div>
             <div className="text-[26px] font-bold text-slate-900 leading-tight num">
-              {k.value}
+              {shown}
             </div>
-            {delta != null && (
+            {showDelta && delta != null && (
               <div className={`inline-flex items-center gap-1 mt-0.5 text-[11.5px] font-medium ${up ? 'text-green-600' : 'text-red-600'}`}>
                 {up ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
                 {up ? '+' : ''}{delta.toFixed(1)}% {t('anomaly.vsPrior', 'vs prior')}
